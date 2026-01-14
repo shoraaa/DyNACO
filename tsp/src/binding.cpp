@@ -2,7 +2,7 @@
  * pybind11 bindings for MFACO Training Module
  * 
  * Exposes MFACO_TSP and MFACOTrace to Python with numpy array views.
- * Module name: faco_cpp (to avoid conflict with existing faco_tsp.py)
+ * Module name: faco_tsp 
  */
 
 #include <pybind11/pybind11.h>
@@ -130,7 +130,7 @@ public:
     std::unique_ptr<MFACO_TSP> solver;
 
     PyMFACO_TSP(
-        py::array_t<float, py::array::c_style | py::array::forcecast> distances,
+        py::array_t<float, py::array::c_style | py::array::forcecast> coords,
         int32_t n_ants,
         int32_t cand_list_size = 32,
         int32_t backup_list_size = 32,
@@ -139,22 +139,22 @@ public:
         float alpha = 1.0f,
         float p_best = 0.05f,
         bool use_local_search = true,
-        bool random_mode = false,
         bool disable_heuristic = false,
-        const std::string& device = "cpu"  // ignored for now, C++ is CPU-only
+        bool extend_ls = false,
+        bool smooth_mmas = false
     ) {
-        auto buf = distances.request();
-        if (buf.ndim != 2 || buf.shape[0] != buf.shape[1]) {
-            throw std::runtime_error("distances must be a square 2D array");
+        auto buf = coords.request();
+        if (buf.ndim != 2 || buf.shape[1] != 2) {
+            throw std::runtime_error("coords must have shape (n, 2)");
         }
         int32_t n = static_cast<int32_t>(buf.shape[0]);
-        const float* dist_ptr = static_cast<const float*>(buf.ptr);
+        const float* coords_ptr = static_cast<const float*>(buf.ptr);
 
         solver = std::make_unique<MFACO_TSP>(
-            dist_ptr, n, n_ants,
+            coords_ptr, n, n_ants,
             cand_list_size, backup_list_size, min_new_edges,
             decay, alpha, p_best,
-            use_local_search, random_mode, disable_heuristic
+            use_local_search, disable_heuristic, extend_ls, smooth_mmas
         );
     }
 
@@ -171,7 +171,8 @@ public:
     float get_alpha() const { return solver->alpha; }
     float get_p_best() const { return solver->p_best; }
     bool get_use_local_search() const { return solver->use_local_search; }
-    bool get_random_mode() const { return solver->random_mode; }
+    bool get_extend_ls() const { return solver->extend_ls; }
+    bool get_smooth_mmas() const { return solver->smooth_mmas; }
     float get_source_cost() const { return solver->source_cost; }
     float get_best_cost() const { return solver->best_cost; }
     float get_tau_min() const { return solver->tau_min; }
@@ -360,7 +361,7 @@ public:
 // Module definition
 // ============================================================================
 
-PYBIND11_MODULE(faco_cpp, m) {
+PYBIND11_MODULE(faco_tsp, m) {
     m.doc() = "C++ MFACO Training Module for fast neural-guided ACO training";
 
     // OpenMP controls (global to the process)
@@ -373,7 +374,7 @@ PYBIND11_MODULE(faco_cpp, m) {
             omp_set_num_threads(n_threads);
         },
         py::arg("n_threads"),
-        "Set OpenMP thread count for faco_cpp (process-global)."
+        "Set OpenMP thread count for faco_tsp (process-global)."
     );
 
     m.def(
@@ -421,9 +422,9 @@ PYBIND11_MODULE(faco_cpp, m) {
     py::class_<PyMFACO_TSP>(m, "MFACO_TSP")
         .def(py::init<
             py::array_t<float, py::array::c_style | py::array::forcecast>,
-            int32_t, int32_t, int32_t, int32_t, float, float, float, bool, bool, bool, const std::string&
+            int32_t, int32_t, int32_t, int32_t, float, float, float, bool, bool, bool, bool
         >(),
-            py::arg("distances"),
+            py::arg("coords"),
             py::arg("n_ants"),
             py::arg("cand_list_size") = 32,
             py::arg("backup_list_size") = 32,
@@ -432,9 +433,9 @@ PYBIND11_MODULE(faco_cpp, m) {
             py::arg("alpha") = 1.0f,
             py::arg("p_best") = 0.05f,
             py::arg("use_local_search") = true,
-            py::arg("random_mode") = false,
             py::arg("disable_heuristic") = false,
-            py::arg("device") = "cpu"
+            py::arg("extend_ls") = false,
+            py::arg("smooth_mmas") = false
         )
         // Properties
         .def_property_readonly("n", &PyMFACO_TSP::get_n)
@@ -446,7 +447,8 @@ PYBIND11_MODULE(faco_cpp, m) {
         .def_property_readonly("alpha", &PyMFACO_TSP::get_alpha)
         .def_property_readonly("p_best", &PyMFACO_TSP::get_p_best)
         .def_property_readonly("use_local_search", &PyMFACO_TSP::get_use_local_search)
-        .def_property_readonly("random_mode", &PyMFACO_TSP::get_random_mode)
+        .def_property_readonly("extend_ls", &PyMFACO_TSP::get_extend_ls)
+        .def_property_readonly("smooth_mmas", &PyMFACO_TSP::get_smooth_mmas)
         .def_property_readonly("source_cost", &PyMFACO_TSP::get_source_cost)
         .def_property_readonly("best_cost", &PyMFACO_TSP::get_best_cost)
         .def_property_readonly("tau_min", &PyMFACO_TSP::get_tau_min)

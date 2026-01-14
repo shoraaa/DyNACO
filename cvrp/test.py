@@ -9,7 +9,7 @@ from utils import *
 torch.manual_seed(1234)
 
 EPS = 1e-10
-device = 'cuda'
+device = 'cpu'
 
 def infer_instance(model, demands, distances, n_ants, t_aco_diff):
     if model:
@@ -56,16 +56,16 @@ def test(dataset, model, n_ants, t_aco):
 n_ants = 20
 t_aco = [1, 10, 20, 30, 40, 50, 100]
 
-for n_node in [20, 100, 500]:
+for n_node in [100]:
     
     test_list = load_test_dataset(n_node, device)
     
-    net = Net().to(device)
-    net.load_state_dict(torch.load(f'./pretrained/cvrp/cvrp{n_node}.pt', map_location=device))
-    avg_aco_best, duration = test(test_list, net, n_ants, t_aco)
-    print('total duration: ', duration)
-    for i, t in enumerate(t_aco):
-        print("T={}, average obj. is {}.".format(t, avg_aco_best[i])) 
+    # net = Net().to(device)
+    # net.load_state_dict(torch.load(f'./pretrained/cvrp/cvrp{n_node}.pt', map_location=device))
+    # avg_aco_best, duration = test(test_list, net, n_ants, t_aco)
+    # print('total duration: ', duration)
+    # for i, t in enumerate(t_aco):
+    #     print("T={}, average obj. is {}.".format(t, avg_aco_best[i])) 
 
     avg_aco_best, duration = test(test_list, None, n_ants, t_aco)
     print('total duration: ', duration)

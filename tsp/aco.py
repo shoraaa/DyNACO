@@ -170,8 +170,12 @@ class ACO():
         '''
         pheromone = self.pheromone[prev] # shape: (n_ants, p_size)
         heuristic = self.heuristic[prev] # shape: (n_ants, p_size)
-        dist = ((pheromone ** self.alpha) * (heuristic ** self.beta) * mask) # shape: (n_ants, p_size)
-        dist = Categorical(dist)
+        scores = ((pheromone.clamp_min(0) ** self.alpha) * (heuristic.clamp_min(0) ** self.beta) * mask) # shape: (n_ants, p_size)
+        scores = scores.clamp_min(0)
+        denom = scores.sum(dim=1, keepdim=True)
+        fallback = mask / (mask.sum(dim=1, keepdim=True) + 1e-12)
+        probs = torch.where(denom > 0, scores / (denom + 1e-12), fallback)
+        dist = Categorical(probs=probs)
         actions = dist.sample() # shape: (n_ants,)
         log_probs = dist.log_prob(actions) if require_prob else None # shape: (n_ants,)
         return actions, log_probs

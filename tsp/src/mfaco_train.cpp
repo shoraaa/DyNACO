@@ -3,6 +3,7 @@
  */
 
 #include "mfaco_train.h"
+#include "kd_tree.h"
 #include <omp.h>
 #include <cstring>
 #include <stdexcept>
@@ -14,7 +15,7 @@ namespace mfaco {
 // ============================================================================
 
 MFACO_TSP::MFACO_TSP(
-    const float* dist_ptr,
+    const float* coords_ptr,
     int32_t n_,
     int32_t n_ants_,
     int32_t cand_list_size,
@@ -24,8 +25,9 @@ MFACO_TSP::MFACO_TSP(
     float alpha_,
     float p_best_,
     bool use_local_search_,
-    bool random_mode_,
-    bool disable_heuristic_
+    bool disable_heuristic_,
+    bool extend_ls_,
+    bool smooth_mmas_
 ) : n(n_),
     n_ants(n_ants_),
     k(std::min(cand_list_size, n_ - 1)),
@@ -34,12 +36,18 @@ MFACO_TSP::MFACO_TSP(
     rho(decay),
     alpha(alpha_),
     p_best(p_best_),
+    smooth_mmas(smooth_mmas_),
     use_local_search(use_local_search_),
-    random_mode(random_mode_),
+    extend_ls(extend_ls_),
     disable_heuristic(disable_heuristic_)
 {
-    // Copy distances
-    distances.assign(dist_ptr, dist_ptr + n * n);
+    if (coords_ptr == nullptr) {
+        throw std::runtime_error("coords_ptr must not be null");
+    }
+
+    // Store coordinates and compute distances on-demand (EXPLICT_EUC_2D).
+    coords.resize(static_cast<size_t>(n) * 2);
+    std::memcpy(coords.data(), coords_ptr, sizeof(float) * static_cast<size_t>(n) * 2);
 
     // Build nearest neighbor lists
     build_nn_lists();
@@ -53,7 +61,8 @@ MFACO_TSP::MFACO_TSP(
     build_initial_tour();
 
     // Initialize pheromone
-    auto [tmin, tmax] = calc_trail_limits_cl(source_cost);
+    auto [tmin, tmax] = smooth_mmas ? calc_trail_limits_smooth(source_cost)
+                                   : calc_trail_limits_cl(source_cost);
     tau_min = tmin;
     tau_max = tmax;
     pheromone_sparse.assign(n * k, tau_max);
@@ -231,37 +240,65 @@ void MFACO_TSP::update_pheromone(const int32_t* best_flat, float new_best_cost) 
         std::copy(best_flat, best_flat + n, best_route.begin());
     }
 
-    // Update trail limits based on global best (MMAS-style)
-    auto [tmin, tmax] = calc_trail_limits_cl(best_cost);
+    // Update trail limits based on global best
+    auto [tmin, tmax] = smooth_mmas ? calc_trail_limits_smooth(best_cost)
+                                   : calc_trail_limits_cl(best_cost);
     tau_min = tmin;
     tau_max = tmax;
 
-    // Evaporate
-    float decay_factor = 1.0f - rho;
-    for (int32_t i = 0; i < n * k; ++i) {
-        pheromone_sparse[i] *= decay_factor;
-        pheromone_sparse[i] = std::max(tau_min, std::min(tau_max, pheromone_sparse[i]));
-    }
+    if (!smooth_mmas) {
+        // Classic MMAS-style: evaporate and additively deposit on best route
+        float decay_factor = 1.0f - rho;
+        for (int32_t i = 0; i < n * k; ++i) {
+            pheromone_sparse[i] *= decay_factor;
+            pheromone_sparse[i] = std::max(tau_min, std::min(tau_max, pheromone_sparse[i]));
+        }
 
-    // Deposit on best route
-    float deposit = 1.0f / (new_best_cost + EPS);
-    int32_t prev = best_flat[n - 1];  // last node before wrap
-    for (int32_t i = 0; i < n; ++i) {
-        int32_t cur = best_flat[i];
-        
-        // Forward edge (prev -> cur)
-        int32_t j = nn_pos[prev * n + cur];
-        if (j >= 0) {
-            pheromone_sparse[prev * k + j] = std::min(pheromone_sparse[prev * k + j] + deposit, tau_max);
+        // Deposit on best route
+        float deposit = 1.0f / (new_best_cost + EPS);
+        int32_t prev = best_flat[n - 1];  // last node before wrap
+        for (int32_t i = 0; i < n; ++i) {
+            int32_t cur = best_flat[i];
+
+            // Forward edge (prev -> cur)
+            int32_t j = nn_pos[prev * n + cur];
+            if (j >= 0) {
+                pheromone_sparse[prev * k + j] = std::min(pheromone_sparse[prev * k + j] + deposit, tau_max);
+            }
+
+            // Symmetric: reverse edge (cur -> prev)
+            int32_t jr = nn_pos[cur * n + prev];
+            if (jr >= 0) {
+                pheromone_sparse[cur * k + jr] = std::min(pheromone_sparse[cur * k + jr] + deposit, tau_max);
+            }
+
+            prev = cur;
         }
-        
-        // Symmetric: reverse edge (cur -> prev)
-        int32_t jr = nn_pos[cur * n + prev];
-        if (jr >= 0) {
-            pheromone_sparse[cur * k + jr] = std::min(pheromone_sparse[cur * k + jr] + deposit, tau_max);
+    } else {
+        // Smooth-MMAS: linear interpolation toward tau_min/tau_max targets
+        // tau = (1-rho)*tau + rho*tau_target
+        std::vector<int32_t> pos(static_cast<size_t>(n));
+        for (int32_t i = 0; i < n; ++i) {
+            int32_t v = best_flat[i];
+            pos[static_cast<size_t>(v)] = i;
         }
-        
-        prev = cur;
+
+        auto in_route_edge = [&](int32_t u, int32_t v) -> bool {
+            int32_t pu = pos[static_cast<size_t>(u)];
+            int32_t pv = pos[static_cast<size_t>(v)];
+            int32_t diff = std::abs(pu - pv);
+            return diff == 1 || diff == n - 1;
+        };
+
+        float keep = 1.0f - rho;
+        for (int32_t u = 0; u < n; ++u) {
+            for (int32_t j = 0; j < k; ++j) {
+                int32_t v = nn_list[u * k + j];
+                float target = in_route_edge(u, v) ? tau_max : tau_min;
+                float& tau = pheromone_sparse[u * k + j];
+                tau = keep * tau + rho * target;
+            }
+        }
     }
 
     // Update source solution
@@ -331,29 +368,45 @@ void MFACO_TSP::build_nn_lists() {
     nn_list.resize(n * k);
     backup_list.resize(n * bl);
 
-    // For each node, sort others by distance and pick nearest
-    std::vector<std::pair<float, int32_t>> dist_idx(n - 1);
+    const int32_t total = k + bl;
+    if (total <= 0) {
+        return;
+    }
 
-    for (int32_t u = 0; u < n; ++u) {
-        // Build (distance, index) pairs excluding self
-        int32_t idx = 0;
-        for (int32_t v = 0; v < n; ++v) {
-            if (v != u) {
-                dist_idx[idx++] = {distances[u * n + v], v};
+    // Build kd-tree points (double precision for kd-tree internal ops).
+    std::vector<Vec2d> pts(static_cast<size_t>(n));
+    for (int32_t i = 0; i < n; ++i) {
+        const size_t off = static_cast<size_t>(i) * 2;
+        pts[static_cast<size_t>(i)] = Vec2d{static_cast<double>(coords[off + 0]), static_cast<double>(coords[off + 1])};
+    }
+
+    // NOTE: use exact distances (no rounding) for neighbor selection.
+    KDTree shared_kdtree(pts, /*round_distances=*/false);
+
+    #pragma omp parallel default(none) shared(shared_kdtree, nn_list, backup_list) firstprivate(n, k, bl, total)
+    {
+        KDTree kdtree = shared_kdtree; // private copy (supports delete/undelete)
+
+        #pragma omp for schedule(static)
+        for (int32_t u = 0; u < n; ++u) {
+            // Collect total nearest (k + bl) using repeated NN queries with deletions.
+            for (int32_t j = 0; j < total; ++j) {
+                uint32_t pt_idx = kdtree.nn_bottom_up(static_cast<uint32_t>(u));
+                if (j < k) {
+                    nn_list[u * k + j] = static_cast<int32_t>(pt_idx);
+                } else {
+                    backup_list[u * bl + (j - k)] = static_cast<int32_t>(pt_idx);
+                }
+                kdtree.delete_point(pt_idx);
             }
-        }
 
-        // Sort by distance (stable sort for determinism)
-        std::stable_sort(dist_idx.begin(), dist_idx.end());
-
-        // Fill nn_list
-        for (int32_t j = 0; j < k; ++j) {
-            nn_list[u * k + j] = dist_idx[j].second;
-        }
-
-        // Fill backup_list
-        for (int32_t j = 0; j < bl; ++j) {
-            backup_list[u * bl + j] = dist_idx[k + j].second;
+            // Revert changes so that kdtree can be reused for other rows.
+            for (int32_t j = 0; j < k; ++j) {
+                kdtree.undelete_point(static_cast<uint32_t>(nn_list[u * k + j]));
+            }
+            for (int32_t j = 0; j < bl; ++j) {
+                kdtree.undelete_point(static_cast<uint32_t>(backup_list[u * bl + j]));
+            }
         }
     }
 }
@@ -379,7 +432,7 @@ void MFACO_TSP::build_heuristic() {
     for (int32_t u = 0; u < n; ++u) {
         for (int32_t j = 0; j < k; ++j) {
             int32_t v = nn_list[u * k + j];
-            float d = distances[u * n + v];
+            float d = dist(u, v);
             heuristic_sparse[u * k + j] = (d > 0) ? (1.0f / d) : 1.0f;
         }
     }
@@ -417,8 +470,9 @@ void MFACO_TSP::build_initial_tour() {
             if (next < 0) {
                 float min_dist = std::numeric_limits<float>::max();
                 for (int32_t v = 0; v < n; ++v) {
-                    if (!visited[v] && distances[curr * n + v] < min_dist) {
-                        min_dist = distances[curr * n + v];
+                    float d = dist(curr, v);
+                    if (!visited[v] && d < min_dist) {
+                        min_dist = d;
                         next = v;
                     }
                 }
@@ -451,6 +505,20 @@ std::pair<float, float> MFACO_TSP::calc_trail_limits_cl(float solution_cost) con
     float avg = static_cast<float>(std::max(2, k));
     float p = std::pow(p_best, 1.0f / avg);
     float tau_min_ = std::min(tau_max_, tau_max_ * (1.0f - p) / ((avg - 1.0f) * p + EPS));
+    return {tau_min_, tau_max_};
+}
+
+std::pair<float, float> MFACO_TSP::calc_trail_limits_smooth(float solution_cost) const  {
+    (void)solution_cost;
+    float tau_max_ = 1.0f;
+    float denom = static_cast<float>(std::max<int32_t>(1, k));
+    float tau_min_ = 1.0f / denom;
+
+    // With Smooth MMAS, we linearly deposit pheromone
+
+    // p = evaporated + deposit
+    // With edges not in source solution, deposit = rho * tau_min
+    // with edges in source solution, deposit = rho * tau_max
     return {tau_min_, tau_max_};
 }
 
@@ -667,31 +735,17 @@ std::tuple<int32_t, bool, bool> MFACO_TSP::select_next_node(
     if (cl_size > 1) {
         is_stochastic = true;
 
-        // Check for underflow - if sum is too small, use uniform
-        if (sum < EPS) {
-            used_uniform = true;
-            int32_t idx = rng.next_uint(cl_size);
-            chosen = cl[idx];
-            out_pick_j = cl_jidx[idx];
-        } else if (random_mode) {
-            // Uniform random
-            used_uniform = true;
-            int32_t idx = rng.next_uint(cl_size);
-            chosen = cl[idx];
-            out_pick_j = cl_jidx[idx];
-        } else {
-            // Roulette wheel selection
-            float r = rng.next_float() * sum;
-            float cumsum = 0.0f;
-            chosen = cl[cl_size - 1];
-            out_pick_j = cl_jidx[cl_size - 1];
-            for (int32_t i = 0; i < cl_size; ++i) {
-                cumsum += cl_prods[i];
-                if (r <= cumsum) {
-                    chosen = cl[i];
-                    out_pick_j = cl_jidx[i];
-                    break;
-                }
+        // Roulette wheel selection
+        float r = rng.next_float() * sum;
+        float cumsum = 0.0f;
+        chosen = cl[cl_size - 1];
+        out_pick_j = cl_jidx[cl_size - 1];
+        for (int32_t i = 0; i < cl_size; ++i) {
+            cumsum += cl_prods[i];
+            if (r <= cumsum) {
+                chosen = cl[i];
+                out_pick_j = cl_jidx[i];
+                break;
             }
         }
     } else if (cl_size == 0) {
@@ -708,8 +762,9 @@ std::tuple<int32_t, bool, bool> MFACO_TSP::select_next_node(
         if (chosen == curr) {
             float min_dist = std::numeric_limits<float>::max();
             for (int32_t v = 0; v < n; ++v) {
-                if (!visited[v] && distances[curr * n + v] < min_dist) {
-                    min_dist = distances[curr * n + v];
+                float d = dist(curr, v);
+                if (!visited[v] && d < min_dist) {
+                    min_dist = d;
                     chosen = v;
                 }
             }
@@ -739,12 +794,12 @@ float MFACO_TSP::relocate_node(
 
     // Calculate cost delta
     float cost_delta = (
-        - distances[node_pred * n + node]
-        - distances[node * n + node_succ]
-        - distances[target * n + target_succ]
-        + distances[node_pred * n + node_succ]
-        + distances[target * n + node]
-        + distances[node * n + target_succ]
+        - dist(node_pred, node)
+        - dist(node, node_succ)
+        - dist(target, target_succ)
+        + dist(node_pred, node_succ)
+        + dist(target, node)
+        + dist(node, target_succ)
     );
 
     // Perform relocation
@@ -791,8 +846,8 @@ float MFACO_TSP::two_opt_nn(
         int32_t a_next = get_succ(a, route, positions);
         int32_t a_prev = get_pred(a, route, positions);
 
-        float dist_a_to_next = distances[a * n + a_next];
-        float dist_a_to_prev = distances[a_prev * n + a];
+        float dist_a_to_next = dist(a, a_next);
+        float dist_a_to_prev = dist(a_prev, a);
 
         float max_diff = 0.0f;
         int32_t best_move[4] = {-1, -1, -1, -1};
@@ -802,10 +857,10 @@ float MFACO_TSP::two_opt_nn(
             int32_t b = nn_list[a * k + j];
             if (b < 0 || b >= n) break;
 
-            float dist_ab = distances[a * n + b];
+            float dist_ab = dist(a, b);
             if (dist_a_to_next > dist_ab) {
                 int32_t b_next = get_succ(b, route, positions);
-                float diff = dist_a_to_next + distances[b * n + b_next] - dist_ab - distances[a_next * n + b_next];
+                float diff = dist_a_to_next + dist(b, b_next) - dist_ab - dist(a_next, b_next);
                 if (diff > max_diff) {
                     best_move[0] = a_next;
                     best_move[1] = b_next;
@@ -823,10 +878,10 @@ float MFACO_TSP::two_opt_nn(
             int32_t b = nn_list[a * k + j];
             if (b < 0 || b >= n) break;
 
-            float dist_ab = distances[a * n + b];
+            float dist_ab = dist(a, b);
             if (dist_a_to_prev > dist_ab) {
                 int32_t b_prev = get_pred(b, route, positions);
-                float diff = dist_a_to_prev + distances[b_prev * n + b] - dist_ab - distances[a_prev * n + b_prev];
+                float diff = dist_a_to_prev + dist(b_prev, b) - dist_ab - dist(a_prev, b_prev);
                 if (diff > max_diff) {
                     best_move[0] = a;
                     best_move[1] = b;
@@ -843,6 +898,16 @@ float MFACO_TSP::two_opt_nn(
             flip_route_section(best_move[0], best_move[1], route, positions);
             ++changes_count;
             total_change -= max_diff;
+
+            // if extend_ls, then add endpoints to checklist
+            if (extend_ls) {
+                for (int32_t i = 0; i < 4; ++i) {
+                    int32_t node = best_move[i];
+                    if (std::find(checklist.begin(), checklist.end(), node) == checklist.end()) {
+                        checklist.push_back(node);
+                    }
+                }
+            }
         }
     }
 
@@ -853,9 +918,9 @@ float MFACO_TSP::two_opt_nn(
 float MFACO_TSP::get_route_cost(const std::vector<int32_t>& route) const {
     float cost = 0.0f;
     for (int32_t i = 0; i < n - 1; ++i) {
-        cost += distances[route[i] * n + route[i + 1]];
+        cost += dist(route[i], route[i + 1]);
     }
-    cost += distances[route[n - 1] * n + route[0]];
+    cost += dist(route[n - 1], route[0]);
     return cost;
 }
 

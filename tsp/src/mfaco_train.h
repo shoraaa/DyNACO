@@ -32,6 +32,12 @@ static constexpr uint32_t MAX_CAND_LIST_SIZE = 64;
 static constexpr float EPS = 1e-12f;
 static constexpr float LOG_EPS = 1e-12f;
 
+// Distance types supported by this MFACO training backend.
+// NOTE: spelling kept as requested.
+enum class DistanceType : uint8_t {
+    EXPLICT_EUC_2D
+};
+
 // ============================================================================
 // Random number generator (xoshiro128+)
 // ============================================================================
@@ -195,12 +201,16 @@ public:
     float rho;              // pheromone decay (1 - evaporation rate)
     float alpha;            // pheromone exponent
     float p_best;           // for tau limits
+    bool smooth_mmas;       // if true, use Smooth-MMAS style pheromone update (linear interpolation)
     bool use_local_search;
-    bool random_mode;       // uniform random selection instead of roulette
+    bool extend_ls;         // if true, extend local search checklist with endpoints of improving moves
     bool disable_heuristic; // if true, set eta=1 so sampling uses pheromone (+ residual) only
 
+    // Distance type (currently fixed to explicit Euclidean 2D without rounding).
+    DistanceType distance_type = DistanceType::EXPLICT_EUC_2D;
+
     // State arrays
-    std::vector<float> distances;           // (n, n) row-major
+    std::vector<float> coords;              // (n, 2) row-major (x,y)
     std::vector<int32_t> nn_list;           // (n, k) row-major: nearest neighbors
     std::vector<int32_t> backup_list;       // (n, bl) row-major: backup neighbors
     std::vector<float> pheromone_sparse;    // (n, k) row-major: pheromone on candidate edges
@@ -226,7 +236,7 @@ public:
     // ========================================================================
     
     MFACO_TSP(
-        const float* dist_ptr,      // (n, n) row-major
+        const float* coords_ptr,    // (n, 2) row-major (x,y)
         int32_t n,
         int32_t n_ants,
         int32_t cand_list_size = 32,
@@ -236,8 +246,9 @@ public:
         float alpha = 1.0f,
         float p_best = 0.05f,
         bool use_local_search = true,
-        bool random_mode = false,
-        bool disable_heuristic = false
+        bool disable_heuristic = false,
+        bool extend_ls = false,
+        bool smooth_mmas = false
     );
 
     // ========================================================================
@@ -299,7 +310,6 @@ public:
     int32_t* source_route_data() { return source_route.data(); }
     int32_t* best_route_data() { return best_route.data(); }
     int32_t* nn_pos_data() { return nn_pos.data(); }
-    const float* distances_data() const { return distances.data(); }
 
 private:
     // ========================================================================
@@ -326,10 +336,24 @@ private:
      */
     void build_initial_tour();
 
+    // Explicit Euclidean 2D distance without rounding.
+    inline float dist(int32_t a, int32_t b) const {
+        const size_t ia = static_cast<size_t>(a) * 2;
+        const size_t ib = static_cast<size_t>(b) * 2;
+        const float dx = coords[ib + 0] - coords[ia + 0];
+        const float dy = coords[ib + 1] - coords[ia + 1];
+        return std::sqrt(dx * dx + dy * dy);
+    }
+
     /**
      * Calculate tau limits using MMAS candidate-list formula.
      */
     std::pair<float, float> calc_trail_limits_cl(float solution_cost) const;
+
+    /**
+     * Calculate tau limits for Smooth-MMAS. Used together with the linear interpolation update.
+     */
+    std::pair<float, float> calc_trail_limits_smooth(float solution_cost) const;
 
     /**
      * Sample a single ant's solution (fast mode, no tracing).

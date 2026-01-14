@@ -1,5 +1,13 @@
 import torch
 from torch_geometric.data import Data
+import numpy as np
+from pathlib import Path
+import torch
+from torch.utils.data import TensorDataset
+
+_THIS_DIR = Path(__file__).resolve().parent
+DATA_DIR = (_THIS_DIR / ".." / "data").resolve()  # adjust depth if needed
+print(DATA_DIR)
 
 CAPACITY = 50
 DEMAND_LOW = 1
@@ -11,13 +19,29 @@ def gen_instance(n, device):
     demands = torch.randint(low=DEMAND_LOW, high=DEMAND_HIGH+1, size=(n,), device=device)
     depot = torch.tensor([DEPOT_COOR], device=device)
     all_locations = torch.cat((depot, locations), dim=0)
-    all_demands = torch.cat((torch.zeros((1,), device=device), demands))
+    all_demands = torch.cat((torch.zeros((1,), device=device), demands), dim=0)
     distances = gen_distance_matrix(all_locations)
     return all_demands, distances # (n+1), (n+1, n+1)
 
-def gen_distance_matrix(tsp_coordinates):
-    n_nodes = len(tsp_coordinates)
-    distances = torch.norm(tsp_coordinates[:, None] - tsp_coordinates, dim=2, p=2)
+def gen_instance_for_mfaco(n, device, capacity=CAPACITY):
+    locations = torch.rand(size=(n, 2), device=device)
+    demands = torch.randint(low=DEMAND_LOW, high=DEMAND_HIGH+1, size=(n,), device=device)
+
+    depot = torch.tensor([DEPOT_COOR], device=device, dtype=locations.dtype)  # (1,2)
+    coords = torch.cat((depot, locations), dim=0)                              # (n+1,2)
+
+    demand = torch.cat((torch.zeros((1,), device=device, dtype=demands.dtype), demands), dim=0)  # (n+1,)
+
+    # normalize so capacity = 1.0 (recommended)
+    demand_f = demand.float() / capacity
+    capacity_norm = 1.0
+
+    return coords, demand_f, capacity_norm
+
+
+def gen_distance_matrix(cvrp_coordinates):
+    n_nodes = len(cvrp_coordinates)
+    distances = torch.norm(cvrp_coordinates[:, None] - cvrp_coordinates, dim=2, p=2)
     distances[torch.arange(n_nodes), torch.arange(n_nodes)] = 1e-10 # note here
     return distances
 
@@ -72,23 +96,69 @@ def gen_pyg_data(demands, distances, device, k_nearest=None):
     pyg_data = Data(x=x.unsqueeze(1), edge_attr=edge_attr, edge_index=edge_index)
     return pyg_data
 
-def load_test_dataset(problem_size, device):
-    test_list = []
-    dataset = torch.load(f'../data/cvrp/testDataset-{problem_size}.pt', map_location=device)
-    for i in range(len(dataset)):
-        test_list.append((dataset[i, 0, :], dataset[i, 1:, :]))
-    return test_list
+def load_val_dataset(n, device: str = "cpu"):
+    pack = torch.load(f'{DATA_DIR}/cvrp/valDataset-{n}.pt', map_location=device, weights_only=False)
+    return pack
+    
 
 if __name__ == '__main__':
-    import pathlib
-    pathlib.Path('../data/cvrp').mkdir(parents=False, exist_ok=True) 
+    # generate val and test datasets, only coords
+    import os
+    if not os.path.exists(f'{DATA_DIR}/cvrp'):
+        os.makedirs(f'{DATA_DIR}/cvrp')
     torch.manual_seed(123456)
-    for n in [20, 100, 500]:
+    for n in [100, 200, 500]:
         inst_list = []
-        for _ in range(100):
-            demands, distances = gen_instance(n, 'cpu')
-            inst = torch.cat((demands.unsqueeze(0), distances), dim=0) # (n+2, n+1)
-            inst_list.append(inst)
-        testDataset = torch.stack(inst_list)
-        torch.save(testDataset, f'../data/cvrp/testDataset-{n}.pt')
+        inst_coords = []
+        inst_demand = []
+        inst_capacity = []
+        for _ in range(128):
+            coords_t, demand_t, capacity = gen_instance_for_mfaco(n, device="cpu")
+            inst_coords.append(coords_t)
+            inst_demand.append(demand_t)
+            inst_capacity.append(torch.tensor(capacity))
+
+        valDataset = TensorDataset(torch.stack(inst_coords).float().cpu(), torch.stack(inst_demand).float().cpu(), torch.stack(inst_capacity).float().cpu())
+        torch.save(valDataset, f'{DATA_DIR}/cvrp/valDataset-{n}.pt')
+
+    for n in [100, 200, 500]:
+        inst_list = []
+        inst_coords = []
+        inst_demand = []
+        inst_capacity = []
+        for _ in range(128):
+            coords_t, demand_t, capacity = gen_instance_for_mfaco(n, device="cpu")
+            inst_coords.append(coords_t)
+            inst_demand.append(demand_t)
+            inst_capacity.append(torch.tensor(capacity))
+
+        testDataset = TensorDataset(torch.stack(inst_coords).float().cpu(), torch.stack(inst_demand).float().cpu(), torch.stack(inst_capacity).float().cpu())
+        torch.save(testDataset, f'{DATA_DIR}/cvrp/testDataset-{n}.pt')
+
+    for n in [1000, 2000, 5000]:
+        inst_list = []
+        inst_coords = []
+        inst_demand = []
+        inst_capacity = []
+        for _ in range(128):
+            coords_t, demand_t, capacity = gen_instance_for_mfaco(n, device="cpu")
+            inst_coords.append(coords_t)
+            inst_demand.append(demand_t)
+            inst_capacity.append(torch.tensor(capacity))
+
+        valDataset = TensorDataset(torch.stack(inst_coords).float().cpu(), torch.stack(inst_demand).float().cpu(), torch.stack(inst_capacity).float().cpu())
+        torch.save(valDataset, f'{DATA_DIR}/cvrp/valDataset-{n}.pt')
+    for n in [1000, 2000, 5000]:
+        inst_list = []
+        inst_coords = []
+        inst_demand = []
+        inst_capacity = []
+        for _ in range(128):
+            coords_t, demand_t, capacity = gen_instance_for_mfaco(n, device="cpu")
+            inst_coords.append(coords_t)
+            inst_demand.append(demand_t)
+            inst_capacity.append(torch.tensor(capacity))
+
+        testDataset = TensorDataset(torch.stack(inst_coords).float().cpu(), torch.stack(inst_demand).float().cpu(), torch.stack(inst_capacity).float().cpu())
+        torch.save(testDataset, f'{DATA_DIR}/cvrp/testDataset-{n}.pt')
         

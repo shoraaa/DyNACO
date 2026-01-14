@@ -2,10 +2,10 @@
 Setup script for building the faco_cpp Python extension.
 
 Build with:
-    pip install -e ./tsp/faco
+    pip install -e ./tsp/src --no-build-isolation
     
 Or manually:
-    cd tsp/faco && python setup.py build_ext --inplace
+    cd tsp/src && python setup.py build_ext --inplace
 """
 
 import sys
@@ -63,7 +63,7 @@ class BuildExt(build_ext):
 # Extension module
 ext_modules = [
     Extension(
-        'faco_cpp',
+        'faco_tsp',
         sources=[
             'mfaco_train.cpp',
             'binding.cpp',
@@ -81,7 +81,7 @@ ext_modules = [
 ]
 
 setup(
-    name='faco_cpp',
+    name='faco_tsp',
     version='0.1.0',
     author='NGFACO',
     description='C++ MFACO Training Module for fast neural-guided ACO training',
