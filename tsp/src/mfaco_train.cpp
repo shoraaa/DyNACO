@@ -81,14 +81,14 @@ void MFACO_TSP::seed_rng(uint64_t seed) {
 }
 
 
-void MFACO_TSP::sample(bool require_prob, const float* residual_logits, SampleResult& result, bool parallel_traced) {
+void MFACO_TSP::sample(bool require_prob, const float* prior, SampleResult& result, bool parallel_traced) {
     result.clear();
     result.costs.resize(n_ants);
     result.routes.resize(n_ants);
 
-    // Compute probability matrix: tau^alpha * eta * exp(residual)
+    // Compute probability matrix: tau^alpha * eta * prior
     std::vector<float> probmat(n * k);
-    compute_probmat(residual_logits, probmat);
+    compute_probmat(prior, probmat);
 
     // Generate random start nodes
     std::vector<int32_t> start_nodes(n_ants);
@@ -523,8 +523,8 @@ std::pair<float, float> MFACO_TSP::calc_trail_limits_smooth(float solution_cost)
 }
 
 
-void MFACO_TSP::compute_probmat(const float* residual_logits, std::vector<float>& probmat) {
-    // probmat = tau^alpha * eta * exp(residual)
+void MFACO_TSP::compute_probmat(const float* prior, std::vector<float>& probmat) {
+    // probmat = tau^alpha * eta * prior
     // When disable_heuristic=true, eta is pre-set to 1.0 in heuristic_sparse.
     for (int32_t u = 0; u < n; ++u) {
         for (int32_t j = 0; j < k; ++j) {
@@ -533,11 +533,9 @@ void MFACO_TSP::compute_probmat(const float* residual_logits, std::vector<float>
             float eta = heuristic_sparse[idx];
             float w = std::pow(tau + EPS, alpha) * eta;
 
-            if (residual_logits != nullptr) {
-                // Clamp residual to prevent overflow
-                float r = residual_logits[idx];
-                r = std::max(-10.0f, std::min(10.0f, r));
-                w *= std::exp(r);
+            if (prior != nullptr) {
+                float r = prior[idx];
+                w *= r;
             }
 
             probmat[idx] = std::max(w, EPS);

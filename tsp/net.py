@@ -90,3 +90,33 @@ class Net(nn.Module):
     def freeze_gnn(self):
         for param in self.emb_net.parameters():
             param.requires_grad = False
+
+class NetB(nn.Module):
+    def __init__(self, units=32, static_edge_feats=2, dyn_edge_feats=5):
+        super().__init__()
+        self.emb_net = EmbNet(edge_feats=static_edge_feats, units=units)
+        self.dyn_proj = nn.Sequential(
+            nn.Linear(dyn_edge_feats, units),
+            nn.SiLU(),
+            nn.Linear(units, units),
+        )
+        self.par_net_heu = ParNet(units=units)
+
+        self._emb_static = None  # cache
+
+    def reset_cache(self):
+        self._emb_static = None
+        self._cached_E = None
+
+
+    @torch.no_grad()
+    def cache_static(self, pyg):
+        # run once per instance (or when coords/candidate graph changes)
+        self._emb_static = self.emb_net(pyg.x, pyg.edge_index, pyg.edge_attr_static)
+
+    def forward(self, pyg):
+        if self._emb_static is None:
+            self.cache_static(pyg)
+        emb = self._emb_static #+ self.dyn_proj(pyg.edge_attr_dyn)
+        heu = self.par_net_heu(emb)
+        return heu

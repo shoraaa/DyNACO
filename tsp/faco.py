@@ -324,7 +324,7 @@ class MFACO_TSP:
         self,
         invtemp: float = 1.0,
         require_prob: bool = False,
-        residual_logits: np.ndarray = None,
+        prior: np.ndarray = None,
         parallel_traced: bool = False,
     ):
         """
@@ -343,28 +343,28 @@ class MFACO_TSP:
 
         # pybind expects a CPU numpy array (or None). Accept torch tensors
         # (including CUDA) and convert safely.
-        if isinstance(residual_logits, torch.Tensor):
-            residual_logits = (
-                residual_logits.detach()
+        if isinstance(prior, torch.Tensor):
+            prior = (
+                prior.detach()
                 .to(device="cpu", dtype=torch.float32)
                 .numpy()
             )
-        elif residual_logits is not None:
-            residual_logits = np.asarray(residual_logits, dtype=np.float32)
+        elif prior is not None:
+            prior = np.asarray(prior, dtype=np.float32)
 
-        # The C++ backend requires residual_logits to be exactly (n, k).
+        # The C++ backend requires prior to be exactly (n, k).
         # For convenience (especially in notebooks), also accept:
         # - (n, k, 1) -> squeeze
         # - (n*k,) or (n*k, 1) -> reshape row-major to (n, k)
-        if residual_logits is not None:
-            arr = residual_logits
+        if prior is not None:
+            arr = prior
             n = int(self.n)
             k = int(self.k)
 
             if arr.ndim == 3 and arr.shape[2] == 1:
                 arr = arr[:, :, 0]
 
-            # Accept dense (n,n) residual matrices (e.g. from Net.reshape)
+            # Accept dense (n,n) prior matrices (e.g. from Net.reshape)
             # and project them onto the candidate list layout (n,k).
             if arr.ndim == 2 and arr.shape == (n, n):
                 nn = np.asarray(self.nn_list, dtype=np.int64)
@@ -379,12 +379,12 @@ class MFACO_TSP:
             # Final validation + helpful error
             if not (arr.ndim == 2 and arr.shape[0] == n and arr.shape[1] == k):
                 raise ValueError(
-                    f"residual_logits must be shape (n, k)=({n}, {k}) for C++ backend; got {arr.shape}"
+                    f"prior must be shape (n, k)=({n}, {k}) for C++ backend; got {arr.shape}"
                 )
-            residual_logits = arr
+            prior = arr
 
         costs, flats, touched, logps, traces_raw = self._cpp.sample(
-            invtemp, require_prob, residual_logits, parallel_traced
+            invtemp, require_prob, prior, parallel_traced
         )
 
         # Keep the C++ batch trace object (much faster than converting to Python lists)
@@ -410,7 +410,7 @@ class MFACO_TSP:
     def prob_sparse_torch(
         self,
         invtemp: float = 1.0,
-        residual_logits: torch.Tensor = None
+        prior: torch.Tensor = None
     ) -> torch.Tensor:
         """
         Returns unnormalized weights for candidate edges: shape (n, k).
@@ -428,9 +428,9 @@ class MFACO_TSP:
             w = tau * h
         w = w.clamp_min(1e-12)
         
-        if residual_logits is not None:
-            residual_clamped = residual_logits.clamp(-10.0, 10.0)
-            w = w * torch.exp(residual_clamped)
+        if prior is not None:
+            prior_clamped = prior.clamp(-10.0, 10.0)
+            w = w * prior_clamped
         
         return w
 

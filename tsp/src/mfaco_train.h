@@ -7,7 +7,7 @@
  * Key features:
  * - Sparse candidate-list pheromone storage (n x k)
  * - Relocate-based focused editing from source solution
- * - Optional neural residual logits for learned biases
+ * - Optional neural prior for learned biases
  * - Trace recording for log-probability replay
  * - Checklist-guided 2-opt local search
  */
@@ -204,7 +204,7 @@ public:
     bool smooth_mmas;       // if true, use Smooth-MMAS style pheromone update (linear interpolation)
     bool use_local_search;
     bool extend_ls;         // if true, extend local search checklist with endpoints of improving moves
-    bool disable_heuristic; // if true, set eta=1 so sampling uses pheromone (+ residual) only
+    bool disable_heuristic; // if true, set eta=1 so sampling uses pheromone (+ prior) only
 
     // Distance type (currently fixed to explicit Euclidean 2D without rounding).
     DistanceType distance_type = DistanceType::EXPLICT_EUC_2D;
@@ -266,10 +266,10 @@ public:
      * @param require_prob If true, record traces for log-prob replay.
         * @param parallel_traced If true and require_prob=true, parallelize traced sampling.
         *        Traces are generated per-ant and merged after; RNG is per-ant.
-     * @param residual_logits Optional (n, k) neural residual logits. Pass nullptr if not used.
+     * @param prior Optional (n, k) neural prior. Pass nullptr if not used.
      * @param result Output structure filled with costs, routes, and traces.
      */
-        void sample(bool require_prob, const float* residual_logits, SampleResult& result, bool parallel_traced = false);
+        void sample(bool require_prob, const float* prior, SampleResult& result, bool parallel_traced = false);
 
     /**
      * Update pheromone: evaporate + deposit on best route.
@@ -442,9 +442,9 @@ private:
     );
 
     /**
-     * Compute probability matrix: tau^alpha * eta * exp(residual).
+     * Compute probability matrix: tau^alpha * eta * prior.
      */
-    void compute_probmat(const float* residual_logits, std::vector<float>& probmat);
+    void compute_probmat(const float* prior, std::vector<float>& probmat);
 };
 
 } // namespace mfaco
