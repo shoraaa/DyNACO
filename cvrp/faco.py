@@ -48,6 +48,11 @@ class MFACO_CVRP:
         p_best: float = 0.05,
         use_local_search: bool = True,
         disable_heuristic: bool = False,
+        extend_ls: bool = False,
+        smooth_mmas: bool = False,
+        device: str = "cpu",
+        enable_torch_sync: bool = True,
+        normalized_heuristic: bool = False,
     ):
         coords_np = _as_numpy_f32(coords)
         demand_np = _as_numpy_f32(demand)
@@ -68,7 +73,24 @@ class MFACO_CVRP:
             float(p_best),
             bool(use_local_search),
             bool(disable_heuristic),
+            bool(extend_ls),
+            bool(smooth_mmas),
         )
+        self.device = device
+        self.enable_torch_sync = enable_torch_sync
+        self.alpha = alpha
+        
+        if normalized_heuristic and not disable_heuristic:
+            # Normalize heuristic
+            h = np.asarray(self.solver.heuristic_sparse_np)
+            row_sums = h.sum(axis=1, keepdims=True)
+            h_norm = h / (row_sums + 1e-12)
+            np.copyto(h, h_norm)
+        
+        # Buffers
+        self.disable_heuristic = disable_heuristic
+        self._pheromone_sparse = torch.from_numpy(self.solver.pheromone_sparse_np.copy()).to(device)
+        self._heuristic_sparse = torch.from_numpy(self.solver.heuristic_sparse_np.copy()).to(device)
 
     @property
     def n(self): return self.solver.n
@@ -85,21 +107,25 @@ class MFACO_CVRP:
     def seed_rng(self, seed: int):
         self.solver.seed_rng(int(seed))
 
-    def sample(self, require_prob: bool = False, residual_logits=None, parallel_traced: bool = False, return_decoded: bool = False):
+    def sample(self, require_prob: bool = False, prior=None, parallel_traced: bool = False, return_decoded: bool = False):
         """
         Returns:
           costs: torch.float32 [n_ants]
           perms: list[np.ndarray] each (m+1,) customers-only cycle (last==first)
           decoded_routes: list[np.ndarray] each variable length [0,...,0,...] or None
           traces: faco_cpp.MFACOTrace or None
+          
+        Args:
+          prior: (n, k) extra weights to multiply into probability. 
+                 If passed, prob = (tau^alpha * eta) * prior.
         """
-        if residual_logits is not None:
-            residual_logits = _as_numpy_f32(residual_logits)
-        costs, perms, decoded, traces = self.solver.sample(
-            require_prob, residual_logits, parallel_traced, return_decoded
+        if prior is not None:
+            prior = _as_numpy_f32(prior)
+        costs, perms, decoded, logps, traces = self.solver.sample(
+            require_prob, prior, parallel_traced, return_decoded
         )
-        costs_t = torch.from_numpy(np.asarray(costs, dtype=np.float32))
-        return costs_t, perms, decoded, traces
+        costs_t = torch.as_tensor(costs, device=self.device, dtype=torch.float32)
+        return costs_t, perms, decoded, logps, traces
 
     def update_pheromone(self, best_perm, best_cost: float):
         """
@@ -108,6 +134,43 @@ class MFACO_CVRP:
         """
         p = _as_numpy_i32(best_perm)
         self.solver._update_pheromone_from_perm(p, float(best_cost))
+        if self.enable_torch_sync:
+            self.sync_pheromone_to_torch()
+
+    def sync_pheromone_to_torch(self):
+        """Sync numpy pheromone to torch tensor."""
+        phe_np = np.asarray(self.solver.pheromone_sparse_np)
+        phe_cpu = torch.from_numpy(phe_np)
+        self._pheromone_sparse.copy_(phe_cpu.to(self.device))
+
+    def prob_sparse_torch(self, prior: torch.Tensor = None, invtemp: float = 1.0) -> torch.Tensor:
+        """
+        Returns unnormalized weights for candidate edges: shape (n, k).
+        Matches C++ compute_probmat logic (logit space + normalization).
+        """
+        EPS = 1e-10
+        
+        tau = self._pheromone_sparse.clamp_min(EPS)
+        logit = self.alpha * torch.log(tau)
+        
+        if not self.disable_heuristic:
+            h = self._heuristic_sparse.clamp_min(EPS)
+            if invtemp != 1.0:
+                 logit = logit + float(invtemp) * torch.log(h)
+            else:
+                 logit = logit + torch.log(h)
+        
+        if prior is not None:
+            #  z = prior.clamp(-10.0, 10.0)
+            #  mean = z.mean(dim=1, keepdim=True)
+            #  var = z.var(dim=1, unbiased=False, keepdim=True)
+            #  std = torch.sqrt(var + 1e-6)
+            #  z_norm = (z - mean) / std
+             
+             logit = logit + prior
+             
+        w = torch.exp(logit)
+        return w
 
     # Optional: expose raw views if you want (numpy views from C++)
     @property

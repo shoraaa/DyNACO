@@ -49,38 +49,40 @@ class MLP(nn.Module):
     @property
     def device(self):
         return self._dummy.device
-    def __init__(self, units_list, act_fn):
+    def __init__(self, units_list, act_fn, sigmoid_output=True):
         super().__init__()
         self._dummy = nn.Parameter(torch.empty(0), requires_grad = False)
         self.units_list = units_list
         self.depth = len(self.units_list) - 1
         self.act_fn = getattr(F, act_fn)
         self.lins = nn.ModuleList([nn.Linear(self.units_list[i], self.units_list[i + 1]) for i in range(self.depth)])
+        self.sigmoid_output = sigmoid_output
     def forward(self, x):
         for i in range(self.depth):
             x = self.lins[i](x)
             if i < self.depth - 1:
                 x = self.act_fn(x)
             else:
-                x = torch.sigmoid(x) # last layer
+                if self.sigmoid_output:
+                    x = torch.sigmoid(x) # last layer
         return x
 
 # MLP for predicting parameterization theta
 class ParNet(MLP):
-    def __init__(self, depth=3, units=32, preds=1, act_fn='silu'):
+    def __init__(self, depth=3, units=32, preds=1, act_fn='silu', logit_net=False):
         self.units = units
         self.preds = preds
-        super().__init__([self.units] * depth + [self.preds], act_fn)
+        super().__init__([self.units] * depth + [self.preds], act_fn, sigmoid_output=not logit_net)
     def forward(self, x):
         return super().forward(x).squeeze(dim = -1)
     
 
 class Net(nn.Module):
-    def __init__(self):
+    def __init__(self, logit_net=False):
         super().__init__()
-        self.emb_net = EmbNet(edge_feats=6)
+        self.emb_net = EmbNet(feats=2, edge_feats=6)
         # self.par_net_phe = ParNet()
-        self.par_net_heu = ParNet()
+        self.par_net_heu = ParNet(logit_net=logit_net)
     def forward(self, pyg):
         x, edge_index, edge_attr = pyg.x, pyg.edge_index, pyg.edge_attr
         emb = self.emb_net(x, edge_index, edge_attr)
@@ -90,33 +92,3 @@ class Net(nn.Module):
     def freeze_gnn(self):
         for param in self.emb_net.parameters():
             param.requires_grad = False
-
-class NetB(nn.Module):
-    def __init__(self, units=32, static_edge_feats=2, dyn_edge_feats=5):
-        super().__init__()
-        self.emb_net = EmbNet(edge_feats=static_edge_feats, units=units)
-        self.dyn_proj = nn.Sequential(
-            nn.Linear(dyn_edge_feats, units),
-            nn.SiLU(),
-            nn.Linear(units, units),
-        )
-        self.par_net_heu = ParNet(units=units)
-
-        self._emb_static = None  # cache
-
-    def reset_cache(self):
-        self._emb_static = None
-        self._cached_E = None
-
-
-    @torch.no_grad()
-    def cache_static(self, pyg):
-        # run once per instance (or when coords/candidate graph changes)
-        self._emb_static = self.emb_net(pyg.x, pyg.edge_index, pyg.edge_attr_static)
-
-    def forward(self, pyg):
-        if self._emb_static is None:
-            self.cache_static(pyg)
-        emb = self._emb_static #+ self.dyn_proj(pyg.edge_attr_dyn)
-        heu = self.par_net_heu(emb)
-        return heu

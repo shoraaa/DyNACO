@@ -116,8 +116,9 @@ class MFACO_TSP:
         smooth_mmas: bool = False,
         enable_torch_sync: bool = True,
         device: str = "cuda",
-        use_cpp: bool = True,  # New option to force Python backend
+        use_cpp: bool = True,
         disable_heuristic: bool = False,
+        normalized_heuristic: bool = False,
     ):
         """
         Initialize MFACO_TSP solver.
@@ -142,6 +143,7 @@ class MFACO_TSP:
         self.disable_heuristic = bool(disable_heuristic)
         self.extend_ls = bool(extend_ls)
         self.smooth_mmas = bool(smooth_mmas)
+        self.normalized_heuristic = bool(normalized_heuristic)
 
         # Some callers (e.g., notebooks) may pass a PyG `Data` object.
         # In that case we interpret `coords` as `data.x`.
@@ -181,6 +183,17 @@ class MFACO_TSP:
             self.extend_ls,
             self.smooth_mmas,
         )
+        
+        if self.normalized_heuristic and not self.disable_heuristic:
+            # Normalize heuristic to sum to 1 per row (or similar)
+            # Access underlying numpy array
+            h = np.asarray(self._cpp.heuristic_sparse_np) # view
+            # Standard normalization: h / sum(h)
+            row_sums = h.sum(axis=1, keepdims=True)
+            h_norm = h / (row_sums + 1e-12)
+            # Assuming h is view, updating in-place
+            np.copyto(h, h_norm)
+
         self._py = None
         
         # For compatibility, keep torch tensors for replay_logp (use private names)
@@ -414,24 +427,36 @@ class MFACO_TSP:
     ) -> torch.Tensor:
         """
         Returns unnormalized weights for candidate edges: shape (n, k).
-        
-        NOTE: For C++ backend, this recomputes from numpy pheromone.
+        Matches C++ compute_probmat logic (logit space + normalization).
         """
-        tau = self.pheromone_sparse.clamp_min(1e-10) ** self.alpha
-
-        if self.disable_heuristic:
-            w = tau
-        else:
-            h = self.h_sparse_torch
+        EPS = 1e-10
+        
+        # 1. Pheromone logit
+        tau = self._pheromone_sparse.clamp_min(EPS)
+        logit = self.alpha * torch.log(tau)
+        
+        # 2. Heuristic logit
+        if not self.disable_heuristic:
+            # Matches C++: beta * log(eta) with beta=1
+            h = self._h_sparse_torch.clamp_min(EPS)
             if invtemp != 1.0:
-                h = h ** float(invtemp)
-            w = tau * h
-        w = w.clamp_min(1e-12)
+                 logit = logit + float(invtemp) * torch.log(h)
+            else:
+                 logit = logit + torch.log(h)
         
+        # 3. Prior logit
         if prior is not None:
-            prior_clamped = prior.clamp(-10.0, 10.0)
-            w = w * prior_clamped
-        
+             # C++: z = clamp(prior, -10, 10), then normalize
+            #  z = prior.clamp(-10.0, 10.0)
+            #  mean = z.mean(dim=1, keepdim=True)
+            #  var = z.var(dim=1, unbiased=False, keepdim=True)
+            #  std = torch.sqrt(var + 1e-6)
+            #  z_norm = (z - mean) / std
+             
+             # Matches C++: gamma * z_norm with gamma=1
+             logit = logit + prior
+             
+        w = torch.exp(logit)
         return w
 
     def sync_pheromone_to_torch(self) -> None:

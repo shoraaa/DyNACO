@@ -107,7 +107,7 @@ if __name__ == '__main__':
     if not os.path.exists(f'{DATA_DIR}/cvrp'):
         os.makedirs(f'{DATA_DIR}/cvrp')
     torch.manual_seed(123456)
-    for n in [100, 200, 500]:
+    for n in [20, 100, 200, 500]:
         inst_list = []
         inst_coords = []
         inst_demand = []
@@ -161,4 +161,100 @@ if __name__ == '__main__':
 
         testDataset = TensorDataset(torch.stack(inst_coords).float().cpu(), torch.stack(inst_demand).float().cpu(), torch.stack(inst_capacity).float().cpu())
         torch.save(testDataset, f'{DATA_DIR}/cvrp/testDataset-{n}.pt')
+
+
+def build_pyg_data(aco, coords, demand, device: str, dynamic: bool) -> Data:
+    """
+    Build a PyG graph matching MFACO_CVRP's sparse candidate graph (n,k).
+
+    Node features:
+      x: coords (n,2)
+    Edge features (E=n*k, 6):
+      0 dist_norm
+      1 tau_cv
+      2 log_tau_rel (dynamic) else 0
+      3 is_source_succ (customer tour)
+      4 is_source_pred (customer tour)
+      5 is_new_edge (not adjacent in source tour among customers)
+    """
+    if isinstance(coords, np.ndarray):
+        coords_t = torch.from_numpy(coords)
+    elif isinstance(coords, torch.Tensor):
+        coords_t = coords
+    else:
+        coords_t = torch.as_tensor(coords)
+    coords_t = coords_t.to(device=device, dtype=torch.float32)  # (n,2)
+    demand_t = torch.as_tensor(demand, device=device, dtype=torch.float32)  # (n,)
+
+    nn = torch.as_tensor(np.asarray(aco.nn_list, dtype=np.int64), device=device, dtype=torch.long)  # (n,k)
+    n, k = nn.shape
+    E = n * k
+
+    src = torch.arange(n, device=device, dtype=torch.long).repeat_interleave(k)
+    dst = nn.reshape(-1)
+    edge_index = torch.stack([src, dst], dim=0)
+
+    # 0) dist_norm
+    dist = torch.norm(coords_t[src] - coords_t[dst], dim=1).view(n, k)
+    dist_mean = dist.mean(dim=1, keepdim=True).clamp_min(1e-12)
+    dist_norm = (dist / dist_mean).view(E, 1)
+
+    # 1-2) tau features
+    if dynamic:
+        tau = torch.as_tensor(np.asarray(aco.pheromone_sparse_np), device=device, dtype=torch.float32).clamp_min(1e-12)
+        tau_mean = tau.mean(dim=1, keepdim=True).clamp_min(1e-12)
+        tau_rel = (tau / tau_mean).clamp_min(1e-12)
+        log_tau_rel = torch.log(tau_rel).clamp(-5.0, 5.0).view(E, 1)
+        tau_std = tau.std(dim=1, keepdim=True)
+        tau_cv = (tau_std / tau_mean).clamp(0, 10)
+        tau_cv_e = tau_cv.repeat_interleave(k, dim=0)
+    else:
+        log_tau_rel = torch.zeros((E, 1), device=device, dtype=torch.float32)
+        tau_cv_e = torch.zeros((E, 1), device=device, dtype=torch.float32)
+
+    # Source-perm features (customers only; depot gets -1)
+    # Check if aco.solver exists (if wrapping) or if aco is the solver
+    # MFACO_CVRP has .solver
+    solver = getattr(aco, 'solver', aco)
+    
+    # In cvrp/faco.py MFACO_CVRP has source_perm property which returns numpy array
+    try:
+        src_perm_np = aco.source_perm # property in facade
+    except AttributeError:
+        src_perm_np = solver.source_perm # C++ object
+
+    src_perm = torch.as_tensor(np.asarray(src_perm_np, dtype=np.int64), device=device, dtype=torch.long)  # (m,)
+    
+    succ = torch.full((n,), -1, device=device, dtype=torch.long)
+    pred = torch.full((n,), -1, device=device, dtype=torch.long)
+    if src_perm.numel() > 0:
+        succ[src_perm] = torch.roll(src_perm, shifts=-1)
+        pred[src_perm] = torch.roll(src_perm, shifts=+1)
+
+    is_source_succ = (dst == succ[src]).to(torch.float32).view(E, 1)
+    is_source_pred = (dst == pred[src]).to(torch.float32).view(E, 1)
+
+    pos = torch.full((n,), -1, device=device, dtype=torch.long)
+    if src_perm.numel() > 0:
+        pos[src_perm] = torch.arange(src_perm.numel(), device=device, dtype=torch.long)
+        m = int(src_perm.numel())
+        duv = (pos[src] - pos[dst]).abs()
+        # Fix logic for undirected adjacency in cycle: delta=1 or delta=m-1
+        undirected_adj = ((duv == 1) | (duv == (m - 1))) & (pos[src] >= 0) & (pos[dst] >= 0)
+    else:
+        undirected_adj = torch.zeros((E,), device=device, dtype=torch.bool)
+
+    is_new_edge = (~undirected_adj).to(torch.float32).view(E, 1)
+
+    edge_attr = torch.cat(
+        [dist_norm, tau_cv_e, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
+        dim=1,
+    )
+
+    depot_flag = torch.zeros((coords_t.size(0), 1), device=device)
+    depot_flag[0, 0] = 1.0
+    # CVRP specific node inputs: coords (2), demand (1), depot_flag (1) -> 4 dims
+    coords_cat = torch.cat([coords_t, demand_t.unsqueeze(-1), depot_flag], dim=-1)
+
+    return Data(x=coords_cat, edge_index=edge_index, edge_attr=edge_attr)
         
