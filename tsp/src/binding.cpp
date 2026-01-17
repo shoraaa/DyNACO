@@ -76,6 +76,10 @@ public:
     return make_1d_view(batch.valid_mask.data(), batch.valid_mask.size());
   }
 
+  py::array_t<uint8_t> get_is_new_edge() {
+    return make_1d_view(batch.is_new_edge.data(), batch.is_new_edge.size());
+  }
+
   py::array_t<int32_t> get_start_nodes() {
     return make_1d_view(batch.start_nodes.data(), batch.start_nodes.size());
   }
@@ -105,6 +109,8 @@ public:
       trace["curr_nodes"] = curr;
       trace["chosen_nodes"] = chosen;
       trace["is_stochastic"] = is_stoch;
+      trace["is_new_edge"] =
+          make_1d_view(batch.is_new_edge.data() + start, end - start);
 
       result.append(trace);
     }
@@ -276,7 +282,35 @@ public:
       }
     }
 
-    return py::make_tuple(costs, flats, touched_list, logps_arr, traces_obj);
+    // Convert costs_raw to numpy
+    py::object costs_raw_obj = py::none();
+    if (!result.costs_raw.empty()) {
+      py::array_t<float> costs_raw_arr(solver->n_ants);
+      auto buf = costs_raw_arr.mutable_unchecked<1>();
+      for (int32_t a = 0; a < solver->n_ants; ++a) {
+        buf(a) = result.costs_raw[a];
+      }
+      costs_raw_obj = costs_raw_arr;
+    }
+
+    // Convert routes_raw to list of flats
+    py::object flats_raw_obj = py::none();
+    if (!result.routes_raw.empty()) {
+      py::list flats_raw;
+      for (int32_t a = 0; a < solver->n_ants; ++a) {
+        py::array_t<int32_t> flat(solver->n + 1);
+        auto flat_buf = flat.mutable_unchecked<1>();
+        for (int32_t i = 0; i < solver->n; ++i) {
+          flat_buf(i) = result.routes_raw[a][i];
+        }
+        flat_buf(solver->n) = result.routes_raw[a][0]; // close the cycle
+        flats_raw.append(flat);
+      }
+      flats_raw_obj = flats_raw;
+    }
+
+    return py::make_tuple(costs, flats, touched_list, logps_arr, traces_obj,
+                          costs_raw_obj, flats_raw_obj);
   }
 
   /**
@@ -385,6 +419,7 @@ PYBIND11_MODULE(faco_tsp, m) {
       .def_property_readonly("is_stochastic", &PyMFACOTrace::get_is_stochastic)
       .def_property_readonly("pick_j", &PyMFACOTrace::get_pick_j)
       .def_property_readonly("valid_mask", &PyMFACOTrace::get_valid_mask)
+      .def_property_readonly("is_new_edge", &PyMFACOTrace::get_is_new_edge)
       .def_property_readonly("start_nodes", &PyMFACOTrace::get_start_nodes)
       .def_property_readonly("n_decisions", &PyMFACOTrace::n_decisions)
       .def_property_readonly("n_ants",

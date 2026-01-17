@@ -112,6 +112,8 @@ def replay_logp_from_cpp_batch_trace(traces, prob_sparse: torch.Tensor):
 
     return logp, ndec
 
+
+
 # --- Training Logic ---
 
 EPS = 1e-10
@@ -150,14 +152,14 @@ def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
         losses = 0
         for mini_t in range(args.mini_H):
             # 1) sample + trace from C++
-            costs, flats, _, logps_cpp, traces = aco.sample(require_prob=True, prior=heu_mat)
+            costs, flats, _, logps_cpp, traces, costs_raw, flats_raw = aco.sample(require_prob=True, prior=heu_mat)
             costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
 
             # 2) differentiable prob table for training
             prob_sparse = aco.prob_sparse_torch(prior=heu_mat)
             prob_sparse = prob_sparse.clamp_min(EPS)  # protects log()
 
-            logp_per_ant, _ = replay_logp_from_cpp_batch_trace(traces, prob_sparse)  # (n_ants,)
+            logp_per_ant, ndec_per_ant = replay_logp_from_cpp_batch_trace(traces, prob_sparse)  # (n_ants,)
 
             if args.debug:
                  # Check discrepancy between C++ log_probs and Python replayed log_probs
@@ -175,9 +177,10 @@ def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
             baseline = costs_t.mean()
             adv = (costs_t - baseline).detach()
 
-            loss = (adv * logp_per_ant).mean()
-            # loss.backward()
-            losses += loss
+            loss = (adv * logp_per_ant / ndec_per_ant).mean()
+            
+
+
 
             # 4) pheromone update (best ant this iter)
             best_idx = int(costs_t.argmin().item())
@@ -187,6 +190,7 @@ def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
             with torch.no_grad():
                 aco._update_pheromone_from_flat(flats[best_idx], best_cost_iter)
 
+            losses += loss
             avg_cost_last = float(costs_t.mean().item())
         losses.backward()
 
@@ -261,17 +265,18 @@ def main():
     parser.add_argument("--device", type=str, default="cuda:0", help="Device to use")
     
     # ACO Hyperparameters
-    parser.add_argument("--rho", type=float, default=0.1, help="Pheromone decay (rho)")
-    parser.add_argument("--min_new_edges", type=int, default=8, help="Min new edges")
-    parser.add_argument("--H", type=int, default=20, help="ACO steps per instance (H)")
-    parser.add_argument("--mini_H", type=int, default=10, help="ACO steps per iteration (mini_H)")
+    parser.add_argument("--rho", type=float, default=0.5, help="Pheromone decay (rho)")
+    parser.add_argument("--min_new_edges", type=int, default=16, help="Min new edges")
+    parser.add_argument("--H", type=int, default=10, help="ACO steps per instance (H)")
+    parser.add_argument("--mini_H", type=int, default=100, help="ACO steps per iteration (mini_H)")
     parser.add_argument("--disable_heuristic", action="store_true", help="Disable heuristic")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode (check log probabilities)")
     parser.add_argument("--no_local_search", action="store_true", help="Disable local search")
-    parser.add_argument("--no_smooth_mmas", action="store_true", help="Enable smooth MMAS")
+    parser.add_argument("--no_smooth_mmas", action="store_true", help="Disable smooth MMAS")
     parser.add_argument("--extend_ls", action="store_true", help="Extend LS checklist")
-    parser.add_argument("--no_normalized_heuristic", action="store_true", help="Normalize heuristic to [1/k, 1]")
-    parser.add_argument("--no_logit_net", action="store_true", help="Use logit network (no sigmoid) and log-space ACO")
+    parser.add_argument("--no_normalized_heuristic", action="store_true", help="Disable normalized heuristic")
+    parser.add_argument("--no_logit_net", action="store_true", help="Disable logit network (no sigmoid) and log-space ACO")
+
     
     # Logging / Saving
     parser.add_argument("--no_wandb", action="store_true", help="Enable WandB logging")
@@ -284,6 +289,7 @@ def main():
     parser.add_argument("--baseline_time_limit", type=float, default=10.0, help="LKH time limit per instance (seconds)")
     
     args = parser.parse_args()
+    
 
     # Setup
     PROJECT_ROOT = Path.cwd().resolve()
@@ -338,17 +344,17 @@ def main():
     
     # Validation before training
     dynamic = not args.no_dynamic_feats
-    avg_last, avg_aco_best, avg_gap = validation(args, -1, net, val_list, dynamic=dynamic, baseline_values=baseline_values)
+    # avg_last, avg_aco_best, avg_gap = validation(args, -1, net, val_list, dynamic=dynamic, baseline_values=baseline_values)
     
-    if not args.no_wandb:
-        log_dict = {
-            "val/avg_last": float(avg_last),
-            "val/avg_best": float(avg_aco_best),
-            "val/epoch": -1,
-        }
-        if baseline_values is not None:
-            log_dict["val/gap"] = float(avg_gap)
-        wandb.log(log_dict, step=0)
+    # if not args.no_wandb:
+    #     log_dict = {
+    #         "val/avg_last": float(avg_last),
+    #         "val/avg_best": float(avg_aco_best),
+    #         "val/epoch": -1,
+    #     }
+    #     if baseline_values is not None:
+    #         log_dict["val/gap"] = float(avg_gap)
+    #     wandb.log(log_dict, step=0)
 
     global_step = 0
     sum_time = 0

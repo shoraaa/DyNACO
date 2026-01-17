@@ -79,21 +79,21 @@ def main():
     # Model / Training
     parser.add_argument("--checkpoint", type=str, default="none", help="Checkpoint path or 'none'")
     parser.add_argument("--n_ants", type=int, default=100, help="Ants")
-    parser.add_argument("--H", type=int, default=20, help="H")
-    parser.add_argument("--mini_H", type=int, default=10, help="Mini H")
+    parser.add_argument("--H", type=int, default=10, help="H")
+    parser.add_argument("--mini_H", type=int, default=100, help="Mini H")
     
     parser.add_argument("--disable_heuristic", action="store_true", help="Disable heuristic")
     parser.add_argument("--no_local_search", action="store_true", help="Disable LS")
     parser.add_argument("--no_smooth_mmas", action="store_true", help="Smooth MMAS")
     parser.add_argument("--extend_ls", action="store_true", help="Extend LS")
-    parser.add_argument("--rho", type=float, default=0.1, help="Rho")
+    parser.add_argument("--rho", type=float, default=0.5, help="Rho")
     parser.add_argument("--min_new_edges", type=int, default=8, help="Min new edges")
     parser.add_argument("--no_normalized_heuristic", action="store_true", help="Normalize heuristic to [1/k, 1]")
     parser.add_argument("--no_logit_net", action="store_true", help="Use logit network (no sigmoid) and log-space ACO")
     
     # Baseline
     parser.add_argument("--baseline", type=str, choices=['none', 'hgs'], default='hgs', help="Baseline")
-    parser.add_argument("--baseline_time_limit", type=float, default=2.0, help="HGS time limit (s)")
+    parser.add_argument("--baseline_time_limit", type=float, default=0.2, help="HGS time limit (s)")
     
     parser.add_argument("--device", type=str, default="cuda:0", help="Device")
     parser.add_argument("--seed", type=int, default=1234, help="Seed")

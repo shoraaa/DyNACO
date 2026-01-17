@@ -108,6 +108,7 @@ struct MFACOTrace {
   std::vector<int16_t> pick_j; // index in nn_list row (or -1)
   std::vector<uint64_t>
       valid_mask; // bitmask over k candidates at decision time
+  std::vector<uint8_t> is_new_edge; // 1 if edge is not in source solution
 
   void clear() {
     start_node = -1;
@@ -116,6 +117,7 @@ struct MFACOTrace {
     is_stochastic.clear();
     pick_j.clear();
     valid_mask.clear();
+    is_new_edge.clear();
   }
 
   void reserve(size_t n) {
@@ -124,6 +126,7 @@ struct MFACOTrace {
     is_stochastic.reserve(n);
     pick_j.reserve(n);
     valid_mask.reserve(n);
+    is_new_edge.reserve(n);
   }
 };
 
@@ -140,6 +143,7 @@ struct MFACOTraceBatch {
   std::vector<int16_t> pick_j;        // length D, index in nn_list row (or -1)
   std::vector<uint64_t>
       valid_mask; // length D, bitmask over k candidates at decision time
+  std::vector<uint8_t> is_new_edge; // length D
   std::vector<int32_t> start_nodes; // length n_ants (start node per ant)
 
   void clear() {
@@ -149,6 +153,7 @@ struct MFACOTraceBatch {
     is_stochastic.clear();
     pick_j.clear();
     valid_mask.clear();
+    is_new_edge.clear();
     start_nodes.clear();
   }
 
@@ -159,6 +164,7 @@ struct MFACOTraceBatch {
     is_stochastic.reserve(max_decisions);
     pick_j.reserve(max_decisions);
     valid_mask.reserve(max_decisions);
+    is_new_edge.reserve(max_decisions);
     start_nodes.reserve(n_ants);
   }
 };
@@ -170,15 +176,20 @@ struct MFACOTraceBatch {
 struct SampleResult {
   std::vector<float> costs; // (n_ants,)
   std::vector<std::vector<int32_t>>
-      routes;               // (n_ants, n) - each route without repetition
-  MFACOTraceBatch traces;   // only populated if require_prob=true
-  std::vector<float> logps; // (n_ants,) log probability of sample
+      routes;                   // (n_ants, n) - each route without repetition
+  MFACOTraceBatch traces;       // only populated if require_prob=true
+  std::vector<float> logps;     // (n_ants,) log probability of sample
+  std::vector<float> costs_raw; // (n_ants,) cost before LS
+  std::vector<std::vector<int32_t>>
+      routes_raw; // (n_ants, n) - each route before LS
 
   void clear() {
     costs.clear();
     routes.clear();
     traces.clear();
     logps.clear();
+    costs_raw.clear();
+    routes_raw.clear();
   }
 };
 
@@ -360,8 +371,10 @@ private:
    */
   float sample_ant_traced(const float *probmat, // (n, k) precomputed weights
                           int32_t start_node, std::vector<int32_t> &route_out,
-                          std::vector<int32_t> &checklist, MFACOTrace &trace,
-                          Xoshiro128Plus &rng, float &logp_sum);
+                          std::vector<int32_t> &route_raw_out,
+                          float &cost_raw_out, std::vector<int32_t> &checklist,
+                          MFACOTrace &trace, Xoshiro128Plus &rng,
+                          float &logp_sum);
 
   /**
    * Select next node using roulette wheel on candidate list.

@@ -91,6 +91,13 @@ class MFACOTrace:
             raise AttributeError("Use get_trace(ant_idx) for per-ant access from batch trace")
         return self._trace.used_uniform_fallback
 
+    @property
+    def is_new_edge(self) -> List[bool]:
+        if self._is_cpp:
+            raise AttributeError("Use get_trace(ant_idx) for per-ant access from batch trace")
+        return self._trace.is_new_edge
+
+
 
 class MFACO_TSP:
     """
@@ -338,7 +345,7 @@ class MFACO_TSP:
         invtemp: float = 1.0,
         require_prob: bool = False,
         prior: np.ndarray = None,
-        parallel_traced: bool = False,
+        parallel_traced: bool = True,
     ):
         """
         Sample solutions from all ants.
@@ -350,9 +357,6 @@ class MFACO_TSP:
             logps_nondiff: None (placeholder)
             traces: list of MFACOTrace or MFACOTrace batch if require_prob else None
         """
-        if require_prob:
-            # Keep traced sampling deterministic.
-            parallel_traced = False
 
         # pybind expects a CPU numpy array (or None). Accept torch tensors
         # (including CUDA) and convert safely.
@@ -396,7 +400,7 @@ class MFACO_TSP:
                 )
             prior = arr
 
-        costs, flats, touched, logps, traces_raw = self._cpp.sample(
+        costs, flats, touched, logps, traces_raw, costs_raw, flats_raw = self._cpp.sample(
             invtemp, require_prob, prior, parallel_traced
         )
 
@@ -407,7 +411,7 @@ class MFACO_TSP:
         if require_prob and self.enable_torch_sync:
             self.sync_pheromone_to_torch()
         
-        return costs, flats, touched, logps, traces
+        return costs, flats, touched, logps, traces, costs_raw, flats_raw
     
     def _update_pheromone_from_flat(self, best_flat: np.ndarray, best_cost: float) -> None:
         """

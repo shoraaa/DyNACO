@@ -67,6 +67,10 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
   result.clear();
   result.costs.resize(n_ants);
   result.routes.resize(n_ants);
+  if (require_prob) {
+    result.costs_raw.resize(n_ants);
+    result.routes_raw.resize(n_ants);
+  }
 
   // Compute probability matrix: tau^alpha * eta * prior
   std::vector<float> probmat(n * k);
@@ -95,10 +99,10 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
   };
 
   if (require_prob) {
+    result.logps.resize(n_ants);
     if (!parallel_traced) {
       // Traced mode: single-threaded (original behavior)
       result.traces.reserve(n_ants, n * n_ants);
-      result.logps.resize(n_ants);
       result.traces.starts.push_back(0);
 
       std::vector<int32_t> checklist;
@@ -106,12 +110,14 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
 
       for (int32_t a = 0; a < n_ants; ++a) {
         result.routes[a].resize(n);
+        result.routes_raw[a].resize(n);
         MFACOTrace trace;
         trace.reserve(min_new_edges * 2);
 
         float logp_sum = 0.0f;
         float cost =
             sample_ant_traced(probmat.data(), start_nodes[a], result.routes[a],
+                              result.routes_raw[a], result.costs_raw[a],
                               checklist, trace, rng_, logp_sum);
 
         result.costs[a] = cost;
@@ -125,6 +131,7 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
           result.traces.is_stochastic.push_back(trace.is_stochastic[i]);
           result.traces.pick_j.push_back(trace.pick_j[i]);
           result.traces.valid_mask.push_back(trace.valid_mask[i]);
+          result.traces.is_new_edge.push_back(trace.is_new_edge[i]);
         }
         result.traces.starts.push_back(
             static_cast<int32_t>(result.traces.curr_nodes.size()));
@@ -142,15 +149,17 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
 #pragma omp for schedule(static, 1)
         for (int32_t a = 0; a < n_ants; ++a) {
           result.routes[a].resize(n);
+          result.routes_raw[a].resize(n);
           MFACOTrace &trace = traces_per_ant[static_cast<size_t>(a)];
           trace.reserve(min_new_edges * 2);
           Xoshiro128Plus rng_local;
           rng_local.seed(ant_seeds[static_cast<size_t>(a)]);
 
           float logp_sum = 0.0f;
-          result.costs[a] = sample_ant_traced(probmat.data(), start_nodes[a],
-                                              result.routes[a], checklist,
-                                              trace, rng_local, logp_sum);
+          result.costs[a] = sample_ant_traced(
+              probmat.data(), start_nodes[a], result.routes[a],
+              result.routes_raw[a], result.costs_raw[a], checklist, trace,
+              rng_local, logp_sum);
           result.logps[a] = logp_sum;
         }
       }
@@ -173,6 +182,7 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
       result.traces.is_stochastic.resize(static_cast<size_t>(total));
       result.traces.pick_j.resize(static_cast<size_t>(total));
       result.traces.valid_mask.resize(static_cast<size_t>(total));
+      result.traces.is_new_edge.resize(static_cast<size_t>(total));
 
       for (int32_t a = 0; a < n_ants; ++a) {
         const MFACOTrace &t = traces_per_ant[static_cast<size_t>(a)];
@@ -187,6 +197,8 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
           result.traces.pick_j[static_cast<size_t>(off) + i] = t.pick_j[i];
           result.traces.valid_mask[static_cast<size_t>(off) + i] =
               t.valid_mask[i];
+          result.traces.is_new_edge[static_cast<size_t>(off) + i] =
+              t.is_new_edge[i];
         }
       }
     }
@@ -641,6 +653,8 @@ float MFACO_TSP::sample_ant_fast(const float *probmat, int32_t start_node,
 
 float MFACO_TSP::sample_ant_traced(const float *probmat, int32_t start_node,
                                    std::vector<int32_t> &route_out,
+                                   std::vector<int32_t> &route_raw_out,
+                                   float &cost_raw_out,
                                    std::vector<int32_t> &checklist,
                                    MFACOTrace &trace, Xoshiro128Plus &rng,
                                    float &logp_sum) {
@@ -684,7 +698,10 @@ float MFACO_TSP::sample_ant_traced(const float *probmat, int32_t start_node,
     trace.valid_mask.push_back(valid_mask);
 
     // Check if this creates a new edge
-    if (!contains_edge(curr, chosen, positions)) {
+    bool is_new = !contains_edge(curr, chosen, positions);
+    trace.is_new_edge.push_back(is_new ? 1 : 0);
+
+    if (is_new) {
       ++new_edges;
       if (std::find(checklist.begin(), checklist.end(), curr) ==
           checklist.end()) {
@@ -708,6 +725,10 @@ float MFACO_TSP::sample_ant_traced(const float *probmat, int32_t start_node,
     ++visited_count;
     curr = chosen;
   }
+
+  // Capture raw results
+  route_raw_out = route;
+  cost_raw_out = get_route_cost(route);
 
   // Apply local search if enabled
   if (use_local_search && !checklist.empty()) {
