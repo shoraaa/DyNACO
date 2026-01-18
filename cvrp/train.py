@@ -275,7 +275,7 @@ def main():
     
     # ACO Hyperparameters
     parser.add_argument("--rho", type=float, default=0.5, help="Pheromone decay (rho)")
-    parser.add_argument("--min_new_edges", type=int, default=32, help="Min new edges")
+    parser.add_argument("--min_new_edges", type=int, default=16, help="Min new edges")
     parser.add_argument("--H", type=int, default=10, help="ACO iterations per instance (H)")
     parser.add_argument("--mini_H", type=int, default=100, help="ACO steps per iteration (mini_H)")
     parser.add_argument("--disable_heuristic", action="store_true", help="Disable heuristic")
