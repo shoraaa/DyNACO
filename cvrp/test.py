@@ -15,6 +15,51 @@ from faco import MFACO_CVRP
 from baselines import get_baseline_cvrp
 
 EPS = 1e-10
+DEMAND_SCALE = 100000
+
+def verify_solution(coords, demand, capacity, cost, route0):
+    """
+    route0: list or ndarray starting and ending with 0, e.g., [0, 1, 2, 0, 3, 0]
+    """
+    n = len(demand)
+    visited = set()
+    total_dist = 0.0
+    
+    cap_int = int(round(capacity * DEMAND_SCALE))
+    demand_int = [int(round(d * DEMAND_SCALE)) for d in demand]
+    
+    current_load_int = 0
+    for i in range(len(route0) - 1):
+        u, v = int(route0[i]), int(route0[i+1])
+        
+        # Distance
+        du = coords[u]
+        dv = coords[v]
+        d = np.sqrt(((du - dv)**2).sum())
+        total_dist += d
+        
+        if v == 0:
+            # End of a route
+            if current_load_int > cap_int:
+                raise ValueError(f"Capacity violation: {current_load_int/DEMAND_SCALE} > {capacity}")
+            current_load_int = 0
+        else:
+            # Customer
+            if v in visited:
+                raise ValueError(f"Node {v} visited more than once")
+            visited.add(v)
+            current_load_int += demand_int[v]
+            
+    # Check all customers visited
+    if len(visited) != n - 1:
+        missing = set(range(1, n)) - visited
+        raise ValueError(f"Missing customers: {missing}")
+    
+    # Check cost
+    if abs(total_dist - cost) > 1e-3:
+        raise ValueError(f"Cost mismatch: recalculated {total_dist:.6f} vs reported {cost:.6f}")
+
+    return True
 
 def infer_instance(model, coords, demand, capacity, k_sparse, n_ants, dynamic, args, use_heuristic_only=False):
     if model is not None:
@@ -43,21 +88,30 @@ def infer_instance(model, coords, demand, capacity, k_sparse, n_ants, dynamic, a
         normalized_heuristic=not args.no_normalized_heuristic,
     )
 
+    aco.reset_timings()
     best_seen = float("inf")
     avg_last = None
     H = args.H
 
     with torch.no_grad():
         for _ in range(H):
+            prior_mat = None
+            if model is not None and not use_heuristic_only:
+                pyg_data = build_pyg_data(aco, coords, demand, args.device, dynamic=dynamic)
+                heu_vec = model(pyg_data).view(-1)
+                prior_mat = heu_vec.view(aco.n, aco.k) + EPS
             for mini_t in range(args.mini_H):
-                prior_mat = None
-                if model is not None and not use_heuristic_only:
-                    pyg_data = build_pyg_data(aco, coords, demand, args.device, dynamic=dynamic)
-                    heu_vec = model(pyg_data).view(-1)
-                    prior_mat = heu_vec.view(aco.n, aco.k) + EPS
-
                 # Sample
-                costs_t, perms, _, _, _ = aco.sample(require_prob=False, prior=prior_mat)
+                return_decoded = getattr(args, 'verify', False)
+                costs_t, perms, decoded, _, _ = aco.sample(require_prob=False, prior=prior_mat, return_decoded=return_decoded)
+
+                if return_decoded:
+                    best_idx_t = int(costs_t.argmin().item())
+                    try:
+                        verify_solution(coords, demand, capacity, float(costs_t[best_idx_t]), decoded[best_idx_t])
+                    except ValueError as e:
+                        print(f"\n[DEBUG ERROR] Instance verification failed: {e}")
+                        sys.exit(1)
 
                 avg_last = float(costs_t.mean().item())
                 best_idx = int(costs_t.argmin().item())
@@ -67,7 +121,8 @@ def infer_instance(model, coords, demand, capacity, k_sparse, n_ants, dynamic, a
 
                 aco.update_pheromone(best_perm, best_cost)
 
-    return avg_last, best_seen
+    timings = aco.get_timings() if getattr(args, 'timed', False) else None
+    return avg_last, best_seen, timings
 
 def main():
     parser = argparse.ArgumentParser(description="MFACO CVRP Testing")
@@ -87,7 +142,7 @@ def main():
     parser.add_argument("--no_smooth_mmas", action="store_true", help="Smooth MMAS")
     parser.add_argument("--extend_ls", action="store_true", help="Extend LS")
     parser.add_argument("--rho", type=float, default=0.5, help="Rho")
-    parser.add_argument("--min_new_edges", type=int, default=8, help="Min new edges")
+    parser.add_argument("--min_new_edges", type=int, default=16, help="Min new edges")
     parser.add_argument("--no_normalized_heuristic", action="store_true", help="Normalize heuristic to [1/k, 1]")
     parser.add_argument("--no_logit_net", action="store_true", help="Use logit network (no sigmoid) and log-space ACO")
     
@@ -98,6 +153,8 @@ def main():
     parser.add_argument("--device", type=str, default="cuda:0", help="Device")
     parser.add_argument("--seed", type=int, default=1234, help="Seed")
     parser.add_argument("--no_dynamic_feats", action="store_true", help="No dyn feats")
+    parser.add_argument("--verify", action="store_true", help="Verify solution correctness")
+    parser.add_argument("--timed", action="store_true", help="Show performance timings")
 
     args = parser.parse_args()
     
@@ -165,6 +222,10 @@ def main():
     sum_base_gap = 0
     sum_model_gap = 0
     n_val = len(val_dataset)
+    
+    total_time_ant = 0.0
+    total_time_ls = 0.0
+    total_time_split = 0.0
 
     print("\nRunning Evaluation...")
     print(f"{'Idx':<5} {'Opt (HGS)':<10} {'Base MFACO':<12} {'Model MFACO':<12} {'Base Gap':<10} {'Model Gap':<10}")
@@ -175,12 +236,16 @@ def main():
         capacity = float(batch[2][0])
 
         # Base MFACO
-        _, base_best = infer_instance(None, coords, demand, capacity, args.k_sparse, args.n_ants, dynamic, args, use_heuristic_only=True)
-        
+        _, base_best, base_timings = infer_instance(None, coords, demand, capacity, args.k_sparse, args.n_ants, dynamic, args, use_heuristic_only=True)
+        if base_timings:
+            total_time_ant += base_timings["time_ant"]
+            total_time_ls += base_timings["time_ls"]
+            total_time_split += base_timings["time_split"]
+            
         # Model MFACO
         model_best = float("inf")
         if model is not None:
-             _, model_best = infer_instance(model, coords, demand, capacity, args.k_sparse, args.n_ants, dynamic, args, use_heuristic_only=False)
+             _, model_best, _ = infer_instance(model, coords, demand, capacity, args.k_sparse, args.n_ants, dynamic, args, use_heuristic_only=False)
         
         opt = float(baseline_values[i]) if baseline_values is not None else 0.0
         
@@ -213,6 +278,13 @@ def main():
         if baseline_values is not None:
             print(f"Model MFACO Avg Gap:  {avg_model_gap:.3f}%")
             
+    if args.timed:
+        print("\nPerformance Metrics (Avg per Instance):")
+        print(f"  Ant Construction: {total_time_ant / n_val:.6f}s")
+        print(f"  Local Search:     {total_time_ls / n_val:.6f}s")
+        print(f"  Split Algorithm:  {total_time_split / n_val:.6f}s")
+        print(f"  Total Per Instance: {(total_time_ant + total_time_ls + total_time_split) / n_val:.6f}s")
+
     print("="*60)
 
 if __name__ == "__main__":

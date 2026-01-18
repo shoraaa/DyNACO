@@ -1,0 +1,6 @@
+/home/shora/Research/old/NGFACO/data
+Loading validation dataset for n=20
+
+Running Evaluation...
+Idx   Opt (HGS)  Base MFACO   Model MFACO  Base Gap   Model Gap 
+  0%|          | 0/16 [00:00<?, ?it/s]

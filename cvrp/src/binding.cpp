@@ -118,6 +118,9 @@ public:
     return make_2d_view(solver->heuristic_data(), solver->n, solver->k);
   }
   py::array_t<int32_t> nn_pos() {
+    if (solver->nn_pos.empty()) {
+      return py::array_t<int32_t>(py::array::ShapeContainer({0, 0}));
+    }
     return make_2d_view(solver->nn_pos_data(), solver->n, solver->n);
   }
 
@@ -217,6 +220,16 @@ public:
     py::gil_scoped_release release;
     solver->update_pheromone(p, best_cost);
   }
+
+  void reset_timings() { solver->reset_timings(); }
+
+  py::dict get_timings() {
+    py::dict d;
+    d["time_ant"] = solver->time_ant;
+    d["time_ls"] = solver->time_ls;
+    d["time_split"] = solver->time_split;
+    return d;
+  }
 };
 
 PYBIND11_MODULE(faco_cvrp, m) {
@@ -274,6 +287,8 @@ PYBIND11_MODULE(faco_cvrp, m) {
       .def("sample", &PyMFACO_CVRP::sample, py::arg("require_prob") = false,
            py::arg("prior") = py::none(), py::arg("parallel_traced") = false,
            py::arg("return_decoded") = false)
-      .def("_update_pheromone_from_perm",
-           &PyMFACO_CVRP::update_pheromone_from_perm);
+      .def("update_pheromone_from_perm",
+           &PyMFACO_CVRP::update_pheromone_from_perm)
+      .def("reset_timings", &PyMFACO_CVRP::reset_timings)
+      .def("get_timings", &PyMFACO_CVRP::get_timings);
 }

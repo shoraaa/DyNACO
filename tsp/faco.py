@@ -169,12 +169,7 @@ class MFACO_TSP:
         if coords_np.ndim != 2 or coords_np.shape[1] != 2:
             raise ValueError(f"coords must have shape (n, 2), got {coords_np.shape}")
 
-        # Full distance matrix on CPU (float32) for fast numpy indexing in training.
-        diff = coords_np[:, None, :] - coords_np[None, :, :]
-        dist_np = np.sqrt(np.sum(diff * diff, axis=-1, dtype=np.float32), dtype=np.float32)
-
         self._coords_np = coords_np
-        self._dist_np = dist_np
 
         self._cpp = MFACO_TSP_CPP(
             coords_np,
@@ -205,7 +200,6 @@ class MFACO_TSP:
         
         # For compatibility, keep torch tensors for replay_logp (use private names)
         self._coords = coords_t
-        self._distances = torch.from_numpy(dist_np).to(device=device, dtype=torch.float32)
         self._pheromone_sparse = torch.from_numpy(self._cpp.pheromone_sparse_np.copy()).to(device)
         self._h_sparse_torch = torch.from_numpy(self._cpp.heuristic_sparse_np.copy()).to(device)
         self._nn_torch = torch.from_numpy(self._cpp.nn_list.copy()).to(device).long()

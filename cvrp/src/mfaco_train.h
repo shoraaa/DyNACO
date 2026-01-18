@@ -12,8 +12,9 @@ namespace mfaco {
 // ============================================================================
 
 static constexpr uint32_t MAX_CAND_LIST_SIZE = 64;
-static constexpr float EPS = 1e-12f;
-static constexpr float LOG_EPS = 1e-12f;
+static constexpr float EPS = 1e-8f;
+static constexpr float LOG_EPS = 1e-8f;
+static constexpr int64_t DEMAND_SCALE = 100000;
 
 // Distance types supported by this MFACO training backend.
 // NOTE: spelling kept as requested.
@@ -186,12 +187,15 @@ public:
   bool disable_heuristic;
 
   float capacity;
+  int64_t capacity_int;
 
   // -------------------------
   // State
   // -------------------------
-  std::vector<float> coords; // (n,2)
-  std::vector<float> demand; // (n,) demand[0]=0
+  std::vector<float> coords;       // (n,2)
+  std::vector<float> demand;       // (n,) demand[0]=0
+  std::vector<int64_t> demand_int; // (n,) scaled/rounded
+  std::vector<float> d0;           // (n,) dist to depot (precomputed)
 
   std::vector<int32_t> nn_list;        // (n,k)
   std::vector<int32_t> backup_list;    // (n,bl)
@@ -211,6 +215,11 @@ public:
   float source_cost = 0.0f;
   float best_cost = 0.0f;
 
+  // Timings (seconds)
+  double time_ant = 0.0;
+  double time_ls = 0.0;
+  double time_split = 0.0;
+
   // RNG
   Xoshiro128Plus rng_;
 
@@ -226,6 +235,8 @@ public:
 
   void sample(bool require_prob, const float *prior_ptr, SampleResult &result,
               bool parallel_traced);
+
+  void reset_timings();
 
   // Update pheromone with best permutation (length m) and its CVRP cost
   void update_pheromone(const int32_t *best_perm_ptr, float new_best_cost);
@@ -249,6 +260,7 @@ private:
   void build_nn_lists();
   void build_nn_pos();
   void build_heuristic();
+  void build_d0();
   void build_initial_perm();
 
   // ---- probability mat on sparse graph (n,k) ----
@@ -292,6 +304,7 @@ private:
         segs; // inclusive [i,j] on perm indices
   };
   SplitResult split_dp(const std::vector<int32_t> &perm) const;
+  float split_cost_fast(const std::vector<int32_t> &perm) const;
 
   // pheromone bounds
   std::pair<float, float> calc_trail_limits_cl(float solution_cost) const;

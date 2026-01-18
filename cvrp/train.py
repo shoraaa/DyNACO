@@ -146,12 +146,10 @@ def train_instance(model, optimizer, coords, demand, capacity, k_sparse, n_ants,
     H = args.H
 
     for t in tqdm(range(H), desc="ACO Step", leave=False):
+        pyg_data = build_pyg_data(aco, coords, demand, args.device, dynamic=dynamic)
+        heu_vec = model(pyg_data).view(-1)
+        prior_mat = heu_vec.view(aco.n, aco.k) + EPS
         for mini_t in range(args.mini_H):
-            pyg_data = build_pyg_data(aco, coords, demand, args.device, dynamic=dynamic)
-
-            heu_vec = model(pyg_data).view(-1)
-            prior_mat = heu_vec.view(aco.n, aco.k) + EPS
-
             # 1) sample + trace from C++
             costs_t, perms, _, logps_cpp, traces = aco.sample(require_prob=True, prior=prior_mat)
             
@@ -234,11 +232,11 @@ def validation(args, epoch, net, val_dataset, dynamic=True, baseline_values=None
     
     for batch in tqdm(loader, desc="Validation", leave=False):
         # Batch size 1, unpack
-        coords = batch[0][0].numpy()
-        demand = batch[1][0].numpy()
+        coords = batch[0][0]
+        demand = batch[1][0]
         capacity = float(batch[2][0])
         
-        avg_last, best_seen = infer_instance(net, coords, demand, capacity, args.k_sparse, args.n_ants, dynamic, args)
+        avg_last, best_seen, timing = infer_instance(net, coords, demand, capacity, args.k_sparse, args.n_ants, dynamic, args)
         sum_sample_best += avg_last
         sum_aco_best += best_seen
         
@@ -269,17 +267,17 @@ def main():
     
     # Model / Training
     parser.add_argument("--n_ants", type=int, default=100, help="Number of ants")
-    parser.add_argument("--steps_per_epoch", type=int, default=64, help="Steps per epoch")
-    parser.add_argument("--epochs", type=int, default=10, help="Total epochs")
+    parser.add_argument("--steps_per_epoch", type=int, default=32, help="Steps per epoch")
+    parser.add_argument("--epochs", type=int, default=20, help="Total epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--seed", type=int, default=1234, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda:0", help="Device to use")
     
     # ACO Hyperparameters
-    parser.add_argument("--rho", type=float, default=0.1, help="Pheromone decay (rho)")
+    parser.add_argument("--rho", type=float, default=0.5, help="Pheromone decay (rho)")
     parser.add_argument("--min_new_edges", type=int, default=32, help="Min new edges")
-    parser.add_argument("--H", type=int, default=20, help="ACO iterations per instance (H)")
-    parser.add_argument("--mini_H", type=int, default=10, help="ACO steps per iteration (mini_H)")
+    parser.add_argument("--H", type=int, default=10, help="ACO iterations per instance (H)")
+    parser.add_argument("--mini_H", type=int, default=100, help="ACO steps per iteration (mini_H)")
     parser.add_argument("--disable_heuristic", action="store_true", help="Disable heuristic")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode (check log probabilities)")
     parser.add_argument("--no_local_search", action="store_true", help="Disable local search")

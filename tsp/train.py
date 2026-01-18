@@ -176,11 +176,7 @@ def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
             # 3) REINFORCE loss (baseline = mean in batch)
             baseline = costs_t.mean()
             adv = (costs_t - baseline).detach()
-
-            loss = (adv * logp_per_ant / ndec_per_ant).mean()
-            
-
-
+            loss = (adv * logp_per_ant).mean()
 
             # 4) pheromone update (best ant this iter)
             best_idx = int(costs_t.argmin().item())

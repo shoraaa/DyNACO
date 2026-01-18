@@ -133,9 +133,15 @@ class MFACO_CVRP:
         best_cost: scalar float (CVRP cost)
         """
         p = _as_numpy_i32(best_perm)
-        self.solver._update_pheromone_from_perm(p, float(best_cost))
+        self.solver.update_pheromone_from_perm(p, float(best_cost))
         if self.enable_torch_sync:
             self.sync_pheromone_to_torch()
+
+    def reset_timings(self):
+        self.solver.reset_timings()
+
+    def get_timings(self):
+        return self.solver.get_timings()
 
     def sync_pheromone_to_torch(self):
         """Sync numpy pheromone to torch tensor."""

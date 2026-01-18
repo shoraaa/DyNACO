@@ -2,6 +2,7 @@
 #include "mfaco_train.h"
 #include "kd_tree.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath> // Include cmath for std::pow, std::abs
 #include <cstring>
 #include <limits>
@@ -9,12 +10,6 @@
 #include <stdexcept>
 
 namespace mfaco {
-
-// You already have EPS / MAX_CAND_LIST_SIZE in your project.
-// If not, define them appropriately.
-#ifndef EPS
-#define EPS 1e-12f
-#endif
 
 MFACO_CVRP::MFACO_CVRP(const float *coords_ptr, const float *demand_ptr,
                        int32_t n_, float capacity_, int32_t n_ants_,
@@ -36,6 +31,7 @@ MFACO_CVRP::MFACO_CVRP(const float *coords_ptr, const float *demand_ptr,
     throw std::runtime_error("n must be >= 2 (depot + at least one customer)");
   if (capacity <= 0)
     throw std::runtime_error("capacity must be > 0");
+  capacity_int = (int64_t)std::round(capacity * DEMAND_SCALE);
 
   coords.resize(static_cast<size_t>(n) * 2);
   std::memcpy(coords.data(), coords_ptr,
@@ -46,9 +42,16 @@ MFACO_CVRP::MFACO_CVRP(const float *coords_ptr, const float *demand_ptr,
               sizeof(float) * static_cast<size_t>(n));
   demand[0] = 0.0f; // enforce
 
+  demand_int.resize(n);
+  for (int32_t i = 0; i < n; ++i) {
+    demand_int[i] = (int64_t)std::round(demand[i] * DEMAND_SCALE);
+  }
+
   build_nn_lists();
-  build_nn_pos();
+  if (!smooth_mmas)
+    build_nn_pos();
   build_heuristic();
+  build_d0();
 
   source_perm.resize(m);
   best_perm.resize(m);
@@ -66,6 +69,12 @@ MFACO_CVRP::MFACO_CVRP(const float *coords_ptr, const float *demand_ptr,
 }
 
 void MFACO_CVRP::seed_rng(uint64_t seed) { rng_.seed(seed); }
+
+void MFACO_CVRP::reset_timings() {
+  time_ant = 0.0;
+  time_ls = 0.0;
+  time_split = 0.0;
+}
 
 // -------------------- distance --------------------
 float MFACO_CVRP::dist(int32_t u, int32_t v) const {
@@ -142,6 +151,13 @@ void MFACO_CVRP::build_heuristic() {
   }
 }
 
+void MFACO_CVRP::build_d0() {
+  d0.resize(n);
+  for (int32_t v = 0; v < n; ++v) {
+    d0[v] = dist(0, v);
+  }
+}
+
 // -------------------- initial perm (greedy NN on customers, score by split)
 // --------------------
 void MFACO_CVRP::build_initial_perm() {
@@ -187,7 +203,7 @@ void MFACO_CVRP::build_initial_perm() {
       visited[nxt] = 1;
     }
 
-    float cost = split_dp(perm).cost;
+    float cost = split_cost_fast(perm);
     if (cost < best) {
       best = cost;
       best_p = perm;
@@ -204,8 +220,6 @@ void MFACO_CVRP::build_initial_perm() {
     source_positions[source_perm[i]] = i;
 }
 
-// -------------------- split DP: permutation -> optimal route partition
-// --------------------
 MFACO_CVRP::SplitResult
 MFACO_CVRP::split_dp(const std::vector<int32_t> &perm) const {
   const int32_t M = (int32_t)perm.size();
@@ -217,64 +231,200 @@ MFACO_CVRP::split_dp(const std::vector<int32_t> &perm) const {
     return r;
   }
 
-  std::vector<float> pref_d(M + 1, 0.0f);
-  for (int32_t i = 0; i < M; ++i)
-    pref_d[i + 1] = pref_d[i] + demand[perm[i]];
-
-  std::vector<float> pref_e(M, 0.0f);
-  for (int32_t i = 1; i < M; ++i)
-    pref_e[i] = pref_e[i - 1] + dist(perm[i - 1], perm[i]);
-
-  auto seg_load = [&](int32_t i, int32_t j) {
-    return pref_d[j + 1] - pref_d[i];
-  };
-  auto seg_cost = [&](int32_t i, int32_t j) {
-    float internal = (i == j) ? 0.0f : (pref_e[j] - pref_e[i]);
-    return dist(0, perm[i]) + internal + dist(perm[j], 0);
-  };
-
-  const float INF = 1e30f;
-  std::vector<float> dp(M + 1, INF);
+  // Need prev pointers for backtracking
   std::vector<int32_t> prev(M + 1, -1);
+  std::vector<float> dp(M + 1, 1e30f);
+
+  std::vector<int64_t> P_load(M + 1, 0);
+  std::vector<float> P_dist(M + 1, 0.0f);
+  std::vector<float> D0(M, 0.0f);
+
+  // 1. Precompute
+  P_load[0] = 0;
+  P_dist[0] = 0;
+  D0[0] = d0[perm[0]];
+  for (int i = 0; i < M - 1; ++i) {
+    P_load[i + 1] = P_load[i] + demand_int[perm[i]];
+    P_dist[i + 1] = P_dist[i] + dist(perm[i], perm[i + 1]);
+    D0[i + 1] = d0[perm[i + 1]];
+  }
+  P_load[M] = P_load[M - 1] + demand_int[perm[M - 1]];
+
+  // 2. Monotonic Deque DP
+  std::vector<int32_t> dq(M + 1);
+  int head = 0, tail = 0;
+
   dp[0] = 0.0f;
 
-  for (int32_t t = 1; t <= M; ++t) {
-    int32_t j = t - 1;
-    float bestv = INF;
-    int32_t besti = -1;
-    for (int32_t i = 0; i < t; ++i) {
-      if (seg_load(i, j) <= capacity + 1e-12f) {
-        float v = dp[i] + seg_cost(i, j);
-        if (v < bestv) {
-          bestv = v;
-          besti = i;
+  // Push i=0
+  dq[tail++] = 0;
+
+  for (int j = 1; j <= M; ++j) {
+    int64_t limit = P_load[j] - capacity_int;
+
+    // Pop front (capacity)
+    while (head < tail && P_load[dq[head]] < limit) {
+      head++;
+    }
+
+    if (head < tail) {
+      int best_i = dq[head];
+      float val_i = dp[best_i] + D0[best_i] - P_dist[best_i];
+      float const_j =
+          P_dist[j - 1] + D0[j - 1]; // D0[j-1] is dist(perm[j-1], 0)
+
+      dp[j] = val_i + const_j;
+      prev[j] = best_i;
+    }
+
+    // Push j as candidate i for next steps
+    if (j < M) {
+      float val_j = dp[j] + D0[j] - P_dist[j];
+      while (head < tail) {
+        int back_i = dq[tail - 1];
+        float val_back = dp[back_i] + D0[back_i] - P_dist[back_i];
+        if (val_back >= val_j)
+          tail--;
+        else
+          break;
+      }
+      dq[tail++] = j;
+    }
+  }
+
+  // Backtrack (same as before)
+  r.cost = dp[M];
+  int32_t curr = M;
+  while (curr > 0) {
+    int32_t p = prev[curr];
+    if (p < 0)
+      break; // Should not happen
+    r.segs.push_back({p, curr - 1});
+    curr = p;
+  }
+  std::reverse(r.segs.begin(), r.segs.end());
+  return r;
+}
+
+// -------------------- split_cost_fast Optimized (O(N)) --------------------
+float MFACO_CVRP::split_cost_fast(const std::vector<int32_t> &perm) const {
+  const int32_t M = (int32_t)perm.size();
+  if (M == 0)
+    return 0.0f;
+
+  // Use thread_local buffers to avoid allocations in the hot path
+  // We need sizes relative to M (max N)
+  // Re-using capacity from n is safe as M < n
+  thread_local std::vector<float> dp;
+  thread_local std::vector<int64_t> cum_load;
+  thread_local std::vector<float> cum_dist;
+  thread_local std::vector<float> d0_vec;
+  thread_local std::vector<int32_t> deque_idx; // Acts as our monotonic queue
+
+  // Ensure sizes
+  if (dp.size() <= (size_t)M) {
+    size_t sz = (size_t)n + 2; // +2 for safety margins
+    dp.resize(sz);
+    cum_load.resize(sz);
+    cum_dist.resize(sz);
+    d0_vec.resize(sz);
+    deque_idx.resize(sz);
+  }
+
+  // 1. Gather Data & Compute Prefix Sums (O(M))
+  // This helps cache locality significantly compared to random access in the
+  // loop
+  cum_load[0] = 0;
+  cum_dist[0] = 0.0f;
+
+  // Prefetch first d0
+  d0_vec[0] = d0[perm[0]];
+
+  for (int32_t i = 0; i < M - 1; ++i) {
+    int32_t u = perm[i];
+    int32_t v = perm[i + 1];
+
+    cum_load[i + 1] = cum_load[i] + demand_int[u];
+
+    // dist calculation might be expensive, doing it linearly here is better for
+    // CPU pipelines
+    float d = dist(u, v);
+    cum_dist[i + 1] = cum_dist[i] + d;
+
+    d0_vec[i + 1] = d0[v];
+  }
+  // Handle last element load
+  cum_load[M] = cum_load[M - 1] + demand_int[perm[M - 1]];
+
+  // 2. Linear DP with Monotonic Deque (O(M))
+  // We perform the DP where 'i' is the split point (start of new route)
+  // and 'j' is the current end point.
+  // Equation: DP[j] = min(Val(i)) + Const(j)
+  // Val(i) = DP[i] + d0[perm[i]] - cum_dist[i]
+
+  dp[0] = 0.0f;
+
+  int32_t dq_head = 0;
+  int32_t dq_tail = 0;
+
+  // Initialize deque with i=0
+  // Val(0) = dp[0] + d0[perm[0]] - cum_dist[0] = 0 + d0_vec[0] - 0
+  float val_0 = d0_vec[0];
+  deque_idx[0] = 0;
+  dq_tail++;
+
+  for (int32_t j = 1; j <= M; ++j) {
+    // A. Remove indices from head that violate capacity constraint
+    // We need cum_load[j] - cum_load[i] <= capacity
+    // => cum_load[i] >= cum_load[j] - capacity
+    int64_t min_load = cum_load[j] - capacity_int;
+
+    while (dq_head < dq_tail && cum_load[deque_idx[dq_head]] < min_load) {
+      dq_head++;
+    }
+
+    // If deque is empty here, it means the single customer j exceeds capacity
+    // alone (Should not happen in valid instances, but safety check)
+    if (dq_head == dq_tail) {
+      // Fallback or large cost
+      dp[j] = 1e30f;
+    } else {
+      // B. Get best i from head
+      int32_t best_i = deque_idx[dq_head];
+
+      // Calculate DP[j]
+      // Cost term dependent on j: cum_dist[j-1] + d0[perm[j-1]]
+      // Note: cum_dist is aligned such that cum_dist[i] is sum of edges up to
+      // perm[i] path(i..j-1) distance is cum_dist[j-1] - cum_dist[i]
+
+      // Re-eval Value(best_i) to be safe or store it? Re-calc is cheap.
+      float best_val = dp[best_i] + d0_vec[best_i] - cum_dist[best_i];
+      float const_j = cum_dist[j - 1] + d0_vec[j - 1];
+
+      dp[j] = best_val + const_j;
+    }
+
+    // C. Prepare to push current j as a candidate for future steps (as split
+    // point i)
+    if (j < M) {
+      float new_val = dp[j] + d0_vec[j] - cum_dist[j];
+
+      // Maintain monotonicity (increasing value in deque)
+      // While back of deque has Value >= new_val, pop back
+      while (dq_tail > dq_head) {
+        int32_t back_i = deque_idx[dq_tail - 1];
+        float back_val = dp[back_i] + d0_vec[back_i] - cum_dist[back_i];
+        if (back_val >= new_val) {
+          dq_tail--;
+        } else {
+          break;
         }
       }
+      deque_idx[dq_tail++] = j;
     }
-    dp[t] = bestv;
-    prev[t] = besti;
   }
 
-  // backtrack
-  std::vector<std::pair<int32_t, int32_t>> segs;
-  int32_t t = M;
-  while (t > 0) {
-    int32_t i = prev[t];
-    if (i < 0) {
-      // infeasible permutation given capacity (should not happen if instance
-      // feasible)
-      r.cost = dp[M];
-      r.segs.clear();
-      return r;
-    }
-    segs.push_back({i, t - 1});
-    t = i;
-  }
-  std::reverse(segs.begin(), segs.end());
-
-  r.cost = dp[M];
-  r.segs = std::move(segs);
-  return r;
+  return dp[M];
 }
 
 void MFACO_CVRP::decode_perm_to_route0(const int32_t *perm_ptr,
@@ -703,6 +853,7 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
   int32_t new_edges = 0;
   int32_t curr = start_node;
 
+  auto t1 = std::chrono::high_resolution_clock::now();
   while (new_edges < min_new_edges && visited_count < m) {
     int16_t pick_j = -1;
     uint64_t valid_mask = 0;
@@ -729,13 +880,29 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
     ++visited_count;
     curr = chosen;
   }
+  auto t2 = std::chrono::high_resolution_clock::now();
 
   if (use_local_search && !checklist.empty()) {
     two_opt_nn(perm, positions, checklist);
   }
+  auto t3 = std::chrono::high_resolution_clock::now();
 
   perm_out = perm;
-  return split_dp(perm).cost;
+  float cost = split_cost_fast(perm);
+  auto t4 = std::chrono::high_resolution_clock::now();
+
+  double d_ant = std::chrono::duration<double>(t2 - t1).count();
+  double d_ls = std::chrono::duration<double>(t3 - t2).count();
+  double d_split = std::chrono::duration<double>(t4 - t3).count();
+
+#pragma omp atomic
+  time_ant += d_ant;
+#pragma omp atomic
+  time_ls += d_ls;
+#pragma omp atomic
+  time_split += d_split;
+
+  return cost;
 }
 
 float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
@@ -763,6 +930,7 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
   int32_t curr = start_node;
   logp_sum = 0.0f;
 
+  auto t1 = std::chrono::high_resolution_clock::now();
   while (new_edges < min_new_edges && visited_count < m) {
     int16_t pick_j = -1;
     uint64_t valid_mask = 0;
@@ -799,13 +967,29 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
     ++visited_count;
     curr = chosen;
   }
+  auto t2 = std::chrono::high_resolution_clock::now();
 
   if (use_local_search && !checklist.empty()) {
     two_opt_nn(perm, positions, checklist);
   }
+  auto t3 = std::chrono::high_resolution_clock::now();
 
   perm_out = perm;
-  return split_dp(perm).cost;
+  float cost = split_cost_fast(perm);
+  auto t4 = std::chrono::high_resolution_clock::now();
+
+  double d_ant = std::chrono::duration<double>(t2 - t1).count();
+  double d_ls = std::chrono::duration<double>(t3 - t2).count();
+  double d_split = std::chrono::duration<double>(t4 - t3).count();
+
+#pragma omp atomic
+  time_ant += d_ant;
+#pragma omp atomic
+  time_ls += d_ls;
+#pragma omp atomic
+  time_split += d_split;
+
+  return cost;
 }
 
 void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
@@ -945,18 +1129,21 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
 
 // -------------------- update pheromone: deposit on decoded VRP edges
 // --------------------
-void MFACO_CVRP::update_pheromone(const int32_t *best_perm_ptr,
-                                  float new_best_cost) {
-  if (new_best_cost < best_cost) {
-    best_cost = new_best_cost;
-    std::copy(best_perm_ptr, best_perm_ptr + m, best_perm.begin());
+void MFACO_CVRP::update_pheromone(const int32_t *iter_best_perm_ptr,
+                                  float iter_best_cost) {
+  // 1) Update global best-so-far
+  if (iter_best_cost < best_cost) {
+    best_cost = iter_best_cost;
+    std::copy(iter_best_perm_ptr, iter_best_perm_ptr + m, best_perm.begin());
   }
 
+  // 2) Trail limits typically based on global best-so-far (MMAS)
   auto [tmin, tmax] = smooth_mmas ? calc_trail_limits_smooth(best_cost)
                                   : calc_trail_limits_cl(best_cost);
   tau_min = tmin;
   tau_max = tmax;
 
+  // 3) Evaporate
   if (!smooth_mmas) {
     float decay_factor = 1.0f - rho;
     for (int32_t i = 0; i < n * k; ++i) {
@@ -965,11 +1152,10 @@ void MFACO_CVRP::update_pheromone(const int32_t *best_perm_ptr,
           std::max(tau_min, std::min(tau_max, pheromone_sparse[i]));
     }
 
-    // Decode segments for deposit
-    std::vector<int32_t> perm(best_perm.begin(), best_perm.end());
+    // 4) Deposit ON ITERATION BEST (consistent with deposit magnitude)
+    std::vector<int32_t> perm(iter_best_perm_ptr, iter_best_perm_ptr + m);
     auto sp = split_dp(perm);
-
-    float deposit = 1.0f / (new_best_cost + EPS);
+    float deposit = 1.0f / (iter_best_cost + EPS);
 
     // Deposit depot edges + within-segment edges
     for (auto [i, j] : sp.segs) {
@@ -1016,16 +1202,16 @@ void MFACO_CVRP::update_pheromone(const int32_t *best_perm_ptr,
     }
   } else {
     // Smooth-MMAS
-    std::vector<int32_t> perm(best_perm.begin(), best_perm.end());
+    std::vector<int32_t> perm(iter_best_perm_ptr, iter_best_perm_ptr + m);
     auto sp = split_dp(perm);
 
     // Identify edges in the best solution
     // Since n is small (up to 2000-5000), we can use a dense adjacency matrix
     // or vector of vectors. Or since we only iterate n*k edges in sparse
-    // matrix, we can just check existence. Building a hash set or sorted vector
-    // for fast lookup is better. Given sparse graph, maybe just marking nodes?
-    // No, edges. Let's use `std::vector<std::vector<int32_t>> adj(n)` just for
-    // the solution edges.
+    // matrix, we can just check existence. Building a hash set or sorted
+    // vector for fast lookup is better. Given sparse graph, maybe just
+    // marking nodes? No, edges. Let's use `std::vector<std::vector<int32_t>>
+    // adj(n)` just for the solution edges.
 
     std::vector<std::vector<int32_t>> sol_adj(n);
     auto add_edge = [&](int32_t u, int32_t v) {
@@ -1065,9 +1251,9 @@ void MFACO_CVRP::update_pheromone(const int32_t *best_perm_ptr,
     }
   }
 
-  // Update source
-  source_perm = best_perm;
-  source_cost = new_best_cost;
+  // Update source for next iteration to iteration best
+  source_perm.assign(iter_best_perm_ptr, iter_best_perm_ptr + m);
+  source_cost = iter_best_cost;
 
   std::fill(source_positions.begin(), source_positions.end(), -1);
   for (int32_t i = 0; i < m; ++i)

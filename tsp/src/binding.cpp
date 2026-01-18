@@ -191,6 +191,9 @@ public:
   }
 
   py::array_t<int32_t> get_nn_pos() {
+    if (solver->nn_pos.empty()) {
+      return py::array_t<int32_t>(py::array::ShapeContainer({0, 0}));
+    }
     return make_2d_view(solver->nn_pos_data(), solver->n, solver->n);
   }
 

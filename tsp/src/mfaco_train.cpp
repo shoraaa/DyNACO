@@ -36,7 +36,8 @@ MFACO_TSP::MFACO_TSP(const float *coords_ptr, int32_t n_, int32_t n_ants_,
 
   // Build nearest neighbor lists
   build_nn_lists();
-  build_nn_pos();
+  if (!smooth_mmas)
+    build_nn_pos();
   build_heuristic();
 
   // Initialize source/best solutions
@@ -330,8 +331,9 @@ void MFACO_TSP::load_snapshot(const float *pheromone_ptr,
     std::copy(backup_list_ptr, backup_list_ptr + n * bl, backup_list.begin());
   }
 
-  // Rebuild nn_pos from nn_list
-  build_nn_pos();
+  // Rebuild nn_pos from nn_list if needed
+  if (!smooth_mmas)
+    build_nn_pos();
 
   // Rebuild heuristic (in case nn_list changed)
   build_heuristic();

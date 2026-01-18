@@ -49,7 +49,7 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 
-def build_pyg_data(aco, coords, device, dynamic: bool):
+def build_pyg_data_6feats(aco, coords, device, dynamic: bool):
     """
     Node features:
       x: coords (n,2)
@@ -132,20 +132,23 @@ def build_pyg_data(aco, coords, device, dynamic: bool):
     )
 
     return Data(x=coords, edge_index=edge_index, edge_attr=edge_attr)
+import numpy as np
+import torch
+from torch_geometric.data import Data
 
-def build_pyg_data_split(aco, coords, device, dynamic: bool, in_iter_best_mask=None):
-    """
-    Returns Data with:
-      x: (n,2)
-      edge_index: (2,E) E=n*k
-      edge_attr_static: (E,2)  [dist_norm, rank_norm]
-      edge_attr_dyn:    (E,6)  [tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge, in_iter_best]
-    """
+EPS = 1e-12
 
+def build_pyg_data(aco, coords, device, dynamic: bool):
+    """
+    Node features:
+      x: coords (n,2)
+    """
+    # coords -> torch
     if isinstance(coords, np.ndarray):
         coords = torch.from_numpy(coords)
     coords = coords.to(device=device, dtype=torch.float32)  # (n,2)
 
+    # candidate graph
     nn = aco.nn_torch.to(device=device, dtype=torch.long)   # (n,k)
     n, k = nn.shape
     E = n * k
@@ -154,60 +157,29 @@ def build_pyg_data_split(aco, coords, device, dynamic: bool, in_iter_best_mask=N
     dst = nn.reshape(-1)                                                         # (E,)
     edge_index = torch.stack([src, dst], dim=0)                                   # (2,E)
 
-    # --- static 0) dist_norm ---
-    dist = torch.norm(coords[src] - coords[dst], dim=1).view(n, k)                # (n,k)
-    dist_mean = dist.mean(dim=1, keepdim=True).clamp_min(1e-12)
-    dist_norm = (dist / dist_mean).view(E, 1)
+    dist = torch.norm(coords[src] - coords[dst], dim=1).view(n, k).clamp_min(1e-12)
+    log_dist = torch.log(dist).view(E, 1)  # (E,1)
 
-    # --- static 1) rank_norm ---
-    # candidate list rank: 0..k-1
-    if k > 1:
-        rank = torch.arange(k, device=device, dtype=torch.float32) / (k - 1)
-    else:
-        rank = torch.zeros((k,), device=device, dtype=torch.float32)
-    rank_norm = rank.repeat(n).view(E, 1)  # (E,1)
-
-    edge_attr_static = torch.cat([dist_norm, rank_norm], dim=1)  # (E,2)
-
-    # --- dynamic pheromone features ---
     if dynamic:
+        # --- feature 0: log_tau_rel ---
         tau = aco.pheromone_sparse.detach().to(device=device, dtype=torch.float32)  # (n,k)
-        tau_mean = tau.mean(dim=1, keepdim=True).clamp_min(1e-12)
-        tau_rel = (tau / tau_mean).clamp_min(1e-12)
-        log_tau_rel = torch.log(tau_rel).clamp(-5.0, 5.0).view(E, 1)
+        log_tau = torch.log(tau).view(E, 1)                  # (n,k)
 
-        tau_std = tau.std(dim=1, keepdim=True)
-        tau_cv  = (tau_std / tau_mean).clamp(0, 10)           # (n,1)
-        tau_cv_e = tau_cv.repeat_interleave(k, dim=0)         # (E,1)
+        # --- feature 1: in_source_tour (undirected adjacency) ---
+        sr = torch.as_tensor(np.asarray(aco.source_route), device=device, dtype=torch.long)  # (n,)
+        pos = torch.empty((n,), device=device, dtype=torch.long)
+        pos[sr] = torch.arange(n, device=device, dtype=torch.long)
+
+        duv = (pos[src] - pos[dst]).abs()
+        in_source_tour = ((duv == 1) | (duv == (n - 1))).to(torch.float32).view(E, 1)
+
     else:
-        log_tau_rel = torch.zeros((E, 1), device=device, dtype=torch.float32)
-        tau_cv_e    = torch.zeros((E, 1), device=device, dtype=torch.float32)
+        log_tau = torch.zeros((E, 1), device=device, dtype=torch.float32)
+        in_source_tour = torch.zeros((E, 1), device=device, dtype=torch.float32)
 
-    # --- source tour features (treat as dynamic unless you're sure source_route is fixed) ---
-    sr = torch.as_tensor(np.asarray(aco.source_route), device=device, dtype=torch.long)  # (n,)
+    edge_attr = torch.cat([log_dist, log_tau, in_source_tour], dim=1)  # (E,3)
 
-    succ = torch.empty((n,), device=device, dtype=torch.long)
-    pred = torch.empty((n,), device=device, dtype=torch.long)
-    succ[sr] = torch.roll(sr, shifts=-1)
-    pred[sr] = torch.roll(sr, shifts=+1)
-
-    is_source_succ = (dst == succ[src]).to(torch.float32).view(E, 1)
-    is_source_pred = (dst == pred[src]).to(torch.float32).view(E, 1)
-
-    pos = torch.empty((n,), device=device, dtype=torch.long)
-    pos[sr] = torch.arange(n, device=device, dtype=torch.long)
-    duv = (pos[src] - pos[dst]).abs()
-    undirected_adj = (duv == 1) | (duv == (n - 1))
-    is_new_edge = (~undirected_adj).to(torch.float32).view(E, 1)
-
-    edge_attr_dyn = torch.cat(
-        [tau_cv_e, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
-        dim=1
-    )  # (E,5)
-
-    return Data(x=coords, edge_index=edge_index,
-                edge_attr_static=edge_attr_static,
-                edge_attr_dyn=edge_attr_dyn)
+    return Data(x=coords, edge_index=edge_index, edge_attr=edge_attr)
 
 
 def generate_tsp_instance(n: int):
