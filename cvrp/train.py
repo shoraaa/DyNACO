@@ -144,6 +144,7 @@ def train_instance(model, optimizer, coords, demand, capacity, k_sparse, n_ants,
     avg_cost_last = None
     
     H = args.H
+    losses = 0
 
     for t in tqdm(range(H), desc="ACO Step", leave=False):
         pyg_data = build_pyg_data(aco, coords, demand, args.device, dynamic=dynamic)
@@ -175,9 +176,7 @@ def train_instance(model, optimizer, coords, demand, capacity, k_sparse, n_ants,
             baseline = costs_t.mean()
             adv = (costs_t - baseline).detach()
 
-            w = (t + mini_t) / (H * args.mini_H)
             loss = w * (adv * logp_per_ant).mean()
-            loss.backward()
 
             # 4) pheromone update (best ant this iter)
             best_idx = int(costs_t.argmin().item())
@@ -189,6 +188,8 @@ def train_instance(model, optimizer, coords, demand, capacity, k_sparse, n_ants,
                 aco.update_pheromone(best_perm, best_cost_iter)
 
             avg_cost_last = float(costs_t.mean().item())
+            losses += loss
+        losses.backward()
 
     # optional but often helpful for stability:
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
