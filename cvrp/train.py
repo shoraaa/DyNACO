@@ -175,8 +175,7 @@ def train_instance(model, optimizer, coords, demand, capacity, k_sparse, n_ants,
             # 3) REINFORCE loss (baseline = mean in batch)
             baseline = costs_t.mean()
             adv = (costs_t - baseline).detach()
-
-            loss = w * (adv * logp_per_ant).mean()
+            loss = (adv * logp_per_ant).mean()
 
             # 4) pheromone update (best ant this iter)
             best_idx = int(costs_t.argmin().item())
@@ -297,6 +296,7 @@ def main():
     parser.add_argument("--baseline_time_limit", type=float, default=10.0, help="Time limit per instance for baseline solver")
 
     args = parser.parse_args()
+    args.extend_ls = True # To remove
 
 
     # Setup

@@ -285,7 +285,7 @@ def main():
     parser.add_argument("--baseline_time_limit", type=float, default=10.0, help="LKH time limit per instance (seconds)")
     
     args = parser.parse_args()
-    
+    args.extend_ls = True # To remove
 
     # Setup
     PROJECT_ROOT = Path.cwd().resolve()
@@ -340,17 +340,17 @@ def main():
     
     # Validation before training
     dynamic = not args.no_dynamic_feats
-    # avg_last, avg_aco_best, avg_gap = validation(args, -1, net, val_list, dynamic=dynamic, baseline_values=baseline_values)
+    avg_last, avg_aco_best, avg_gap = validation(args, -1, net, val_list, dynamic=dynamic, baseline_values=baseline_values)
     
-    # if not args.no_wandb:
-    #     log_dict = {
-    #         "val/avg_last": float(avg_last),
-    #         "val/avg_best": float(avg_aco_best),
-    #         "val/epoch": -1,
-    #     }
-    #     if baseline_values is not None:
-    #         log_dict["val/gap"] = float(avg_gap)
-    #     wandb.log(log_dict, step=0)
+    if not args.no_wandb:
+        log_dict = {
+            "val/avg_last": float(avg_last),
+            "val/avg_best": float(avg_aco_best),
+            "val/epoch": -1,
+        }
+        if baseline_values is not None:
+            log_dict["val/gap"] = float(avg_gap)
+        wandb.log(log_dict, step=0)
 
     global_step = 0
     sum_time = 0
