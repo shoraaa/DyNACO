@@ -49,7 +49,7 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 
-def build_pyg_data_6feats(aco, coords, device, dynamic: bool):
+def build_pyg_data(aco, coords, device, dynamic: bool):
     """
     Node features:
       x: coords (n,2)
@@ -132,13 +132,8 @@ def build_pyg_data_6feats(aco, coords, device, dynamic: bool):
     )
 
     return Data(x=coords, edge_index=edge_index, edge_attr=edge_attr)
-import numpy as np
-import torch
-from torch_geometric.data import Data
 
-EPS = 1e-12
-
-def build_pyg_data(aco, coords, device, dynamic: bool):
+def build_pyg_data_shit(aco, coords, device, dynamic: bool):
     """
     Node features:
       x: coords (n,2)
@@ -147,6 +142,7 @@ def build_pyg_data(aco, coords, device, dynamic: bool):
     if isinstance(coords, np.ndarray):
         coords = torch.from_numpy(coords)
     coords = coords.to(device=device, dtype=torch.float32)  # (n,2)
+    node_feats = coords
 
     # candidate graph
     nn = aco.nn_torch.to(device=device, dtype=torch.long)   # (n,k)
@@ -158,14 +154,17 @@ def build_pyg_data(aco, coords, device, dynamic: bool):
     edge_index = torch.stack([src, dst], dim=0)                                   # (2,E)
 
     dist = torch.norm(coords[src] - coords[dst], dim=1).view(n, k).clamp_min(1e-12)
-    log_dist = torch.log(dist).view(E, 1)  # (E,1)
+    dist_mean = dist.mean(dim=1, keepdim=True).clamp_min(1e-12)
+    dist_norm = (dist / dist_mean).view(E, 1)
 
     if dynamic:
-        # --- feature 0: log_tau_rel ---
-        tau = aco.pheromone_sparse.detach().to(device=device, dtype=torch.float32)  # (n,k)
-        log_tau = torch.log(tau).view(E, 1)                  # (n,k)
+        tau = aco.pheromone_sparse.detach().to(device=device, dtype=torch.float32)   # (n,k)
+        tau_mean = tau.mean(dim=1, keepdim=True).clamp_min(1e-12)
+        tau_norm = (tau / tau_mean).view(E, 1)
+        tau_std  = tau.std(dim=1, keepdim=True)
+        tau_cv   = (tau_std / tau_mean)
 
-        # --- feature 1: in_source_tour (undirected adjacency) ---
+
         sr = torch.as_tensor(np.asarray(aco.source_route), device=device, dtype=torch.long)  # (n,)
         pos = torch.empty((n,), device=device, dtype=torch.long)
         pos[sr] = torch.arange(n, device=device, dtype=torch.long)
@@ -174,12 +173,14 @@ def build_pyg_data(aco, coords, device, dynamic: bool):
         in_source_tour = ((duv == 1) | (duv == (n - 1))).to(torch.float32).view(E, 1)
 
     else:
-        log_tau = torch.zeros((E, 1), device=device, dtype=torch.float32)
+        tau_norm = torch.zeros((E, 1), device=device, dtype=torch.float32)
+        tau_cv = torch.zeros((n, 1), device=device, dtype=torch.float32)
         in_source_tour = torch.zeros((E, 1), device=device, dtype=torch.float32)
 
-    edge_attr = torch.cat([log_dist, log_tau, in_source_tour], dim=1)  # (E,3)
+    node_feats = torch.cat([coords, tau_cv], dim=1)
+    edge_attr = torch.cat([dist_norm, tau_norm, in_source_tour], dim=1)  # (E,3)
 
-    return Data(x=coords, edge_index=edge_index, edge_attr=edge_attr)
+    return Data(x=node_feats, edge_index=edge_index, edge_attr=edge_attr)
 
 
 def generate_tsp_instance(n: int):

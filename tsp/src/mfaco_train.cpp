@@ -896,12 +896,11 @@ float MFACO_TSP::relocate_node(int32_t target, int32_t node,
 float MFACO_TSP::two_opt_nn(std::vector<int32_t> &route,
                             std::vector<int32_t> &positions,
                             std::vector<int32_t> &checklist) {
-  const int32_t max_changes = 1000;
   int32_t changes_count = 0;
   float total_change = 0.0f;
   size_t checklist_pos = 0;
 
-  while (checklist_pos < checklist.size() && changes_count < max_changes) {
+  while (checklist_pos < checklist.size()) {
     int32_t a = checklist[checklist_pos++];
     if (a < 0 || a >= n)
       continue;

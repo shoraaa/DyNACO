@@ -1,2 +1,11 @@
-{"epoch": 0, "train_avg_cost": 3.7493717670440674, "val_avg_last": 3.913501739501953, "val_avg_best": 3.8213737308979034, "gap": -9.982176353409667e-06, "time": 27.13603663444519}
-{"epoch": 0, "train_avg_cost": 3.7859772205352784, "val_avg_last": 3.904081594198942, "val_avg_best": 3.8213737308979034, "gap": -9.982176353409667e-06, "time": 23.674073457717896}
+{"epoch": 0, "train_avg_cost": 3.847684383392334, "val_avg_last": 3.969023384153843, "val_avg_best": 3.82137374766171, "val_diversity": 11.236835937499999, "gap": null, "time": 2.340547800064087}
+{"epoch": 0, "train_avg_cost": 3.847559928894043, "val_avg_last": 3.9688323996961117, "val_avg_best": 3.82137374766171, "val_diversity": 0.002882812564280357, "gap": null, "time": 1.7633757591247559}
+{"epoch": 0, "train_avg_cost": 3.809330105781555, "val_avg_last": 3.9665732979774475, "val_avg_best": 3.8227073568850756, "val_diversity": 0.27922851956100203, "gap": null, "time": 2.0506083965301514}
+{"epoch": 0, "train_avg_cost": 3.824364185333252, "val_avg_last": 3.966769002377987, "val_avg_best": 3.8225193452090025, "val_diversity": 0.2791015663242433, "gap": null, "time": 2.5300707817077637}
+{"epoch": 0, "train_avg_cost": 3.824364185333252, "val_avg_last": 3.966769002377987, "val_avg_best": 3.8225193452090025, "val_diversity": 0.27903320695622824, "gap": null, "time": 1.5930898189544678}
+{"epoch": 0, "train_avg_cost": 3.955102890729904, "val_avg_last": 3.917422577738762, "val_avg_best": 3.8213737308979034, "val_diversity": 0.011279609347830045, "gap": null, "time": 27.925372838974}
+{"epoch": 1, "train_avg_cost": 3.9069271981716156, "val_avg_last": 3.9466559756547213, "val_avg_best": 3.8213737308979034, "val_diversity": 0.007881171979329337, "gap": null, "time": 26.599418878555298}
+{"epoch": 2, "train_avg_cost": 4.054868564009666, "val_avg_last": 3.9557269867509604, "val_avg_best": 3.8213737308979034, "val_diversity": 0.006804882918663681, "gap": null, "time": 22.98122549057007}
+{"epoch": 3, "train_avg_cost": 3.9722941517829895, "val_avg_last": 3.973508821800351, "val_avg_best": 3.8213737308979034, "val_diversity": 0.0057196875830959485, "gap": null, "time": 30.07292151451111}
+{"epoch": 4, "train_avg_cost": 4.026580646634102, "val_avg_last": 3.9859606102108955, "val_avg_best": 3.8213737308979034, "val_diversity": 0.0050139453892870745, "gap": null, "time": 27.090012788772583}
+{"epoch": 0, "train_avg_cost": 3.824364185333252, "val_avg_last": 3.966627998277545, "val_avg_best": 3.8225193470716476, "val_diversity": 0.2791992226848379, "gap": null, "time": 2.902047634124756}

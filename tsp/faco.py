@@ -457,6 +457,10 @@ class MFACO_TSP:
         w = torch.exp(logit)
         return w
 
+    def tau_nk_torch(self) -> torch.Tensor:
+        """Returns a snapshot (copy) of the current pheromone tensor (n,k)."""
+        return self._pheromone_sparse.clone()
+
     def sync_pheromone_to_torch(self) -> None:
         """Sync numpy pheromone to torch tensor."""
         phe_np = np.asarray(self._cpp.pheromone_sparse_np)

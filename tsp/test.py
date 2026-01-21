@@ -108,7 +108,7 @@ def infer_instance(model, coords, k_sparse, n_ants, dynamic, args, use_heuristic
         enable_torch_sync=True, 
         smooth_mmas=not args.no_smooth_mmas,
         min_new_edges=args.min_new_edges,
-        extend_ls=args.extend_ls,
+        extend_ls=not args.no_extend_ls,
         normalized_heuristic=not args.no_normalized_heuristic,
     )
 
@@ -126,6 +126,7 @@ def infer_instance(model, coords, k_sparse, n_ants, dynamic, args, use_heuristic
         "corr": [], "ov": [], "row_match": []
     }
     
+    t_start_total = time.time()
     with torch.no_grad():
         for t in range(H):
             prior_mat = None
@@ -140,12 +141,6 @@ def infer_instance(model, coords, k_sparse, n_ants, dynamic, args, use_heuristic
                 if collect_metrics:
                     priors.append(prior_mat.detach().cpu().clone())
             
-            # If use_heuristic_only, prior_mat is None.
-            # If collect_metrics is True but use_heuristic_only is True, we have empty priors list?
-            # The prior change metrics require 'prior'. 
-            # If use_heuristic_only, we can't compute prior change (it's constant 1/d or empty).
-            # We will handle this by checking if priors is not empty.
-
             step_best = float("inf")
             for mini_t in range(args.mini_H):
                 costs, flats, *rest = aco.sample(require_prob=False, prior=prior_mat)
@@ -192,9 +187,11 @@ def infer_instance(model, coords, k_sparse, n_ants, dynamic, args, use_heuristic
                     metrics_log["ov"].append(0.0)
                     metrics_log["row_match"].append(0.0)
 
+    t_total = time.time() - t_start_total
+
     if collect_metrics:
-        return avg_last, best_seen, metrics_log
-    return avg_last, best_seen
+        return avg_last, best_seen, t_total, metrics_log
+    return avg_last, best_seen, t_total
 
 def main():
     parser = argparse.ArgumentParser(description="MFACO TSP Testing")
@@ -215,8 +212,8 @@ def main():
     # But for "Base MFACO" we want to force enable it.
     parser.add_argument("--disable_heuristic", action="store_true", help="Disable heuristic")
     parser.add_argument("--no_local_search", action="store_true", help="Disable local search")
-    parser.add_argument("--no_smooth_mmas", action="store_true", help="Enable smooth MMAS")
-    parser.add_argument("--extend_ls", action="store_true", help="Extend LS checklist")
+    parser.add_argument("--no_smooth_mmas", action="store_true", help="Disable smooth MMAS")
+    parser.add_argument("--no_extend_ls", action="store_true", help="Extend LS checklist")
     parser.add_argument("--rho", type=float, default=0.5, help="Rho")
     parser.add_argument("--min_new_edges", type=int, default=8, help="Min new edges")
     parser.add_argument("--no_normalized_heuristic", action="store_true", help="Normalize heuristic to [1/k, 1]")
@@ -234,6 +231,7 @@ def main():
     # Visualization
     parser.add_argument("--visualize", action="store_true", help="Enable visualization of metrics")
     parser.add_argument("--visualize_output", type=str, default="visualizations", help="Output directory for visualization plots")
+    parser.add_argument("--timed", action="store_true", help="Show performance timings")
 
     args = parser.parse_args()
     
@@ -321,9 +319,8 @@ def main():
                         if current_val != v:
                             print(f"WARNING: Overriding checkpoint config {k}={v} with explicit argument {k}={current_val}")
                     else:
-                        if current_val != v:
-                            print(f"Loading {k}={v} from checkpoint (was {current_val})")
-                            setattr(args, k, v)
+                        print(f"Loading {k}={v} from checkpoint")
+                        setattr(args, k, v)
         
         # Init model with potentially updated args (e.g. logit_net)
         model = Net(logit_net=not args.no_logit_net).to(args.device)
@@ -359,19 +356,20 @@ def main():
         
         base_ret = infer_instance(None, coords, args.k_sparse, args.n_ants, dynamic, args, use_heuristic_only=True, collect_metrics=collect)
         if collect:
-            _, base_best, base_metrics = base_ret
+            _, base_best, t_base, base_metrics = base_ret
         else:
-            _, base_best = base_ret
+            _, base_best, t_base = base_ret
         
         # Model MFACO (Prior from Net)
         model_best = float("inf")
         model_metrics = None
+        t_model = 0.0
         if model is not None:
              model_ret = infer_instance(model, coords, args.k_sparse, args.n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=collect)
              if collect:
-                 _, model_best, model_metrics = model_ret
+                 _, model_best, t_model, model_metrics = model_ret
              else:
-                 _, model_best = model_ret
+                 _, model_best, t_model = model_ret
         
         if collect:
             # Initialize accumulators on first iteration
@@ -382,8 +380,6 @@ def main():
                 agg_base_cost = np.zeros(H)
                 
                 # For Model: all metrics
-                agg_model = {k: np.zeros(H) for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match"]}
-                
             # Accumulate Base Cost
             # base_metrics["cost"] list of floats
             if "cost" in base_metrics:
@@ -391,9 +387,21 @@ def main():
             
             # Accumulate Model Metrics
             if model_metrics is not None:
+                if "agg_model" not in locals():
+                     agg_model = {k: np.zeros(H) for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match"]}
+
                 for k, v in model_metrics.items():
                     if len(v) == H:
                         agg_model[k] += np.array(v)
+
+        if i == 0:
+            sum_time_base = 0.0
+            sum_time_model = 0.0
+
+        sum_time_base += t_base
+        if model is not None:
+            sum_time_model += t_model
+
         
         opt = float(baseline_values[i]) if baseline_values is not None else 0.0
         
@@ -514,6 +522,12 @@ def main():
         if baseline_values is not None:
             print(f"Model MFACO Avg Gap:  {avg_model_gap:.3f}%")
             
+    if args.timed:
+        print("\nPerformance Metrics:")
+        print(f"  Base MFACO Total:   {sum_time_base:.6f}s")
+        if model is not None:
+            print(f"  Model MFACO Total:  {sum_time_model:.6f}s")
+
     print("="*60)
 
 if __name__ == "__main__":

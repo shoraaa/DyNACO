@@ -27,6 +27,22 @@ except ImportError:
 
 # --- Helper Functions from Notebook ---
 
+EPS = 1e-12
+
+def prob_sparse_from_tau_eta_prior(tau_nk, eta_nk, prior_nk, alpha=1.0, beta=1.0, eps=1e-12):
+    """
+    Returns unnormalized positive weights (n,k).
+    Assumes your ACO kernel is: logit = alpha*log(tau) + beta*log(eta) + prior
+    => weight = tau^alpha * eta^beta * exp(prior)
+    If in your implementation `prior` is already in log-space additive, this matches.
+    """
+    tau = tau_nk.clamp_min(eps)
+    eta = eta_nk.clamp_min(eps)
+    # weight = exp(alpha log tau + beta log eta + prior)
+    w = torch.exp(alpha * torch.log(tau) + beta * torch.log(eta) + prior_nk)
+    return w.clamp_min(eps)
+
+
 def _popcount_i64(x: torch.Tensor) -> torch.Tensor:
     """
     Vectorized popcount for int64 tensor x (CUDA-safe).
@@ -115,10 +131,140 @@ def replay_logp_from_cpp_batch_trace(traces, prob_sparse: torch.Tensor):
 
 
 # --- Training Logic ---
+def train_instance_ppo_every_S(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
+    model.train()
 
-EPS = 1e-10
+    aco = MFACO_TSP(
+        n_ants=n_ants,
+        coords=coords,
+        cand_list_size=k_sparse,
+        backup_list_size=k_sparse,
+        disable_heuristic=args.disable_heuristic,
+        use_local_search=not args.no_local_search,
+        decay=args.rho,
+        device=args.device,
+        enable_torch_sync=True,
+        smooth_mmas=not args.no_smooth_mmas,
+        min_new_edges=args.min_new_edges,
+        extend_ls=not args.no_extend_ls,
+        normalized_heuristic=not args.no_normalized_heuristic,
+    )
+
+    # coords tensor for eta
+    # coords_t = torch.as_tensor(coords, device=args.device, dtype=torch.float32)
+    # nn_t = aco.nn_torch.to(device=args.device, dtype=torch.long)  # (n,k)
+    eta_nk = aco.h_sparse_torch
+
+
+    best_seen = float("inf")
+    avg_cost_last = None
+
+    # Outer loop: recompute controller every S steps
+    # Usually H is 'steps per instance'. In PPO context, H is 'number of outer updates'.
+    for outer in tqdm(range(args.H), desc="Outer", leave=False):
+        pyg_data = build_pyg_data(aco, coords, args.device, dynamic=dynamic)
+
+        # Controller computed ONCE here (old policy for this rollout window)
+        with torch.no_grad():
+            prior_old = model(pyg_data).view(-1).view(aco.n, aco.k)
+
+        # Rollout storage for S inner iters
+        traces_list = []
+        costs_list = []
+        logp_old_list = []
+        ndec_list = []
+        tau_list = []  # <-- key for PPO epochs
+
+        # --- Collect on-policy data with fixed prior_old ---
+        for inner in range(args.mini_H):
+            costs, flats, _, logps_cpp, traces, costs_raw, flats_raw = aco.sample(
+                require_prob=True, prior=prior_old
+            )
+            costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
+
+            # snapshot tau BEFORE update (needed for PPO re-eval later)
+            tau_nk = aco.tau_nk_torch().detach()  # (n,k) on device
+            tau_list.append(tau_nk)
+
+            # old logp (under prior_old) using snapshot tau_nk
+            with torch.no_grad():
+                prob_old = prob_sparse_from_tau_eta_prior(
+                    tau_nk, eta_nk, prior_old,
+                    alpha=args.alpha if hasattr(args, "alpha") else 1.0,
+                    beta=args.beta if hasattr(args, "beta") else 1.0,
+                    eps=EPS
+                )
+                logp_old, ndec = replay_logp_from_cpp_batch_trace(traces, prob_old)
+                ndec_f = ndec.to(torch.float32).clamp_min(1.0)
+                logp_old = (logp_old / ndec_f).detach()
+
+            traces_list.append(traces)
+            costs_list.append(costs_t.detach())
+            logp_old_list.append(logp_old)
+            ndec_list.append(ndec.detach())
+
+            # environment transition
+            best_idx = int(costs_t.argmin().item())
+            best_cost_iter = float(costs[best_idx])
+            best_seen = min(best_seen, best_cost_iter)
+            with torch.no_grad():
+                aco._update_pheromone_from_flat(flats[best_idx], best_cost_iter)
+
+            avg_cost_last = float(costs_t.mean().item())
+
+        # --- PPO update epochs on this fixed rollout window ---
+        # We do K epochs over the same collected data (on-policy w.r.t. prior_old)
+        for _ in range(args.ppo_epochs):
+            optimizer.zero_grad(set_to_none=True)
+
+            # recompute prior under current theta (same pyg_data/state at outer start)
+            prior_new = model(pyg_data).view(-1).view(aco.n, aco.k)
+
+            all_losses = []
+            for inner in range(args.mini_H):
+                tau_nk = tau_list[inner]
+                traces = traces_list[inner]
+                costs_t = costs_list[inner]
+                logp_old = logp_old_list[inner]
+                ndec = ndec_list[inner]
+
+                # prob under new theta but old tau snapshot
+                prob_new = prob_sparse_from_tau_eta_prior(
+                    tau_nk, eta_nk, prior_new,
+                    alpha=args.alpha if hasattr(args, "alpha") else 1.0,
+                    beta=args.beta if hasattr(args, "beta") else 1.0,
+                    eps=EPS
+                )
+                logp_new, ndec_new = replay_logp_from_cpp_batch_trace(traces, prob_new)
+                ndec_f = ndec_new.to(torch.float32).clamp_min(1.0)
+                logp_new = logp_new / ndec_f
+
+                ratio = torch.exp(logp_new - logp_old)
+
+                # Advantage (dense, per ant) — same spirit as your REINFORCE
+                baseline = costs_t.mean()
+                adv = (baseline - costs_t)  # higher is better
+                if args.adv_norm:
+                    adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
+                adv = adv.detach()
+
+                surr1 = ratio * adv
+                surr2 = torch.clamp(ratio, 1 - args.ppo_clip, 1 + args.ppo_clip) * adv
+                loss = -torch.mean(torch.min(surr1, surr2))
+
+                all_losses.append(loss)
+
+            total_loss = torch.stack(all_losses).mean()
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+
+    return avg_cost_last, best_seen
+
 
 def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
+    if args.algo == "ppo":
+        return train_instance_ppo_every_S(model, optimizer, coords, k_sparse, n_ants, dynamic, args)
     model.train()
     
     # Use args for configuration
@@ -134,7 +280,7 @@ def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
         enable_torch_sync=True,
         smooth_mmas=not args.no_smooth_mmas,
         min_new_edges=args.min_new_edges,
-        extend_ls=args.extend_ls,
+        extend_ls=not args.no_extend_ls,
         normalized_heuristic=not args.no_normalized_heuristic,
     )
 
@@ -144,11 +290,10 @@ def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
     avg_cost_last = None
     
     H = args.H
-
     for t in tqdm(range(H), desc="ACO Step", leave=False):
         pyg_data = build_pyg_data(aco, coords, args.device, dynamic=dynamic)
         heu_vec = model(pyg_data).view(-1)
-        heu_mat = heu_vec.view(aco.n, aco.k) + EPS
+        heu_mat = heu_vec.view(aco.n, aco.k)
         losses = 0
         for mini_t in range(args.mini_H):
             # 1) sample + trace from C++
@@ -176,7 +321,7 @@ def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
             # 3) REINFORCE loss (baseline = mean in batch)
             baseline = costs_t.mean()
             adv = (costs_t - baseline).detach()
-            loss = (adv * logp_per_ant).mean()
+            loss = (adv * logp_per_ant / ndec_per_ant).mean()
 
             # 4) pheromone update (best ant this iter)
             best_idx = int(costs_t.argmin().item())
@@ -224,7 +369,7 @@ def validation(args, epoch, net, val_dataset, dynamic=True, baseline_values=None
     sum_gap = 0
     
     for coords in tqdm(val_dataset, desc="Validation", leave=False):
-        avg_last, best_seen = infer_instance(net, coords, args.k_sparse, args.n_ants, dynamic, args)
+        avg_last, best_seen, t_total = infer_instance(net, coords, args.k_sparse, args.n_ants, dynamic, args)
         sum_sample_best += avg_last; sum_aco_best += best_seen
         
         if baseline_values is not None:
@@ -252,10 +397,18 @@ def main():
     parser.add_argument("--n_node", type=int, default=100, help="Number of nodes per TSP instance")
     parser.add_argument("--k_sparse", type=int, default=32, help="Candidate list size (k)")
     
+    # PPO args
+    parser.add_argument("--algo", choices=["reinforce", "ppo"], default="ppo")
+    parser.add_argument("--ppo_epochs", type=int, default=4)
+    parser.add_argument("--ppo_clip", type=float, default=0.2)
+    parser.add_argument("--adv_norm", action="store_true")
+    parser.add_argument("--alpha", type=float, default=1.0)
+    parser.add_argument("--beta", type=float, default=1.0)
+
     # Model / Training
     parser.add_argument("--n_ants", type=int, default=100, help="Number of ants")
-    parser.add_argument("--steps_per_epoch", type=int, default=32, help="Steps per epoch")
-    parser.add_argument("--epochs", type=int, default=20, help="Total epochs")
+    parser.add_argument("--steps_per_epoch", type=int, default=16, help="Steps per epoch")
+    parser.add_argument("--epochs", type=int, default=50, help="Total epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--seed", type=int, default=1234, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda:0", help="Device to use")
@@ -269,7 +422,7 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug mode (check log probabilities)")
     parser.add_argument("--no_local_search", action="store_true", help="Disable local search")
     parser.add_argument("--no_smooth_mmas", action="store_true", help="Disable smooth MMAS")
-    parser.add_argument("--extend_ls", action="store_true", help="Extend LS checklist")
+    parser.add_argument("--no_extend_ls", action="store_true", help="Extend LS checklist")
     parser.add_argument("--no_normalized_heuristic", action="store_true", help="Disable normalized heuristic")
     parser.add_argument("--no_logit_net", action="store_true", help="Disable logit network (no sigmoid) and log-space ACO")
 
@@ -285,7 +438,6 @@ def main():
     parser.add_argument("--baseline_time_limit", type=float, default=10.0, help="LKH time limit per instance (seconds)")
     
     args = parser.parse_args()
-    args.extend_ls = True # To remove
 
     # Setup
     PROJECT_ROOT = Path.cwd().resolve()
@@ -398,7 +550,13 @@ def main():
             print(f"Saved best model to {model_path} (score: {best_val:.4f})")
     
     print(f"Total training duration: {sum_time:.2f}s")
+
+    with open(log_path, "a") as f:
+        f.write(json.dumps({"total_time": sum_time}) + "\n")
+
     if not args.no_wandb:
+        if wandb.run is not None:
+            wandb.run.summary["total_time"] = sum_time
         wandb.finish()
 
 if __name__ == "__main__":

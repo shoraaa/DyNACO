@@ -104,6 +104,11 @@ class MFACO_CVRP:
     @property
     def n_ants(self): return self.solver.n_ants
 
+    @property
+    def pheromone_sparse(self) -> torch.Tensor:
+        """Return (n, k) pheromone sparse tensor."""
+        return self._pheromone_sparse
+
     def seed_rng(self, seed: int):
         self.solver.seed_rng(int(seed))
 

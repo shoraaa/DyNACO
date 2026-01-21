@@ -163,6 +163,84 @@ if __name__ == '__main__':
         torch.save(testDataset, f'{DATA_DIR}/cvrp/testDataset-{n}.pt')
 
 
+def build_pyg_data_3(aco, coords, demand, device, dynamic: bool):
+    """
+    Node features:
+      x: coords (n,2)
+    """
+    # coords -> torch
+    if isinstance(coords, np.ndarray):
+        coords = torch.from_numpy(coords)
+    if isinstance(coords, np.ndarray):
+        coords_t = torch.from_numpy(coords)
+    elif isinstance(coords, torch.Tensor):
+        coords_t = coords
+    else:
+        coords_t = torch.as_tensor(coords)
+    coords_t = coords_t.to(device=device, dtype=torch.float32)  # (n,2)
+    demand_t = torch.as_tensor(demand, device=device, dtype=torch.float32)  # (n,)
+
+    # candidate graph
+    nn = torch.as_tensor(np.asarray(aco.nn_list, dtype=np.int64), device=device, dtype=torch.long)  # (n,k)
+    n, k = nn.shape
+    E = n * k
+
+    src = torch.arange(n, device=device, dtype=torch.long).repeat_interleave(k)  # (E,)
+    dst = nn.reshape(-1)                                                         # (E,)
+    edge_index = torch.stack([src, dst], dim=0)                                   # (2,E)
+
+    dist = torch.norm(coords_t[src] - coords_t[dst], dim=1).view(n, k).clamp_min(1e-12)
+    log_dist = torch.log(dist).view(E, 1)  # (E,1)
+
+    if dynamic:
+        tau = torch.as_tensor(np.asarray(aco.pheromone_sparse_np), device=device, dtype=torch.float32).clamp_min(1e-12)
+        log_tau = torch.log(tau).view(E, 1)                  # (n,k)
+
+        solver = getattr(aco, "solver", aco)
+
+        try:
+            src_perm_np = aco.source_perm
+        except AttributeError:
+            src_perm_np = solver.source_perm
+
+        src_perm = torch.as_tensor(
+            np.asarray(src_perm_np, dtype=np.int64),
+            device=device,
+            dtype=torch.long,
+        )
+
+        in_source = torch.zeros((E,), device=device, dtype=torch.float32)
+
+        if src_perm.numel() > 0:
+            pos = torch.full((n,), -1, device=device, dtype=torch.long)
+            pos[src_perm] = torch.arange(src_perm.numel(), device=device)
+
+            m = src_perm.numel()
+            duv = (pos[src] - pos[dst]).abs()
+
+            undirected_adj = (
+                ((duv == 1) | (duv == (m - 1)))
+                & (pos[src] >= 0)
+                & (pos[dst] >= 0)
+            )
+
+            in_source = undirected_adj.to(torch.float32)
+
+        in_source_tour = in_source.view(E, 1)
+
+    else:
+        log_tau = torch.zeros((E, 1), device=device, dtype=torch.float32)
+        in_source_tour = torch.zeros((E, 1), device=device, dtype=torch.float32)
+
+    edge_attr = torch.cat([log_dist, log_tau, in_source_tour], dim=1)  # (E,3)
+
+    depot_flag = torch.zeros((coords_t.size(0), 1), device=device)
+    depot_flag[0, 0] = 1.0
+    # CVRP specific node inputs: coords (2), demand (1), depot_flag (1) -> 4 dims
+    coords_cat = torch.cat([coords_t, demand_t.unsqueeze(-1), depot_flag], dim=-1)
+    return Data(x=coords_cat, edge_index=edge_index, edge_attr=edge_attr)
+
+
 def build_pyg_data(aco, coords, demand, device: str, dynamic: bool) -> Data:
     """
     Build a PyG graph matching MFACO_CVRP's sparse candidate graph (n,k).

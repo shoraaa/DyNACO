@@ -144,12 +144,12 @@ def train_instance(model, optimizer, coords, demand, capacity, k_sparse, n_ants,
     avg_cost_last = None
     
     H = args.H
-    losses = 0
 
     for t in tqdm(range(H), desc="ACO Step", leave=False):
         pyg_data = build_pyg_data(aco, coords, demand, args.device, dynamic=dynamic)
         heu_vec = model(pyg_data).view(-1)
         prior_mat = heu_vec.view(aco.n, aco.k) + EPS
+        losses = 0
         for mini_t in range(args.mini_H):
             # 1) sample + trace from C++
             costs_t, perms, _, logps_cpp, traces = aco.sample(require_prob=True, prior=prior_mat)
@@ -418,7 +418,13 @@ def main():
             print(f"Saved best model to {model_path} (score: {best_val:.4f})")
     
     print(f"Total training duration: {sum_time:.2f}s")
+
+    with open(log_path, "a") as f:
+        f.write(json.dumps({"total_time": sum_time}) + "\n")
+
     if not args.no_wandb and wandb is not None:
+        if wandb.run is not None:
+            wandb.run.summary["total_time"] = sum_time
         wandb.finish()
 
 if __name__ == "__main__":
