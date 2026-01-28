@@ -143,6 +143,10 @@ def stage1_solver(args, output_dir):
                 "improvement": (v_score - n_score) / v_score * 100
             })
             print(f"Config {config_name} | V: {v_score:.4f} (T={v_time:.1f}s) | N: {n_score:.4f} (T={n_time:.1f}s, TN={n_tn:.2f}s, TA={n_ta:.2f}s)")
+            
+            # Incremental Save
+            df = pd.DataFrame(results)
+            df.to_csv(output_dir / "stage1_full_comparison.csv", index=False)
 
     if results:
         df = pd.DataFrame(results)
@@ -222,6 +226,10 @@ def stage2_rl_stability(args, output_dir):
             })
             print(f"Config {config_name}: {avg_score:.4f}")
             
+            # Incremental Save
+            df = pd.DataFrame(results)
+            df.to_csv(output_dir / "stage2_summary.csv", index=False)
+            
     # 2. REINFORCE Sweep
     # Only LR matters usually (and maybe batch size but we fix steps/ants)
     reinforce_lrs = [1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4]
@@ -260,6 +268,10 @@ def stage2_rl_stability(args, output_dir):
                 "score": avg_score
             })
             print(f"Config {config_name}: {avg_score:.4f}")
+
+            # Incremental Save
+            df = pd.DataFrame(results)
+            df.to_csv(output_dir / "stage2_summary.csv", index=False)
 
     df = pd.DataFrame(results)
     df = df.sort_values("score")
@@ -316,6 +328,10 @@ def stage3_budget(args, output_dir):
             results.append({"H": H, "mini_H": mini_H, "score": avg_score})
             print(f"Config {config_name}: {avg_score:.4f}")
 
+            # Incremental Save
+            df = pd.DataFrame(results)
+            df.to_csv(output_dir / "stage3_summary.csv", index=False)
+
     df = pd.DataFrame(results)
     df = df.sort_values("score")
     df.to_csv(output_dir / "stage3_summary.csv", index=False)
@@ -360,6 +376,10 @@ def stage4_ablations(args, output_dir):
             avg_score = sum(scores) / len(scores)
             results.append({"config": name, "score": avg_score})
             print(f"Config {name}: {avg_score:.4f}")
+            
+            # Incremental Save
+            df = pd.DataFrame(results)
+            df.to_csv(output_dir / "stage4_summary.csv", index=False)
             
     df = pd.DataFrame(results)
     df = df.sort_values("score")

@@ -737,5 +737,8 @@ def main():
             best_val = avg_aco_best
             torch.save({"model_state_dict": net.state_dict(), "config": vars(args)}, save_path / f"best_{args.n_node}.pt")
 
+    if not args.no_wandb and wandb.run is not None:
+        wandb.finish()
+
 if __name__ == "__main__":
     main()
