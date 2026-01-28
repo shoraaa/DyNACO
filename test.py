@@ -131,7 +131,7 @@ def get_modules(problem):
         load_val = utils.load_val_dataset
         build_pyg = utils.build_pyg_data
         get_base = baselines.get_baseline_tsp
-        return Net, MFACO, load_val, build_pyg, get_base
+        return Net, MFACO, load_val, build_pyg, get_base, faco.set_faco_cpp_threads
     elif problem == 'cvrp':
         import net
         import faco
@@ -143,7 +143,7 @@ def get_modules(problem):
         load_val = utils.load_val_dataset
         build_pyg = utils.build_pyg_data
         get_base = baselines.get_baseline_cvrp
-        return Net, MFACO, load_val, build_pyg, get_base
+        return Net, MFACO, load_val, build_pyg, get_base, faco.set_faco_cpp_threads
     else:
         raise ValueError(f"Unknown problem: {problem}")
 
@@ -329,6 +329,7 @@ def main():
     parser.add_argument("--timed", action="store_true")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--L", type=int, default=0, help="Fixed ant trajectory length")
+    parser.add_argument("--threads", type=int, default=16, help="OpenMP threads")
 
     args = parser.parse_args()
 
@@ -379,7 +380,8 @@ def main():
         else:
             val_list = data # Tensor or list
     else:
-        Net, MFACO, load_val_dataset, build_pyg_data, get_baseline = get_modules(args.problem)
+        Net, MFACO, load_val_dataset, build_pyg_data, get_baseline, set_threads_fn = get_modules(args.problem)
+        set_threads_fn(args.threads)
         print("Loading validation dataset...")
         try:
              val_list = load_val_dataset(args.n_node, "cpu") # Generalize to CPU load first
@@ -392,7 +394,7 @@ def main():
     if args.baseline != 'none':
         # Re-import to ensure functions are avail if dataset loaded without top block
         if 'get_baseline' not in locals():
-            _, _, _, _, get_baseline = get_modules(args.problem)
+            _, _, _, _, get_baseline, _ = get_modules(args.problem)
         
         print("Computing baseline...")
         if args.problem == 'tsp':
@@ -428,7 +430,8 @@ def main():
         
         # Determine net class
         if 'Net' not in locals():
-            Net, MFACO, load_val_dataset, build_pyg_data, _ = get_modules(args.problem)
+            Net, MFACO, load_val_dataset, build_pyg_data, _, set_threads_fn = get_modules(args.problem)
+            set_threads_fn(args.threads)
         
         model = Net(logit_net=not args.no_logit_net).to(args.device)
         model.load_state_dict(state_dict)
@@ -436,7 +439,8 @@ def main():
     else:
         # Need MFACO class even if no model
         if 'MFACO' not in locals():
-            _, MFACO, _, build_pyg_data, _ = get_modules(args.problem)
+            _, MFACO, _, build_pyg_data, _, set_threads_fn = get_modules(args.problem)
+            set_threads_fn(args.threads)
 
     # Eval Loop
     results = {

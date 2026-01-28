@@ -180,7 +180,7 @@ def get_modules(problem):
         def infer_wrapper(net, instance_data, k, n_ants, dynamic, args):
             return infer_tsp(net, instance_data, k, n_ants, dynamic, args)
 
-        return Net, MFACO, load_val, build_pyg, gen_val, get_base, infer_wrapper
+        return Net, MFACO, load_val, build_pyg, gen_val, get_base, infer_wrapper, faco.set_faco_cpp_threads
     
     elif problem == 'cvrp':
         import net
@@ -202,7 +202,7 @@ def get_modules(problem):
             coords, demand, capacity = instance_data
             return infer_cvrp(net, coords, demand, capacity, k, n_ants, dynamic, args)
         
-        return Net, MFACO, load_val, build_pyg, gen_data, get_base, infer_wrapper
+        return Net, MFACO, load_val, build_pyg, gen_data, get_base, infer_wrapper, faco.set_faco_cpp_threads
     else:
         raise ValueError(f"Unknown problem: {problem}")
 
@@ -634,6 +634,7 @@ def main():
     parser.add_argument("--min_gamma", type=float, default=0.2)
     parser.add_argument("--L", type=int, default=0, help="Fixed ant trajectory length")
     parser.add_argument("--run_name", type=str, default=None, help="Custom wandb run name")
+    parser.add_argument("--threads", type=int, default=16, help="OpenMP threads")
 
     args = parser.parse_args()
     
@@ -659,7 +660,8 @@ def main():
         wandb.init(project=args.wandb_project, entity=args.wandb_entity, name=run_name, config=vars(args))
 
     # Modules
-    NetClass, MFACOClass, load_val_dataset_fn, build_pyg_data_fn, gen_data_fn, get_baseline_fn, infer_wrapper = get_modules(args.problem)
+    NetClass, MFACOClass, load_val_dataset_fn, build_pyg_data_fn, gen_data_fn, get_baseline_fn, infer_wrapper, set_threads_fn = get_modules(args.problem)
+    set_threads_fn(args.threads)
     
     # Data
     print("Loading validation dataset...")

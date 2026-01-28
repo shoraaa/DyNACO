@@ -27,6 +27,7 @@ import torch
 
 # Try to import C++ backend
 try:
+    import faco_tsp
     from faco_tsp import MFACO_TSP as MFACO_TSP_CPP, MFACOTrace as MFACOTrace_CPP
 except ImportError:
     raise ImportError(
