@@ -53,6 +53,9 @@ class MFACO_CVRP:
         device: str = "cpu",
         enable_torch_sync: bool = True,
         normalized_heuristic: bool = False,
+        enable_torch_sync: bool = True,
+        normalized_heuristic: bool = False,
+        fixed_steps: int = 0,
     ):
         coords_np = _as_numpy_f32(coords)
         demand_np = _as_numpy_f32(demand)
@@ -75,6 +78,9 @@ class MFACO_CVRP:
             bool(disable_heuristic),
             bool(extend_ls),
             bool(smooth_mmas),
+            bool(extend_ls),
+            bool(smooth_mmas),
+            int(fixed_steps),
         )
         self.device = device
         self.enable_torch_sync = enable_torch_sync
@@ -118,7 +124,9 @@ class MFACO_CVRP:
           costs: torch.float32 [n_ants]
           perms: list[np.ndarray] each (m+1,) customers-only cycle (last==first)
           decoded_routes: list[np.ndarray] each variable length [0,...,0,...] or None
+          decoded_routes: list[np.ndarray] each variable length [0,...,0,...] or None
           traces: faco_cpp.MFACOTrace or None
+          new_edges_count: (n_ants,) array of new edges created
           
         Args:
           prior: (n, k) extra weights to multiply into probability. 
@@ -126,11 +134,11 @@ class MFACO_CVRP:
         """
         if prior is not None:
             prior = _as_numpy_f32(prior)
-        costs, perms, decoded, logps, traces = self.solver.sample(
+        costs, perms, decoded, logps, traces, new_edges_count = self.solver.sample(
             require_prob, prior, parallel_traced, return_decoded
         )
         costs_t = torch.as_tensor(costs, device=self.device, dtype=torch.float32)
-        return costs_t, perms, decoded, logps, traces
+        return costs_t, perms, decoded, logps, traces, new_edges_count
 
     def update_pheromone(self, best_perm, best_cost: float):
         """
@@ -195,3 +203,7 @@ class MFACO_CVRP:
     @property
     def heuristic_sparse_np(self):
         return self.solver.heuristic_sparse_np
+
+    def tau_nk_torch(self) -> torch.Tensor:
+        """Returns a snapshot (copy) of the current pheromone tensor (n,k)."""
+        return self._pheromone_sparse.clone()

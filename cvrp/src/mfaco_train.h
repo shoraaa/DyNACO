@@ -156,12 +156,15 @@ struct SampleResult {
       routes;               // (n_ants, n) - each route without repetition
   MFACOTraceBatch traces;   // only populated if require_prob=true
   std::vector<float> logps; // (n_ants,) log probability of sample
+  std::vector<int32_t> new_edges_count; // (n_ants,)
 
   void clear() {
     costs.clear();
     routes.clear();
     traces.clear();
+    traces.clear();
     logps.clear();
+    new_edges_count.clear();
   }
 };
 
@@ -176,6 +179,7 @@ public:
   int32_t k;
   int32_t bl;
   int32_t min_new_edges;
+  int32_t fixed_steps; // if > 0, fixed number of steps
 
   float rho;
   float alpha;
@@ -229,7 +233,7 @@ public:
              int32_t backup_list_size, int32_t min_new_edges_, float decay,
              float alpha_, float p_best_, bool use_local_search_,
              bool disable_heuristic_, bool extend_ls_ = false,
-             bool smooth_mmas_ = false);
+             bool smooth_mmas_ = false, int32_t fixed_steps_ = 0);
 
   void seed_rng(uint64_t seed);
 
@@ -268,11 +272,12 @@ private:
 
   // ---- MFACO sampling primitives on giant tour ----
   float sample_ant_fast(const float *probmat, int32_t start_node,
-                        std::vector<int32_t> &perm_out,
+                        std::vector<int32_t> &perm_out, int32_t &new_edges_out,
                         std::vector<int32_t> &checklist, Xoshiro128Plus &rng);
 
   float sample_ant_traced(const float *probmat, int32_t start_node,
                           std::vector<int32_t> &perm_out,
+                          int32_t &new_edges_out,
                           std::vector<int32_t> &checklist,
                           class MFACOTrace &trace, Xoshiro128Plus &rng,
                           float &logp_sum);

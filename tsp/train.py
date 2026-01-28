@@ -131,7 +131,7 @@ def replay_logp_from_cpp_batch_trace(traces, prob_sparse: torch.Tensor):
 
 
 # --- Training Logic ---
-def train_instance_ppo_every_S(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
+def train_instance_ppo(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
     model.train()
 
     aco = MFACO_TSP(
@@ -148,6 +148,7 @@ def train_instance_ppo_every_S(model, optimizer, coords, k_sparse, n_ants, dynam
         min_new_edges=args.min_new_edges,
         extend_ls=not args.no_extend_ls,
         normalized_heuristic=not args.no_normalized_heuristic,
+        fixed_steps=args.L,
     )
 
     # coords tensor for eta
@@ -177,7 +178,7 @@ def train_instance_ppo_every_S(model, optimizer, coords, k_sparse, n_ants, dynam
 
         # --- Collect on-policy data with fixed prior_old ---
         for inner in range(args.mini_H):
-            costs, flats, _, logps_cpp, traces, costs_raw, flats_raw = aco.sample(
+            costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges_count = aco.sample(
                 require_prob=True, prior=prior_old
             )
             costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
@@ -251,6 +252,12 @@ def train_instance_ppo_every_S(model, optimizer, coords, k_sparse, n_ants, dynam
                 surr1 = ratio * adv
                 surr2 = torch.clamp(ratio, 1 - args.ppo_clip, 1 + args.ppo_clip) * adv
                 loss = -torch.mean(torch.min(surr1, surr2))
+                
+                # New Edges Metric
+                if 'new_edges' in locals():
+                     new_edges_f = new_edges.astype(np.float32).mean()
+                else: 
+                     new_edges_f = 0.0
 
                 all_losses.append(loss)
 
@@ -259,12 +266,13 @@ def train_instance_ppo_every_S(model, optimizer, coords, k_sparse, n_ants, dynam
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
-    return avg_cost_last, best_seen
+    metrics = {"new_edges": new_edges_f}
+    return avg_cost_last, best_seen, metrics
 
 
 def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
     if args.algo == "ppo":
-        return train_instance_ppo_every_S(model, optimizer, coords, k_sparse, n_ants, dynamic, args)
+        return train_instance_ppo(model, optimizer, coords, k_sparse, n_ants, dynamic, args)
     model.train()
     
     # Use args for configuration
@@ -282,6 +290,7 @@ def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
         min_new_edges=args.min_new_edges,
         extend_ls=not args.no_extend_ls,
         normalized_heuristic=not args.no_normalized_heuristic,
+        fixed_steps=args.L,
     )
 
     optimizer.zero_grad(set_to_none=True)
@@ -297,7 +306,7 @@ def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
         losses = 0
         for mini_t in range(args.mini_H):
             # 1) sample + trace from C++
-            costs, flats, _, logps_cpp, traces, costs_raw, flats_raw = aco.sample(require_prob=True, prior=heu_mat)
+            costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges_count = aco.sample(require_prob=True, prior=heu_mat)
             costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
 
             # 2) differentiable prob table for training
@@ -333,13 +342,20 @@ def train_instance(model, optimizer, coords, k_sparse, n_ants, dynamic, args):
 
             losses += loss
             avg_cost_last = float(costs_t.mean().item())
+            avg_cost_last = float(costs_t.mean().item())
         losses.backward()
 
     # optional but often helpful for stability:
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
     optimizer.step()
-    return avg_cost_last, best_seen
+    
+    # Simple metric return
+    metrics = {}
+    if 'new_edges_count' in locals():
+         metrics["new_edges"] = new_edges_count.astype(np.float32).mean()
+         
+    return avg_cost_last, best_seen, metrics
 
 
 def train_epoch(args, epoch, net, optimizer, global_step, dynamic=True):
@@ -347,15 +363,18 @@ def train_epoch(args, epoch, net, optimizer, global_step, dynamic=True):
     steps = args.steps_per_epoch
     for step in tqdm(range(steps), desc=f"Epoch {epoch}", leave=True):
         coords = np.random.rand(args.n_node, 2).astype(np.float32)
-        avg_cost, best_cost = train_instance(net, optimizer, coords, args.k_sparse, args.n_ants, dynamic, args)
+        avg_cost, best_cost, metrics = train_instance(net, optimizer, coords, args.k_sparse, args.n_ants, dynamic, args)
         sum_avg_cost += avg_cost
         
         if not args.no_wandb and wandb is not None:
-             wandb.log({
+             log_dict = {
                 "train/avg_cost": float(avg_cost),
                 "train/best_cost": float(best_cost),
                 "train/epoch": int(epoch),
-            }, step=global_step)
+            }
+             for k, v in metrics.items():
+                 log_dict[f"train/{k}"] = float(v)
+             wandb.log(log_dict, step=global_step)
         global_step += 1
     
     epoch_avg_cost = sum_avg_cost / steps
@@ -407,15 +426,15 @@ def main():
 
     # Model / Training
     parser.add_argument("--n_ants", type=int, default=100, help="Number of ants")
-    parser.add_argument("--steps_per_epoch", type=int, default=16, help="Steps per epoch")
-    parser.add_argument("--epochs", type=int, default=50, help="Total epochs")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--steps_per_epoch", type=int, default=32, help="Steps per epoch")
+    parser.add_argument("--epochs", type=int, default=10, help="Total epochs")
+    parser.add_argument("--lr", type=float, default=5e-6, help="Learning rate")
     parser.add_argument("--seed", type=int, default=1234, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda:0", help="Device to use")
     
     # ACO Hyperparameters
-    parser.add_argument("--rho", type=float, default=0.5, help="Pheromone decay (rho)")
-    parser.add_argument("--min_new_edges", type=int, default=16, help="Min new edges")
+    parser.add_argument("--rho", type=float, default=0.1, help="Pheromone decay (rho)")
+    parser.add_argument("--min_new_edges", type=int, default=12, help="Min new edges")
     parser.add_argument("--H", type=int, default=10, help="ACO steps per instance (H)")
     parser.add_argument("--mini_H", type=int, default=100, help="ACO steps per iteration (mini_H)")
     parser.add_argument("--disable_heuristic", action="store_true", help="Disable heuristic")
@@ -437,6 +456,8 @@ def main():
     parser.add_argument("--baseline_runs", type=int, default=1, help="LKH runs per instance")
     parser.add_argument("--baseline_time_limit", type=float, default=10.0, help="LKH time limit per instance (seconds)")
     
+    parser.add_argument("--L", type=int, default=0, help="Fixed ant trajectory length (L). If > 0, ants take exactly L steps.")
+
     args = parser.parse_args()
 
     # Setup

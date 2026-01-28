@@ -132,7 +132,8 @@ public:
       int32_t backup_list_size = 32, int32_t min_new_edges = 8,
       float decay = 0.9f, float alpha = 1.0f, float p_best = 0.05f,
       bool use_local_search = true, bool disable_heuristic = false,
-      bool extend_ls = false, bool smooth_mmas = false) {
+      bool extend_ls = false, bool smooth_mmas = false,
+      int32_t fixed_steps = 0) {
     auto buf = coords.request();
     if (buf.ndim != 2 || buf.shape[1] != 2) {
       throw std::runtime_error("coords must have shape (n, 2)");
@@ -143,7 +144,7 @@ public:
     solver = std::make_unique<MFACO_TSP>(
         coords_ptr, n, n_ants, cand_list_size, backup_list_size, min_new_edges,
         decay, alpha, p_best, use_local_search, disable_heuristic, extend_ls,
-        smooth_mmas);
+        smooth_mmas, fixed_steps);
   }
 
   // ========================================================================
@@ -155,6 +156,7 @@ public:
   int32_t get_k() const { return solver->k; }
   int32_t get_bl() const { return solver->bl; }
   int32_t get_min_new_edges() const { return solver->min_new_edges; }
+  int32_t get_fixed_steps() const { return solver->fixed_steps; }
   float get_rho() const { return solver->rho; }
   float get_alpha() const { return solver->alpha; }
   float get_p_best() const { return solver->p_best; }
@@ -312,8 +314,21 @@ public:
       flats_raw_obj = flats_raw;
     }
 
+    // Convert new_edges_count to numpy
+    py::array_t<int32_t> new_edges_arr(solver->n_ants);
+    auto ne_buf = new_edges_arr.mutable_unchecked<1>();
+    if (!result.new_edges_count.empty()) {
+      for (int32_t a = 0; a < solver->n_ants; ++a) {
+        ne_buf(a) = result.new_edges_count[a];
+      }
+    } else {
+      // Should not happen if logic is correct, but safe fallback
+      for (int32_t a = 0; a < solver->n_ants; ++a)
+        ne_buf(a) = 0;
+    }
+
     return py::make_tuple(costs, flats, touched_list, logps_arr, traces_obj,
-                          costs_raw_obj, flats_raw_obj);
+                          costs_raw_obj, flats_raw_obj, new_edges_arr);
   }
 
   /**
@@ -436,19 +451,20 @@ PYBIND11_MODULE(faco_tsp, m) {
       .def(py::init<
                py::array_t<float, py::array::c_style | py::array::forcecast>,
                int32_t, int32_t, int32_t, int32_t, float, float, float, bool,
-               bool, bool, bool>(),
+               bool, bool, bool, int32_t>(),
            py::arg("coords"), py::arg("n_ants"), py::arg("cand_list_size") = 32,
            py::arg("backup_list_size") = 32, py::arg("min_new_edges") = 8,
            py::arg("decay") = 0.9f, py::arg("alpha") = 1.0f,
            py::arg("p_best") = 0.05f, py::arg("use_local_search") = true,
            py::arg("disable_heuristic") = false, py::arg("extend_ls") = false,
-           py::arg("smooth_mmas") = false)
+           py::arg("smooth_mmas") = false, py::arg("fixed_steps") = 0)
       // Properties
       .def_property_readonly("n", &PyMFACO_TSP::get_n)
       .def_property_readonly("n_ants", &PyMFACO_TSP::get_n_ants)
       .def_property_readonly("k", &PyMFACO_TSP::get_k)
       .def_property_readonly("bl", &PyMFACO_TSP::get_bl)
       .def_property_readonly("min_new_edges", &PyMFACO_TSP::get_min_new_edges)
+      .def_property_readonly("fixed_steps", &PyMFACO_TSP::get_fixed_steps)
       .def_property_readonly("rho", &PyMFACO_TSP::get_rho)
       .def_property_readonly("alpha", &PyMFACO_TSP::get_alpha)
       .def_property_readonly("p_best", &PyMFACO_TSP::get_p_best)

@@ -136,6 +136,7 @@ def train_instance(model, optimizer, coords, demand, capacity, k_sparse, n_ants,
         device=args.device,
         enable_torch_sync=True,
         normalized_heuristic=not args.no_normalized_heuristic,
+        fixed_steps=args.L,
     )
 
     optimizer.zero_grad(set_to_none=True)
@@ -152,7 +153,7 @@ def train_instance(model, optimizer, coords, demand, capacity, k_sparse, n_ants,
         losses = 0
         for mini_t in range(args.mini_H):
             # 1) sample + trace from C++
-            costs_t, perms, _, logps_cpp, traces = aco.sample(require_prob=True, prior=prior_mat)
+            costs_t, perms, _, logps_cpp, traces, new_edges_count = aco.sample(require_prob=True, prior=prior_mat)
             
             # 2) differentiable prob table for training
             prob_sparse = aco.prob_sparse_torch(prior=prior_mat)
@@ -194,7 +195,12 @@ def train_instance(model, optimizer, coords, demand, capacity, k_sparse, n_ants,
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
     optimizer.step()
-    return avg_cost_last, best_seen
+    
+    metrics = {}
+    if 'new_edges_count' in locals():
+         metrics["new_edges"] = new_edges_count.astype(np.float32).mean()
+
+    return avg_cost_last, best_seen, metrics
 
 def train_epoch(args, epoch, net, optimizer, global_step, dynamic=True):
     sum_avg_cost = 0
@@ -204,15 +210,18 @@ def train_epoch(args, epoch, net, optimizer, global_step, dynamic=True):
         coords = coords_t.detach().cpu().numpy().astype(np.float32)
         demand = demand_t.detach().cpu().numpy().astype(np.float32)
         
-        avg_cost, best_cost = train_instance(net, optimizer, coords, demand, capacity, args.k_sparse, args.n_ants, dynamic, args)
+        avg_cost, best_cost, metrics = train_instance(net, optimizer, coords, demand, capacity, args.k_sparse, args.n_ants, dynamic, args)
         sum_avg_cost += avg_cost
         
         if not args.no_wandb and wandb is not None:
-             wandb.log({
+             log_dict = {
                 "train/avg_cost": float(avg_cost),
                 "train/best_cost": float(best_cost),
                 "train/epoch": int(epoch),
-            }, step=global_step)
+            }
+             for k, v in metrics.items():
+                 log_dict[f"train/{k}"] = float(v)
+             wandb.log(log_dict, step=global_step)
         global_step += 1
     
     epoch_avg_cost = sum_avg_cost / steps
@@ -294,6 +303,8 @@ def main():
     parser.add_argument("--no_dynamic_feats", action="store_true", help="Disable dynamic features")
     parser.add_argument("--baseline", type=str, choices=['none', 'hgs'], default='hgs', help="Baseline for validation (none or hgs)")
     parser.add_argument("--baseline_time_limit", type=float, default=10.0, help="Time limit per instance for baseline solver")
+
+    parser.add_argument("--L", type=int, default=0, help="Fixed ant trajectory length (L). If > 0, ants take exactly L steps.")
 
     args = parser.parse_args()
     args.extend_ls = True # To remove

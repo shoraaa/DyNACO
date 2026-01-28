@@ -110,6 +110,7 @@ def infer_instance(model, coords, k_sparse, n_ants, dynamic, args, use_heuristic
         min_new_edges=args.min_new_edges,
         extend_ls=not args.no_extend_ls,
         normalized_heuristic=not args.no_normalized_heuristic,
+        fixed_steps=args.L,
     )
 
     best_seen = float("inf")
@@ -232,6 +233,7 @@ def main():
     parser.add_argument("--visualize", action="store_true", help="Enable visualization of metrics")
     parser.add_argument("--visualize_output", type=str, default="visualizations", help="Output directory for visualization plots")
     parser.add_argument("--timed", action="store_true", help="Show performance timings")
+    parser.add_argument("--L", type=int, default=0, help="Fixed ant trajectory length")
 
     args = parser.parse_args()
     

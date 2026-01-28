@@ -157,6 +157,7 @@ def infer_instance(model, coords, demand, capacity, k_sparse, n_ants, dynamic, a
         device=args.device,
         enable_torch_sync=True,
         normalized_heuristic=not args.no_normalized_heuristic,
+        fixed_steps=args.L,
     )
 
     aco.reset_timings()
@@ -191,7 +192,7 @@ def infer_instance(model, coords, demand, capacity, k_sparse, n_ants, dynamic, a
             for mini_t in range(args.mini_H):
                 # Sample
                 return_decoded = getattr(args, 'verify', False)
-                costs_t, perms, decoded, _, _ = aco.sample(require_prob=False, prior=prior_mat, return_decoded=return_decoded)
+                costs_t, perms, decoded, _, _, _ = aco.sample(require_prob=False, prior=prior_mat, return_decoded=return_decoded)
 
                 if return_decoded:
                     best_idx_t = int(costs_t.argmin().item())
@@ -287,6 +288,7 @@ def main():
     # Visualization
     parser.add_argument("--visualize", action="store_true", help="Enable visualization of metrics")
     parser.add_argument("--visualize_output", type=str, default="visualizations_cvrp", help="Output directory for visualization plots")
+    parser.add_argument("--L", type=int, default=0, help="Fixed ant trajectory length")
 
     args = parser.parse_args()
     

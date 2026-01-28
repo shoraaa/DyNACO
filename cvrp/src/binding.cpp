@@ -76,7 +76,8 @@ public:
                int32_t backup_list_size = 32, int32_t min_new_edges = 8,
                float decay = 0.9f, float alpha = 1.0f, float p_best = 0.05f,
                bool use_local_search = true, bool disable_heuristic = false,
-               bool extend_ls = false, bool smooth_mmas = false) {
+               bool extend_ls = false, bool smooth_mmas = false,
+               int32_t fixed_steps = 0) {
     auto cbuf = coords.request();
     if (cbuf.ndim != 2 || cbuf.shape[1] != 2) {
       throw std::runtime_error("coords must be shape (n,2)");
@@ -91,7 +92,8 @@ public:
     solver = std::make_unique<MFACO_CVRP>(
         (const float *)cbuf.ptr, (const float *)dbuf.ptr, n, capacity, n_ants,
         cand_list_size, backup_list_size, min_new_edges, decay, alpha, p_best,
-        use_local_search, disable_heuristic, extend_ls, smooth_mmas);
+        use_local_search, disable_heuristic, extend_ls, smooth_mmas,
+        fixed_steps);
   }
 
   // properties
@@ -206,7 +208,20 @@ public:
       }
     }
 
-    return py::make_tuple(costs, perms, decoded_obj, logps_arr, traces_obj);
+    // new_edges_count
+    py::array_t<int32_t> new_edges_arr(solver->n_ants);
+    auto ne_buf = new_edges_arr.mutable_unchecked<1>();
+    if (!result.new_edges_count.empty()) {
+      for (int32_t a = 0; a < solver->n_ants; ++a) {
+        ne_buf(a) = result.new_edges_count[a];
+      }
+    } else {
+      for (int32_t a = 0; a < solver->n_ants; ++a)
+        ne_buf(a) = 0;
+    }
+
+    return py::make_tuple(costs, perms, decoded_obj, logps_arr, traces_obj,
+                          new_edges_arr);
   }
 
   void update_pheromone_from_perm(
@@ -257,14 +272,14 @@ PYBIND11_MODULE(faco_cvrp, m) {
                py::array_t<float, py::array::c_style | py::array::forcecast>,
                py::array_t<float, py::array::c_style | py::array::forcecast>,
                float, int32_t, int32_t, int32_t, int32_t, float, float, float,
-               bool, bool, bool, bool>(),
+               bool, bool, bool, bool, int32_t>(),
            py::arg("coords"), py::arg("demand"), py::arg("capacity"),
            py::arg("n_ants"), py::arg("cand_list_size") = 32,
            py::arg("backup_list_size") = 32, py::arg("min_new_edges") = 8,
            py::arg("decay") = 0.9f, py::arg("alpha") = 1.0f,
            py::arg("p_best") = 0.05f, py::arg("use_local_search") = true,
            py::arg("disable_heuristic") = false, py::arg("extend_ls") = false,
-           py::arg("smooth_mmas") = false)
+           py::arg("smooth_mmas") = false, py::arg("fixed_steps") = 0)
       .def_property_readonly("n", &PyMFACO_CVRP::n)
       .def_property_readonly("m", &PyMFACO_CVRP::m)
       .def_property_readonly("n_ants", &PyMFACO_CVRP::n_ants)
@@ -274,6 +289,9 @@ PYBIND11_MODULE(faco_cvrp, m) {
       .def_property_readonly("best_cost", &PyMFACO_CVRP::best_cost)
       .def_property_readonly("tau_min", &PyMFACO_CVRP::tau_min)
       .def_property_readonly("tau_max", &PyMFACO_CVRP::tau_max)
+      .def_property_readonly(
+          "fixed_steps",
+          [](const PyMFACO_CVRP &self) { return self.solver->fixed_steps; })
       .def_property_readonly("pheromone_sparse_np",
                              &PyMFACO_CVRP::pheromone_sparse_np)
       .def_property_readonly("nn_list", &PyMFACO_CVRP::nn_list)

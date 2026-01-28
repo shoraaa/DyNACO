@@ -17,13 +17,14 @@ MFACO_CVRP::MFACO_CVRP(const float *coords_ptr, const float *demand_ptr,
                        int32_t min_new_edges_, float decay, float alpha_,
                        float p_best_, bool use_local_search_,
                        bool disable_heuristic_, bool extend_ls_,
-                       bool smooth_mmas_)
+                       bool smooth_mmas_, int32_t fixed_steps_)
     : n(n_), m(n_ - 1), n_ants(n_ants_), k(std::min(cand_list_size, n_ - 1)),
       bl(std::min(backup_list_size, std::max(0, n_ - 1 - k))),
       min_new_edges(min_new_edges_), rho(decay), alpha(alpha_), p_best(p_best_),
       use_local_search(use_local_search_),
       disable_heuristic(disable_heuristic_), extend_ls(extend_ls_),
-      smooth_mmas(smooth_mmas_), capacity(capacity_) {
+      smooth_mmas(smooth_mmas_), capacity(capacity_),
+      fixed_steps(fixed_steps_) {
   if (!coords_ptr || !demand_ptr) {
     throw std::runtime_error("coords_ptr and demand_ptr must not be null");
   }
@@ -835,31 +836,50 @@ float MFACO_CVRP::two_opt_nn(std::vector<int32_t> &perm,
 // --------------------
 float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
                                   std::vector<int32_t> &perm_out,
+                                  int32_t &new_edges_out,
                                   std::vector<int32_t> &checklist,
                                   Xoshiro128Plus &rng) {
+  // Initialize perm as copy of source
   std::vector<int32_t> perm = source_perm;
-  std::vector<int32_t> positions(n, -1);
-  for (int32_t i = 0; i < m; ++i)
-    positions[perm[i]] = i;
+  std::vector<int32_t> positions = source_positions; // copy
 
   std::vector<uint8_t> visited(n, 0);
-  visited[0] = 1;
-  visited[start_node] = 1;
-  int32_t visited_count = 1;
+  int32_t start_customer = (start_node == 0) ? perm[0] : start_node; // guard
+  visited[start_customer] = 1;
+  visited[0] = 1; // depot always visited
+
+  int32_t visited_count = 1; // customers visited
 
   checklist.clear();
-  checklist.push_back(start_node);
+  checklist.push_back(start_customer);
 
   int32_t new_edges = 0;
-  int32_t curr = start_node;
+  int32_t steps = 0;
+  int32_t curr = start_customer;
 
-  auto t1 = std::chrono::high_resolution_clock::now();
-  while (new_edges < min_new_edges && visited_count < m) {
+  while (true) {
+    if (fixed_steps > 0) {
+      if (steps >= fixed_steps)
+        break;
+    } else {
+      if (new_edges >= min_new_edges || visited_count >= m)
+        break;
+    }
+    if (visited_count >= m)
+      break;
+
     int16_t pick_j = -1;
     uint64_t valid_mask = 0;
     auto [chosen, is_stoch, used_unif] = select_next_node(
         curr, &probmat[curr * k], visited.data(), rng, pick_j, valid_mask);
 
+    if (chosen <= 0) {
+      // Should essentially never happen if k is large enough or fallback logic
+      // is robust
+      break;
+    }
+
+    // Check if this creates a new edge (in cycle)
     if (!contains_edge(curr, chosen)) {
       ++new_edges;
       if (std::find(checklist.begin(), checklist.end(), curr) ==
@@ -878,68 +898,79 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
 
     visited[chosen] = 1;
     ++visited_count;
+    ++steps;
     curr = chosen;
   }
-  auto t2 = std::chrono::high_resolution_clock::now();
 
+  new_edges_out = new_edges;
+
+  // Local Search
   if (use_local_search && !checklist.empty()) {
+    auto start_ls = std::chrono::steady_clock::now();
     two_opt_nn(perm, positions, checklist);
+    auto end_ls = std::chrono::steady_clock::now();
+    time_ls += std::chrono::duration<double>(end_ls - start_ls).count();
   }
-  auto t3 = std::chrono::high_resolution_clock::now();
+
+  // Split
+  auto start_split = std::chrono::steady_clock::now();
+  float cost = split_cost_fast(perm);
+  auto end_split = std::chrono::steady_clock::now();
+  time_split += std::chrono::duration<double>(end_split - start_split).count();
 
   perm_out = perm;
-  float cost = split_cost_fast(perm);
-  auto t4 = std::chrono::high_resolution_clock::now();
-
-  double d_ant = std::chrono::duration<double>(t2 - t1).count();
-  double d_ls = std::chrono::duration<double>(t3 - t2).count();
-  double d_split = std::chrono::duration<double>(t4 - t3).count();
-
-#pragma omp atomic
-  time_ant += d_ant;
-#pragma omp atomic
-  time_ls += d_ls;
-#pragma omp atomic
-  time_split += d_split;
-
   return cost;
 }
 
 float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
                                     std::vector<int32_t> &perm_out,
+                                    int32_t &new_edges_out,
                                     std::vector<int32_t> &checklist,
                                     MFACOTrace &trace, Xoshiro128Plus &rng,
                                     float &logp_sum) {
   trace.clear();
   trace.start_node = start_node;
+  trace.reserve(min_new_edges * 2);
 
   std::vector<int32_t> perm = source_perm;
-  std::vector<int32_t> positions(n, -1);
-  for (int32_t i = 0; i < m; ++i)
-    positions[perm[i]] = i;
+  std::vector<int32_t> positions = source_positions;
 
   std::vector<uint8_t> visited(n, 0);
+  int32_t start_customer = (start_node == 0) ? perm[0] : start_node;
+  visited[start_customer] = 1;
   visited[0] = 1;
-  visited[start_node] = 1;
+
   int32_t visited_count = 1;
 
   checklist.clear();
-  checklist.push_back(start_node);
+  checklist.push_back(start_customer);
 
   int32_t new_edges = 0;
-  int32_t curr = start_node;
+  int32_t steps = 0;
+  int32_t curr = start_customer;
   logp_sum = 0.0f;
 
-  auto t1 = std::chrono::high_resolution_clock::now();
-  while (new_edges < min_new_edges && visited_count < m) {
+  while (true) {
+    if (fixed_steps > 0) {
+      if (steps >= fixed_steps)
+        break;
+    } else {
+      if (new_edges >= min_new_edges || visited_count >= m)
+        break;
+    }
+    if (visited_count >= m)
+      break;
+
     int16_t pick_j = -1;
     uint64_t valid_mask = 0;
     auto [chosen, is_stoch, log_prob] = select_next_node(
         curr, &probmat[curr * k], visited.data(), rng, pick_j, valid_mask);
 
-    if (is_stoch) {
+    if (chosen <= 0)
+      break;
+
+    if (is_stoch)
       logp_sum += log_prob;
-    }
 
     trace.curr_nodes.push_back(curr);
     trace.chosen_nodes.push_back(chosen);
@@ -965,30 +996,27 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
 
     visited[chosen] = 1;
     ++visited_count;
+    ++steps;
     curr = chosen;
   }
-  auto t2 = std::chrono::high_resolution_clock::now();
 
+  new_edges_out = new_edges;
+
+  // Local Search
   if (use_local_search && !checklist.empty()) {
+    auto start_ls = std::chrono::steady_clock::now();
     two_opt_nn(perm, positions, checklist);
+    auto end_ls = std::chrono::steady_clock::now();
+    time_ls += std::chrono::duration<double>(end_ls - start_ls).count();
   }
-  auto t3 = std::chrono::high_resolution_clock::now();
+
+  // Split
+  auto start_split = std::chrono::steady_clock::now();
+  float cost = split_cost_fast(perm);
+  auto end_split = std::chrono::steady_clock::now();
+  time_split += std::chrono::duration<double>(end_split - start_split).count();
 
   perm_out = perm;
-  float cost = split_cost_fast(perm);
-  auto t4 = std::chrono::high_resolution_clock::now();
-
-  double d_ant = std::chrono::duration<double>(t2 - t1).count();
-  double d_ls = std::chrono::duration<double>(t3 - t2).count();
-  double d_split = std::chrono::duration<double>(t4 - t3).count();
-
-#pragma omp atomic
-  time_ant += d_ant;
-#pragma omp atomic
-  time_ls += d_ls;
-#pragma omp atomic
-  time_split += d_split;
-
   return cost;
 }
 
@@ -997,6 +1025,7 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
   result.clear();
   result.costs.resize(n_ants);
   result.routes.resize(n_ants); // each is perm length m
+  result.new_edges_count.resize(n_ants);
 
   std::vector<float> probmat;
   compute_probmat(prior_ptr, probmat);
@@ -1034,10 +1063,12 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
         trace.reserve(min_new_edges * 2);
 
         float logp_sum = 0.0f;
+        int32_t mne_out = 0;
         float cost =
             sample_ant_traced(probmat.data(), start_nodes[a], result.routes[a],
-                              checklist, trace, rng_, logp_sum);
+                              mne_out, checklist, trace, rng_, logp_sum);
         result.costs[a] = cost;
+        result.new_edges_count[a] = mne_out;
         result.logps[a] = logp_sum;
 
         result.traces.start_nodes.push_back(trace.start_node);
@@ -1069,9 +1100,11 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
           rng_local.seed(ant_seeds[(size_t)a]);
 
           float logp_sum = 0.0f;
-          result.costs[a] = sample_ant_traced(probmat.data(), start_nodes[a],
-                                              result.routes[a], checklist,
-                                              trace, rng_local, logp_sum);
+          int32_t mne_out = 0;
+          result.costs[a] = sample_ant_traced(
+              probmat.data(), start_nodes[a], result.routes[a], mne_out,
+              checklist, trace, rng_local, logp_sum);
+          result.new_edges_count[a] = mne_out;
           result.logps[a] = logp_sum;
         }
       }
@@ -1121,7 +1154,7 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
         rng_local.seed(ant_seeds[(size_t)a]);
         result.costs[a] =
             sample_ant_fast(probmat.data(), start_nodes[a], result.routes[a],
-                            checklist, rng_local);
+                            result.new_edges_count[a], checklist, rng_local);
       }
     }
   }

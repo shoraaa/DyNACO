@@ -19,12 +19,13 @@ MFACO_TSP::MFACO_TSP(const float *coords_ptr, int32_t n_, int32_t n_ants_,
                      int32_t min_new_edges_, float decay, float alpha_,
                      float p_best_, bool use_local_search_,
                      bool disable_heuristic_, bool extend_ls_,
-                     bool smooth_mmas_)
+                     bool smooth_mmas_, int32_t fixed_steps_)
     : n(n_), n_ants(n_ants_), k(std::min(cand_list_size, n_ - 1)),
       bl(std::min(backup_list_size, std::max(0, n_ - 1 - k))),
       min_new_edges(min_new_edges_), rho(decay), alpha(alpha_), p_best(p_best_),
       smooth_mmas(smooth_mmas_), use_local_search(use_local_search_),
-      extend_ls(extend_ls_), disable_heuristic(disable_heuristic_) {
+      extend_ls(extend_ls_), disable_heuristic(disable_heuristic_),
+      fixed_steps(fixed_steps_) {
   if (coords_ptr == nullptr) {
     throw std::runtime_error("coords_ptr must not be null");
   }
@@ -72,6 +73,7 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
     result.costs_raw.resize(n_ants);
     result.routes_raw.resize(n_ants);
   }
+  result.new_edges_count.resize(n_ants);
 
   // Compute probability matrix: tau^alpha * eta * prior
   std::vector<float> probmat(n * k);
@@ -116,10 +118,12 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
         trace.reserve(min_new_edges * 2);
 
         float logp_sum = 0.0f;
+        int32_t mne_out = 0;
         float cost =
             sample_ant_traced(probmat.data(), start_nodes[a], result.routes[a],
                               result.routes_raw[a], result.costs_raw[a],
-                              checklist, trace, rng_, logp_sum);
+                              mne_out, checklist, trace, rng_, logp_sum);
+        result.new_edges_count[a] = mne_out;
 
         result.costs[a] = cost;
         result.logps[a] = logp_sum;
@@ -157,10 +161,12 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
           rng_local.seed(ant_seeds[static_cast<size_t>(a)]);
 
           float logp_sum = 0.0f;
+          int32_t mne_out = 0;
           result.costs[a] = sample_ant_traced(
               probmat.data(), start_nodes[a], result.routes[a],
-              result.routes_raw[a], result.costs_raw[a], checklist, trace,
-              rng_local, logp_sum);
+              result.routes_raw[a], result.costs_raw[a], mne_out, checklist,
+              trace, rng_local, logp_sum);
+          result.new_edges_count[a] = mne_out;
           result.logps[a] = logp_sum;
         }
       }
@@ -218,7 +224,7 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
         rng_local.seed(ant_seeds[static_cast<size_t>(a)]);
         result.costs[a] =
             sample_ant_fast(probmat.data(), start_nodes[a], result.routes[a],
-                            checklist, rng_local);
+                            result.new_edges_count[a], checklist, rng_local);
       }
     }
   }
@@ -591,6 +597,7 @@ void MFACO_TSP::compute_probmat(const float *prior_ptr,
 
 float MFACO_TSP::sample_ant_fast(const float *probmat, int32_t start_node,
                                  std::vector<int32_t> &route_out,
+                                 int32_t &new_edges_out,
                                  std::vector<int32_t> &checklist,
                                  Xoshiro128Plus &rng) {
   // Initialize route as copy of source
@@ -608,9 +615,19 @@ float MFACO_TSP::sample_ant_fast(const float *probmat, int32_t start_node,
   checklist.push_back(start_node);
 
   int32_t new_edges = 0;
+  int32_t steps = 0;
   int32_t curr = start_node;
 
-  while (new_edges < min_new_edges && visited_count < n) {
+  while (true) {
+    if (fixed_steps > 0) {
+      if (steps >= fixed_steps)
+        break;
+    } else {
+      if (new_edges >= min_new_edges || visited_count >= n)
+        break;
+    }
+    if (visited_count >= n)
+      break;
     int16_t pick_j = -1;
     uint64_t valid_mask = 0;
     auto [chosen, is_stoch, used_unif] = select_next_node(
@@ -640,8 +657,11 @@ float MFACO_TSP::sample_ant_fast(const float *probmat, int32_t start_node,
 
     visited[chosen] = 1;
     ++visited_count;
+    ++steps;
     curr = chosen;
   }
+
+  new_edges_out = new_edges;
 
   // Apply local search if enabled
   if (use_local_search && !checklist.empty()) {
@@ -656,7 +676,7 @@ float MFACO_TSP::sample_ant_fast(const float *probmat, int32_t start_node,
 float MFACO_TSP::sample_ant_traced(const float *probmat, int32_t start_node,
                                    std::vector<int32_t> &route_out,
                                    std::vector<int32_t> &route_raw_out,
-                                   float &cost_raw_out,
+                                   float &cost_raw_out, int32_t &new_edges_out,
                                    std::vector<int32_t> &checklist,
                                    MFACOTrace &trace, Xoshiro128Plus &rng,
                                    float &logp_sum) {
@@ -679,10 +699,20 @@ float MFACO_TSP::sample_ant_traced(const float *probmat, int32_t start_node,
   checklist.push_back(start_node);
 
   int32_t new_edges = 0;
+  int32_t steps = 0;
   int32_t curr = start_node;
   logp_sum = 0.0f;
 
-  while (new_edges < min_new_edges && visited_count < n) {
+  while (true) {
+    if (fixed_steps > 0) {
+      if (steps >= fixed_steps)
+        break;
+    } else {
+      if (new_edges >= min_new_edges || visited_count >= n)
+        break;
+    }
+    if (visited_count >= n)
+      break;
     int16_t pick_j = -1;
     uint64_t valid_mask = 0;
     auto [chosen, is_stoch, log_prob] = select_next_node(
@@ -725,8 +755,11 @@ float MFACO_TSP::sample_ant_traced(const float *probmat, int32_t start_node,
 
     visited[chosen] = 1;
     ++visited_count;
+    ++steps;
     curr = chosen;
   }
+
+  new_edges_out = new_edges;
 
   // Capture raw results
   route_raw_out = route;

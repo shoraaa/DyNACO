@@ -126,6 +126,7 @@ class MFACO_TSP:
         use_cpp: bool = True,
         disable_heuristic: bool = False,
         normalized_heuristic: bool = False,
+        fixed_steps: int = 0,
     ):
         """
         Initialize MFACO_TSP solver.
@@ -145,12 +146,14 @@ class MFACO_TSP:
             enable_torch_sync: if False, skip torch pheromone sync (faster baseline)
             device: torch device (only used by Python backend)
             use_cpp: if False, force Python backend even if C++ available
+            fixed_steps: if > 0, force ants to take exactly this many steps (swaps)
         """
         self.device = device
         self.disable_heuristic = bool(disable_heuristic)
         self.extend_ls = bool(extend_ls)
         self.smooth_mmas = bool(smooth_mmas)
         self.normalized_heuristic = bool(normalized_heuristic)
+        self.fixed_steps = int(fixed_steps)
 
         # Some callers (e.g., notebooks) may pass a PyG `Data` object.
         # In that case we interpret `coords` as `data.x`.
@@ -184,6 +187,7 @@ class MFACO_TSP:
             self.disable_heuristic,
             self.extend_ls,
             self.smooth_mmas,
+            self.fixed_steps,
         )
         
         if self.normalized_heuristic and not self.disable_heuristic:
@@ -349,7 +353,9 @@ class MFACO_TSP:
             flats: list of (n+1,) arrays, each with last == first
             touched_list: list of touched node arrays
             logps_nondiff: None (placeholder)
+            logps_nondiff: None (placeholder)
             traces: list of MFACOTrace or MFACOTrace batch if require_prob else None
+            new_edges_count: (n_ants,) array of new edges created
         """
 
         # pybind expects a CPU numpy array (or None). Accept torch tensors
@@ -394,9 +400,15 @@ class MFACO_TSP:
                 )
             prior = arr
 
-        costs, flats, touched, logps, traces_raw, costs_raw, flats_raw = self._cpp.sample(
-            invtemp, require_prob, prior, parallel_traced
-        )
+        if self._cpp:
+            costs, flats, touched, logps, traces_raw, costs_raw, flats_raw, new_edges_count = self._cpp.sample(
+                invtemp, require_prob, prior, parallel_traced
+            )
+        else:
+            # Fallback for Python backend (if it existed fully, but assuming it returns similarly if updated)
+            # For now just raise error if python backend is used with this feature? 
+            # The codebase seems to rely heavily on cpp.
+            raise NotImplementedError("Python backend sample not fully updated for tuple unpacking here")
 
         # Keep the C++ batch trace object (much faster than converting to Python lists)
         traces = traces_raw
@@ -405,7 +417,7 @@ class MFACO_TSP:
         if require_prob and self.enable_torch_sync:
             self.sync_pheromone_to_torch()
         
-        return costs, flats, touched, logps, traces, costs_raw, flats_raw
+        return costs, flats, touched, logps, traces, costs_raw, flats_raw, new_edges_count
     
     def _update_pheromone_from_flat(self, best_flat: np.ndarray, best_cost: float) -> None:
         """

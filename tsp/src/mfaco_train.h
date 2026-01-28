@@ -182,6 +182,7 @@ struct SampleResult {
   std::vector<float> costs_raw; // (n_ants,) cost before LS
   std::vector<std::vector<int32_t>>
       routes_raw; // (n_ants, n) - each route before LS
+  std::vector<int32_t> new_edges_count; // (n_ants,)
 
   void clear() {
     costs.clear();
@@ -190,6 +191,7 @@ struct SampleResult {
     logps.clear();
     costs_raw.clear();
     routes_raw.clear();
+    new_edges_count.clear();
   }
 };
 
@@ -205,6 +207,7 @@ public:
   int32_t k;  // candidate list size
   int32_t bl; // backup list size
   int32_t min_new_edges;
+  int32_t fixed_steps; // if > 0, fixed number of steps
   float rho;        // pheromone decay (1 - evaporation rate)
   float alpha;      // pheromone exponent
   float p_best;     // for tau limits
@@ -254,7 +257,8 @@ public:
             int32_t backup_list_size = 32, int32_t min_new_edges = 8,
             float decay = 0.9f, float alpha = 1.0f, float p_best = 0.05f,
             bool use_local_search = true, bool disable_heuristic = false,
-            bool extend_ls = false, bool smooth_mmas = false);
+            bool extend_ls = false, bool smooth_mmas = false,
+            int32_t fixed_steps = 0);
 
   // ========================================================================
   // API Methods
@@ -364,6 +368,7 @@ private:
    */
   float sample_ant_fast(const float *probmat, // (n, k) precomputed weights
                         int32_t start_node, std::vector<int32_t> &route_out,
+                        int32_t &new_edges_out,
                         std::vector<int32_t> &checklist, Xoshiro128Plus &rng);
 
   /**
@@ -372,7 +377,7 @@ private:
   float sample_ant_traced(const float *probmat, // (n, k) precomputed weights
                           int32_t start_node, std::vector<int32_t> &route_out,
                           std::vector<int32_t> &route_raw_out,
-                          float &cost_raw_out, std::vector<int32_t> &checklist,
+                          float &cost_raw_out, int32_t &new_edges_out, std::vector<int32_t> &checklist,
                           MFACOTrace &trace, Xoshiro128Plus &rng,
                           float &logp_sum);
 
