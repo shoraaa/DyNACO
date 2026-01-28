@@ -181,7 +181,7 @@ struct SampleResult {
   std::vector<float> logps;     // (n_ants,) log probability of sample
   std::vector<float> costs_raw; // (n_ants,) cost before LS
   std::vector<std::vector<int32_t>>
-      routes_raw; // (n_ants, n) - each route before LS
+      routes_raw;                       // (n_ants, n) - each route before LS
   std::vector<int32_t> new_edges_count; // (n_ants,)
 
   void clear() {
@@ -208,9 +208,9 @@ public:
   int32_t bl; // backup list size
   int32_t min_new_edges;
   int32_t fixed_steps; // if > 0, fixed number of steps
-  float rho;        // pheromone decay (1 - evaporation rate)
-  float alpha;      // pheromone exponent
-  float p_best;     // for tau limits
+  float rho;           // pheromone decay (1 - evaporation rate)
+  float alpha;         // pheromone exponent
+  float p_best;        // for tau limits
   bool smooth_mmas; // if true, use Smooth-MMAS style pheromone update (linear
                     // interpolation)
   bool use_local_search;
@@ -368,8 +368,8 @@ private:
    */
   float sample_ant_fast(const float *probmat, // (n, k) precomputed weights
                         int32_t start_node, std::vector<int32_t> &route_out,
-                        int32_t &new_edges_out,
-                        std::vector<int32_t> &checklist, Xoshiro128Plus &rng);
+                        int32_t &new_edges_out, std::vector<int32_t> &checklist,
+                        Xoshiro128Plus &rng);
 
   /**
    * Sample a single ant's solution with trace recording.
@@ -377,9 +377,9 @@ private:
   float sample_ant_traced(const float *probmat, // (n, k) precomputed weights
                           int32_t start_node, std::vector<int32_t> &route_out,
                           std::vector<int32_t> &route_raw_out,
-                          float &cost_raw_out, int32_t &new_edges_out, std::vector<int32_t> &checklist,
-                          MFACOTrace &trace, Xoshiro128Plus &rng,
-                          float &logp_sum);
+                          float &cost_raw_out, int32_t &new_edges_out,
+                          std::vector<int32_t> &checklist, MFACOTrace &trace,
+                          Xoshiro128Plus &rng, float &logp_sum);
 
   /**
    * Select next node using roulette wheel on candidate list.

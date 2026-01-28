@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: faco_tsp
+Version: 0.1.0
+Summary: C++ MFACO Training Module for fast neural-guided ACO training
+Author: NGFACO
+Requires-Python: >=3.8
+Requires-Dist: pybind11>=2.6
+Requires-Dist: numpy>=1.19
+Dynamic: author
+Dynamic: description
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+Fast C++ implementation of MFACO for TSP with pybind11 bindings

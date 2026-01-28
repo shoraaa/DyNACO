@@ -59,8 +59,6 @@ class MFACO_CVRP:
         device: str = "cpu",
         enable_torch_sync: bool = True,
         normalized_heuristic: bool = False,
-        enable_torch_sync: bool = True,
-        normalized_heuristic: bool = False,
         fixed_steps: int = 0,
     ):
         coords_np = _as_numpy_f32(coords)
@@ -84,8 +82,7 @@ class MFACO_CVRP:
             bool(disable_heuristic),
             bool(extend_ls),
             bool(smooth_mmas),
-            bool(extend_ls),
-            bool(smooth_mmas),
+
             int(fixed_steps),
         )
         self.device = device
@@ -213,3 +210,9 @@ class MFACO_CVRP:
     def tau_nk_torch(self) -> torch.Tensor:
         """Returns a snapshot (copy) of the current pheromone tensor (n,k)."""
         return self._pheromone_sparse.clone()
+
+    @property
+    def nn_torch(self) -> torch.Tensor:
+        if not hasattr(self, '_nn_torch'):
+             self._nn_torch = torch.from_numpy(self.solver.nn_list.copy()).to(self.device).long()
+        return self._nn_torch

@@ -131,7 +131,8 @@ def get_modules(problem):
         load_val = utils.load_val_dataset
         build_pyg = utils.build_pyg_data
         get_base = baselines.get_baseline_tsp
-        return Net, MFACO, load_val, build_pyg, get_base, faco.set_faco_cpp_threads
+        gen_val = utils.generate_val_dataset
+        return Net, MFACO, load_val, build_pyg, gen_val, get_base, faco.set_faco_cpp_threads
     elif problem == 'cvrp':
         import net
         import faco
@@ -142,8 +143,9 @@ def get_modules(problem):
         MFACO = faco.MFACO_CVRP
         load_val = utils.load_val_dataset
         build_pyg = utils.build_pyg_data
+        gen_data = utils.gen_instance_for_mfaco
         get_base = baselines.get_baseline_cvrp
-        return Net, MFACO, load_val, build_pyg, get_base, faco.set_faco_cpp_threads
+        return Net, MFACO, load_val, build_pyg, gen_data, get_base, faco.set_faco_cpp_threads
     else:
         raise ValueError(f"Unknown problem: {problem}")
 
@@ -380,21 +382,26 @@ def main():
         else:
             val_list = data # Tensor or list
     else:
-        Net, MFACO, load_val_dataset, build_pyg_data, get_baseline, set_threads_fn = get_modules(args.problem)
+        Net, MFACO, load_val_dataset, build_pyg_data, gen_data_fn, get_baseline, set_threads_fn = get_modules(args.problem)
         set_threads_fn(args.threads)
         print("Loading validation dataset...")
         try:
              val_list = load_val_dataset(args.n_node, "cpu") # Generalize to CPU load first
         except FileNotFoundError:
-            print("Generate data locally first!")
-            raise
+            print("Generating data...")
+            if args.problem == 'tsp':
+                gen_data_fn(args.n_node, 16, args.k_sparse, "cpu")
+                val_list = load_val_dataset(args.n_node, "cpu")
+            else:
+                # CVRP Utils check
+                raise
 
     # Baseline
     baseline_values = None
     if args.baseline != 'none':
         # Re-import to ensure functions are avail if dataset loaded without top block
         if 'get_baseline' not in locals():
-            _, _, _, _, get_baseline, _ = get_modules(args.problem)
+            _, _, _, _, _, get_baseline, _ = get_modules(args.problem)
         
         print("Computing baseline...")
         if args.problem == 'tsp':
@@ -430,7 +437,7 @@ def main():
         
         # Determine net class
         if 'Net' not in locals():
-            Net, MFACO, load_val_dataset, build_pyg_data, _, set_threads_fn = get_modules(args.problem)
+            Net, MFACO, load_val_dataset, build_pyg_data, _, _, set_threads_fn = get_modules(args.problem)
             set_threads_fn(args.threads)
         
         model = Net(logit_net=not args.no_logit_net).to(args.device)
@@ -439,7 +446,7 @@ def main():
     else:
         # Need MFACO class even if no model
         if 'MFACO' not in locals():
-            _, MFACO, _, build_pyg_data, _, set_threads_fn = get_modules(args.problem)
+            _, MFACO, _, build_pyg_data, _, _, set_threads_fn = get_modules(args.problem)
             set_threads_fn(args.threads)
 
     # Eval Loop

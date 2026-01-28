@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from tqdm import tqdm
 import sys
+from typing import Optional
 
 # Shared helpers
 import wandb
@@ -78,13 +79,157 @@ def replay_logp_from_cpp_batch_trace(traces, prob_sparse: torch.Tensor):
 
     return logp, ndec
 
+EPS = 1e-12
+
 def prob_sparse_from_tau_eta_prior(tau_nk, eta_nk, prior_nk, alpha=1.0, beta=1.0, eps=1e-12):
     tau = tau_nk.clamp_min(eps)
     eta = eta_nk.clamp_min(eps)
     w = torch.exp(alpha * torch.log(tau) + beta * torch.log(eta) + prior_nk)
     return w.clamp_min(eps)
 
+def compute_prior_metrics(prior_new: torch.Tensor, prior_old: Optional[torch.Tensor]):
+    """
+    Computes L2 drift and approximate KL between consecutive priors.
+    """
+    if prior_old is None:
+        return 0.0, 0.0
+    
+    # Drift: Relative L2 change
+    diff = (prior_new - prior_old).view(-1)
+    norm_old = prior_old.view(-1).norm(p=2)
+    drift = diff.norm(p=2) / (norm_old + 1e-9)
+    
+    # KL: We approximate by treating prior logits as specifying a distribution P ~ exp(prior)
+    # KL(P || Q) = sum p_i log(p_i/q_i). 
+    # Since we have full logits (n, k), we can do this exactly on the candidate graph.
+    # Note: This is KL between the *prior components* only, not the full ACO distribution.
+    p_logits = prior_new
+    q_logits = prior_old
+    p_log_softmax = torch.log_softmax(p_logits, dim=1)
+    p_probs = p_log_softmax.exp()
+    q_log_softmax = torch.log_softmax(q_logits, dim=1)
+    
+    kl = (p_probs * (p_log_softmax - q_log_softmax)).sum(dim=1).mean()
+    
+    return drift.item(), kl.item()
 
+def compute_turnover(prob_new: torch.Tensor, prob_old: Optional[torch.Tensor], top_k_pct: float = 0.05):
+    """
+    Fraction of top-k edges that changed.
+    """
+    if prob_old is None:
+        return 0.0
+    
+    k = prob_new.size(1)
+    k_top = max(1, int(k * top_k_pct))
+    
+    _, idx_new = prob_new.topk(k_top, dim=1)
+    _, idx_old = prob_old.topk(k_top, dim=1)
+    
+    # Check overlap (idx_new is in idx_old)
+    # Expand to (N, K_top, 1) vs (N, 1, K_top)
+    mask = (idx_new.unsqueeze(2) == idx_old.unsqueeze(1))
+    # Any match in dim 2 means the item in dim 1 was found
+    found = mask.any(dim=2) # (N, K_top)
+    overlap_count = found.float().sum(dim=1).mean()
+    
+    turnover = 1.0 - (overlap_count / k_top)
+    return turnover.item()
+
+def compute_edge_survival(traces, flats, aco, device):
+    """
+    Compute fraction of sampled edges that survived local search.
+    """
+    # 1. Extract sampled edges from traces
+    # traces is batch trace. Need to parse.
+    # We can do this on CPU for simplicity as traces are often numpy-based or mixed.
+    
+    curr_nodes = torch.as_tensor(np.asarray(traces.curr_nodes, dtype=np.int64), device=device)
+    pick_j = torch.as_tensor(np.asarray(traces.pick_j, dtype=np.int64), device=device)
+    
+    # Filter valid steps (pick_j >= 0)
+    valid = pick_j >= 0
+    u = curr_nodes[valid]
+    v_idx = pick_j[valid]
+    
+    # Resolve v
+    nn = aco.nn_torch # (N, K)
+    v = nn[u, v_idx]
+    
+    # Edges as usually undirected for TSP/CVRP comparison? 
+    # Flats are tours. Edges are (min, max).
+    sampled_edges = torch.stack([torch.min(u, v), torch.max(u, v)], dim=1)
+    # Unique sampled edges per ant? 
+    # Actually, we aggregate over all ants.
+    # But we need to check if the edge is in the *corresponding* ant's final tour.
+    # This matching is tricky with batch traces not separated by ant easily without 'starts'.
+    
+    # Re-use starts logic
+    starts = torch.as_tensor(np.asarray(traces.starts, dtype=np.int64), device=device)
+    n_ants = int(getattr(traces, "n_ants", int(starts.numel() - 1)))
+    
+    # Create ant_id for each step
+    counts = (starts[1:1+n_ants] - starts[:n_ants])
+    ant_ids_full = torch.repeat_interleave(torch.arange(n_ants, device=device), counts)
+    ant_ids = ant_ids_full[valid]
+    
+    # 2. Extract final edges from flats
+    # flats: list of (N_nodes+1) arrays (for TSP/CVRP giant tour)
+    # We need to convert flats to edge sets.
+    # Vectorizing this might be hard if lengths differ (CVRP decoded?), but flats are usually perms.
+    # In MFACO code, flats are list of numpy arrays.
+    
+    total_survival = 0.0
+    total_edges = 0
+    
+    # Doing this in a loop might be slow if many ants.
+    # But n_ants ~ 100. It's fine.
+    
+    # Pre-process flats to sets of edges
+    # Sampling edges (N_edges, 3) -> (ant_id, u, v)
+    
+    # Let's do a strict check:
+    # Per ant, set of sampled edges.
+    # Per ant, set of final edges.
+    # Intersect.
+    
+    # CPU loop for safety and ease
+    u_cpu = u.cpu().numpy()
+    v_cpu = v.cpu().numpy()
+    ant_ids_cpu = ant_ids.cpu().numpy()
+    
+    sampled_sets = [set() for _ in range(n_ants)]
+    for i in range(len(u_cpu)):
+        a = ant_ids_cpu[i]
+        n1, n2 = u_cpu[i], v_cpu[i]
+        if n1 > n2: n1, n2 = n2, n1
+        sampled_sets[a].add((n1, n2))
+        
+    survival_sum = 0
+    count_ants = 0
+    
+    for i in range(n_ants):
+        if i >= len(flats): break
+        tour = flats[i]
+        # tour edges
+        # tour is numpy array
+        if len(tour) < 2: continue
+        
+        edges_final = set()
+        for j in range(len(tour)-1):
+            n1, n2 = tour[j], tour[j+1]
+            if n1 > n2: n1, n2 = n2, n1
+            edges_final.add((n1, n2))
+        # Loop closing? Flats usually usually have last==first.
+        
+        sampled = sampled_sets[i]
+        if len(sampled) == 0: continue
+        
+        survived = len(sampled.intersection(edges_final))
+        survival_sum += survived / len(sampled)
+        count_ants += 1
+        
+    return survival_sum / max(1, count_ants)
 EPS = 1e-12
 
 def setup_aco(args, instance_data, MFACOClass):
@@ -176,7 +321,7 @@ def get_modules(problem):
         from test import infer_instance as infer_tsp
         
         def infer_wrapper(net, instance_data, k, n_ants, dynamic, args):
-            return infer_tsp(net, instance_data, k, n_ants, dynamic, args)
+            return infer_tsp('tsp', MFACO, build_pyg, net, instance_data, k, n_ants, dynamic, args)
 
         return Net, MFACO, load_val, build_pyg, gen_val, get_base, infer_wrapper, faco.set_faco_cpp_threads
     
@@ -197,8 +342,8 @@ def get_modules(problem):
         get_base = baselines.get_baseline_cvrp
         
         def infer_wrapper(net, instance_data, k, n_ants, dynamic, args):
-            coords, demand, capacity = instance_data
-            return infer_cvrp(net, coords, demand, capacity, k, n_ants, dynamic, args)
+            # coords, demand, capacity = instance_data
+            return infer_cvrp('cvrp', MFACO, build_pyg, net, instance_data, k, n_ants, dynamic, args)
         
         return Net, MFACO, load_val, build_pyg, gen_data, get_base, infer_wrapper, faco.set_faco_cpp_threads
     else:
@@ -219,11 +364,19 @@ def train_instance_ppo(NetClass, MFACOClass, build_pyg_data_fn, model, optimizer
         "ndec": [], "loss": [], 
         "entropy": [], "prior_mean": [], "prior_std": [],
         "approx_kl": [], "clip_frac": [], "new_edges": [],
-        "prior_eta_corr": []
+        "prior_eta_corr": [],
+        "prior_drift": [], "prior_kl": [], "turnover": [], "survival": [],
+        "grad_var": []
     }
 
     t_neural_total = 0.0
+    t_aco_sampling = 0.0
+    t_aco_ls = 0.0
+    t_aco_update = 0.0
+    # Fallback if detailed timings not available
     t_aco_total = 0.0
+    
+    prior_prev_outer = None # For crossover drift/turnover between outer steps
     
     for outer in tqdm(range(args.H), desc="Outer", leave=False):
         t0 = time.time()
@@ -243,12 +396,32 @@ def train_instance_ppo(NetClass, MFACOClass, build_pyg_data_fn, model, optimizer
             vy = e_flat - e_flat.mean()
             corr = (vx * vy).sum() / (torch.sqrt((vx ** 2).sum()) * torch.sqrt((vy ** 2).sum()) + 1e-8)
             metrics["prior_eta_corr"].append(corr.item())
+            
+            # Metrics: Drift, KL, Turnover (relative to previous OUTER step)
+            if prior_prev_outer is not None:
+                drift, kl = compute_prior_metrics(prior_old, prior_prev_outer)
+                metrics["prior_drift"].append(drift)
+                metrics["prior_kl"].append(kl)
+                
+                # Turnover needs prob matrix
+                prob_curr = aco.prob_sparse_torch(prior=prior_old)
+                prob_prev = aco.prob_sparse_torch(prior=prior_prev_outer)
+                turnover = compute_turnover(prob_curr, prob_prev)
+                metrics["turnover"].append(turnover)
+            
+            prior_prev_outer = prior_old.clone()
 
         traces_list = []
         costs_list = []
         logp_old_list = []
         ndec_list = []
         tau_list = []
+
+        # Reset detailed timings if available
+        if hasattr(aco, "reset_timings"):
+            aco.reset_timings()
+
+        t_aco_start_outer = time.time()
 
         for inner in range(args.mini_H):
             # Annealing
@@ -262,7 +435,6 @@ def train_instance_ppo(NetClass, MFACOClass, build_pyg_data_fn, model, optimizer
                     factor = args.gamma
                 current_prior = prior_old * factor
 
-            t0 = time.time()
             if args.problem == 'tsp':
                 costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges = aco.sample(
                     require_prob=True, prior=current_prior
@@ -271,17 +443,17 @@ def train_instance_ppo(NetClass, MFACOClass, build_pyg_data_fn, model, optimizer
                 costs, perms, _, logps, traces, new_edges = aco.sample(
                     require_prob=True, prior=current_prior
                 )
-                flats = perms # rename for consistency below if needed, or use separate update logic
-            t_aco_total += time.time() - t0
-
+                flats = perms # rename for consistency
+            
             costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
             tau_nk = aco.tau_nk_torch().detach()
             tau_list.append(tau_nk)
 
+            # Metrics: Survival
+            surv = compute_edge_survival(traces, flats, aco, args.device)
+            metrics["survival"].append(surv)
+
             # Replay for logp_old
-            # Note: aco.heuristic_sparse_np might be numpy, need tensor
-            # eta_nk is already set up above
-            
             with torch.no_grad():
                 prob_old = prob_sparse_from_tau_eta_prior(
                     tau_nk, eta_nk, current_prior,
@@ -313,9 +485,18 @@ def train_instance_ppo(NetClass, MFACOClass, build_pyg_data_fn, model, optimizer
                 else:
                     aco.update_pheromone(flats[best_idx], best_cost_iter)
 
-                    aco.update_pheromone(flats[best_idx], best_cost_iter)
-
             avg_cost_last = float(costs_t.mean().item())
+
+        t_aco_total += time.time() - t_aco_start_outer
+        
+        # Collect timings if available
+        if hasattr(aco, "get_timings"):
+             timings = aco.get_timings()
+             # accumulators in timings dict: time_sampling, time_ls, time_update (ms)
+             # Convert to seconds
+             if "time_sampling" in timings: t_aco_sampling += timings["time_sampling"] / 1000.0
+             if "time_ls" in timings: t_aco_ls += timings["time_ls"] / 1000.0
+             if "time_update" in timings: t_aco_update += timings["time_update"] / 1000.0
 
         # PPO Epochs
         for _ in range(args.ppo_epochs):
@@ -376,6 +557,13 @@ def train_instance_ppo(NetClass, MFACOClass, build_pyg_data_fn, model, optimizer
             
             total_loss = torch.stack(all_losses).mean()
             total_loss.backward()
+            
+            # Gradient Variance
+            grads = [p.grad.view(-1) for p in model.parameters() if p.grad is not None]
+            if grads:
+                grad_vec = torch.cat(grads)
+                metrics["grad_var"].append(grad_vec.std().item())
+            
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             metrics["loss"].append(total_loss.item())
@@ -384,6 +572,9 @@ def train_instance_ppo(NetClass, MFACOClass, build_pyg_data_fn, model, optimizer
 
     metrics["time_neural"] = [t_neural_total]
     metrics["time_aco"] = [t_aco_total]
+    if t_aco_sampling > 0: metrics["time_sampling"] = [t_aco_sampling]
+    if t_aco_ls > 0: metrics["time_ls"] = [t_aco_ls]
+    if t_aco_update > 0: metrics["time_update"] = [t_aco_update]
 
     out_metrics = {}
     for k, v in metrics.items():
@@ -404,11 +595,18 @@ def train_instance_reinforce(NetClass, MFACOClass, build_pyg_data_fn, model, opt
     metrics = {
         "ndec": [], "loss": [],
         "entropy": [], "prior_mean": [], "prior_std": [], "new_edges": [],
-        "prior_eta_corr": []
+        "prior_eta_corr": [],
+        "prior_drift": [], "prior_kl": [], "turnover": [], "survival": [],
+        "grad_var": []
     }
     
     t_neural_total = 0.0
     t_aco_total = 0.0
+    t_aco_sampling = 0.0
+    t_aco_ls = 0.0
+    t_aco_update = 0.0
+    
+    prior_prev_outer = None
     
     for t in tqdm(range(args.H), desc="ACO Step", leave=False):
         t0 = time.time()
@@ -429,9 +627,25 @@ def train_instance_reinforce(NetClass, MFACOClass, build_pyg_data_fn, model, opt
         vy = e_flat - e_flat.mean()
         corr = (vx * vy).sum() / (torch.sqrt((vx * vx).sum()) * torch.sqrt((vy * vy).sum()) + 1e-8)
         metrics["prior_eta_corr"].append(corr.item())
+        
+        # Metrics: Drift, KL, Turnover (relative to previous OUTER/Step)
+        if prior_prev_outer is not None:
+            drift, kl = compute_prior_metrics(prior_mat.detach(), prior_prev_outer)
+            metrics["prior_drift"].append(drift)
+            metrics["prior_kl"].append(kl)
+            
+            prob_curr = aco.prob_sparse_torch(prior=prior_mat.detach())
+            prob_prev = aco.prob_sparse_torch(prior=prior_prev_outer)
+            turnover = compute_turnover(prob_curr, prob_prev)
+            metrics["turnover"].append(turnover)
+        
+        prior_prev_outer = prior_mat.detach().clone()
             
         losses = 0
-        losses = 0
+        
+        if hasattr(aco, "reset_timings"): aco.reset_timings()
+        t_aco_start_outer = time.time()
+        
         for mini_t in range(args.mini_H):
             # Annealing
             current_prior = prior_mat
@@ -443,17 +657,18 @@ def train_instance_reinforce(NetClass, MFACOClass, build_pyg_data_fn, model, opt
                     factor = args.gamma
                 current_prior = prior_mat * factor
                 
-                current_prior = prior_mat * factor
-                
-            t0 = time.time()
             if args.problem == 'tsp':
                 costs, flats, _, logps_cpp, traces, _, _, new_edges = aco.sample(require_prob=True, prior=current_prior)
             else:
                 costs, perms, _, logps_cpp, traces, new_edges = aco.sample(require_prob=True, prior=current_prior)
                 flats = perms
-            t_aco_total += time.time() - t0
 
             costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
+
+            # Metrics: Survival
+            surv = compute_edge_survival(traces, flats, aco, args.device)
+            metrics["survival"].append(surv)
+
             prob_sparse = aco.prob_sparse_torch(prior=current_prior).clamp_min(EPS)
             logp_per_ant, ndec_per_ant = replay_logp_from_cpp_batch_trace(traces, prob_sparse)
             
@@ -483,13 +698,27 @@ def train_instance_reinforce(NetClass, MFACOClass, build_pyg_data_fn, model, opt
 
             losses += loss
             avg_cost_last = float(costs_t.mean().item())
+        
+        t_aco_total += time.time() - t_aco_start_outer
+        if hasattr(aco, "get_timings"):
+             timings = aco.get_timings()
+             if "time_sampling" in timings: t_aco_sampling += timings["time_sampling"] / 1000.0
+             if "time_ls" in timings: t_aco_ls += timings["time_ls"] / 1000.0
+             if "time_update" in timings: t_aco_update += timings["time_update"] / 1000.0
             
         losses.backward()
-        losses.backward()
+        
+        grads = [p.grad.view(-1) for p in model.parameters() if p.grad is not None]
+        if grads:
+            metrics["grad_var"].append(torch.cat(grads).std().item())
+            
         metrics["loss"].append(losses.item())
     
     metrics["time_neural"] = [t_neural_total]
     metrics["time_aco"] = [t_aco_total]
+    if t_aco_sampling > 0: metrics["time_sampling"] = [t_aco_sampling]
+    if t_aco_ls > 0: metrics["time_ls"] = [t_aco_ls]
+    if t_aco_update > 0: metrics["time_update"] = [t_aco_update]
     
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
@@ -601,7 +830,10 @@ def main():
     parser.add_argument("--n_ants", type=int, default=100)
     parser.add_argument("--steps_per_epoch", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--lr", type=float, default=5e-6) 
+    # If not provided, we pick a default based on --algo.
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--ppo_lr", type=float, default=5e-6)
+    parser.add_argument("--reinforce_lr", type=float, default=1e-4)
     
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--device", type=str, default="cuda:0")
@@ -633,8 +865,16 @@ def main():
     parser.add_argument("--L", type=int, default=0, help="Fixed ant trajectory length")
     parser.add_argument("--run_name", type=str, default=None, help="Custom wandb run name")
     parser.add_argument("--threads", type=int, default=16, help="OpenMP threads")
+    parser.add_argument("--timed", action="store_true")
+    parser.add_argument("--visualize", action="store_true")
+    parser.add_argument("--visualize_output", type=str, default="visualizations")
+    parser.add_argument("--verify", action="store_true")
 
     args = parser.parse_args()
+
+    # Algo-specific default learning rate (source of truth)
+    if args.lr is None:
+        args.lr = args.ppo_lr if args.algo == 'ppo' else args.reinforce_lr
     
     # Compatibility with legacy scripts that expect args.extend_ls
     # Defaults adjustment
@@ -671,15 +911,20 @@ def main():
     except FileNotFoundError:
         print("Generating data...")
         if args.problem == 'tsp':
-            gen_data_fn(args.n_node, 128, args.k_sparse, "cpu")
+            gen_data_fn(args.n_node, 16, args.k_sparse, "cpu")
             val_dataset = load_val_dataset_fn(args.n_node, args.device)
         else:
-            # CVRP Utils check
-            # We need to implement gen logic if not exposed?
-            # Assuming gen_instance_for_mfaco can practice one by one or we save?
-            # Original CVRP code failed if not found.
-            # Let's hope it's there or user generates.
-            raise
+            # Generate CVRP validation data on the fly (list of tuples) to prevent crash
+            val_dataset_list = []
+            for _ in range(128): # Standard val size
+                 val_dataset_list.append(gen_data_fn(args.n_node, "cpu"))
+            
+            # Convert to TensorDataset for compatibility with baselines
+            val_dataset = torch.utils.data.TensorDataset(
+                torch.stack([x[0] for x in val_dataset_list]), # coords
+                torch.stack([x[1] for x in val_dataset_list]), # demand
+                torch.stack([torch.as_tensor(x[2]) for x in val_dataset_list]) # capacity
+            )
     
     # Baseline
     baseline_values = None
