@@ -105,7 +105,8 @@ def stage1_solver(args, output_dir):
             "--no_logit_net",       # Pure ACO
             "--device", args.device,
             "--seed", str(1000),
-            "--run_name", f"{config_name}_vanilla"
+            "--run_name", f"{config_name}_vanilla",
+            "--wandb_project", f"lga_stage{args.stage}"
         ] + get_defaults(args.problem)
         
         if not vanilla_log.exists():
@@ -126,7 +127,8 @@ def stage1_solver(args, output_dir):
             "--steps_per_epoch", "32",
             "--device", args.device,
             "--seed", str(2000),
-            "--run_name", f"{config_name}_neural"
+            "--run_name", f"{config_name}_neural",
+            "--wandb_project", f"lga_stage{args.stage}"
         ] + get_defaults(args.problem)
         
         if not neural_log.exists():
@@ -209,6 +211,7 @@ def stage2_rl_stability(args, output_dir):
                 "--run_name", run_name
             ]
             if adv: cmd.append("--adv_norm")
+            cmd += ["--wandb_project", f"lga_stage{args.stage}"]
             cmd += get_defaults(args.problem)
             
             if not log_file.exists():
@@ -250,7 +253,8 @@ def stage2_rl_stability(args, output_dir):
                 "--steps_per_epoch", str(steps),
                 "--device", args.device,
                 "--seed", str(2345 + seed),
-                "--run_name", run_name
+                "--run_name", run_name,
+                "--wandb_project", f"lga_stage{args.stage}"
             ]
             cmd += get_defaults(args.problem)
             
@@ -270,8 +274,13 @@ def stage2_rl_stability(args, output_dir):
             print(f"Config {config_name}: {avg_score:.4f}")
 
             # Incremental Save
-            df = pd.DataFrame(results)
-            df.to_csv(output_dir / "stage2_summary.csv", index=False)
+            if results:
+                 df = pd.DataFrame(results)
+                 df.to_csv(output_dir / "stage2_summary.csv", index=False)
+
+    if not results:
+        print("No results collected for Stage 2. Check logs for errors.")
+        return
 
     df = pd.DataFrame(results)
     df = df.sort_values("score")
@@ -314,7 +323,8 @@ def stage3_budget(args, output_dir):
                 "--steps_per_epoch", "32",
                 "--device", args.device,
                 "--seed", str(3456 + seed),
-                "--run_name", config_name
+                "--run_name", config_name,
+                "--wandb_project", f"lga_stage{args.stage}"
             ] + get_defaults(args.problem)
             
             if not log_file.exists():
@@ -363,7 +373,8 @@ def stage4_ablations(args, output_dir):
                 "--no_logit_net",
                 "--device", args.device,
                 "--seed", str(4567 + seed),
-                "--run_name", f"{name}_ablation"
+                "--run_name", f"{name}_ablation",
+                "--wandb_project", f"lga_stage{args.stage}"
             ] + extra_args + get_defaults(args.problem)
             
             if not log_file.exists():
