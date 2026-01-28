@@ -43,6 +43,7 @@
 \newcommand{\VRP}{\textsc{VRP}}
 \newcommand{\ACO}{\textsc{ACO}}
 \newcommand{\MMAS}{\textsc{MMAS}}
+\newcommand{\LGA}{\textsc{LGA}}
 
 % Box helper (no extra packages)
 \newcommand{\DefBox}[1]{
@@ -76,7 +77,7 @@ Standard metaheuristics like Ant Colony Optimization (ACO) act like water flowin
 We propose \emph{Active Trajectory Shaping}, a framework that transforms the neural model from a static initializer into an active \emph{navigator}.
 Instead of relying solely on past success (pheromone) to guide the future, our method injects "future intuition" by observing the global \emph{search context}, the evolving pheromone landscape and incumbent solution, and actively bending the search trajectory away from stagnation and toward promising regions.
 Technically, we implement this via a \emph{Dynamic Trajectory Guidance} mechanism that modulates edge transition probabilities in real-time.
-Coupled with a scalable Perturbative ACO design and Smoothed MMAS normalization, our approach demonstrates that a neural navigator can effectively shape the optimization process, achieving competitive results on TSP and CVRP by learning to intervene exactly when the search falters.
+Coupled with a scalable Perturbative ACO design and Smoothed MMAS normalization, our approach demonstrates that a neural navigator can effectively shape the optimization process, achieving competitive results on TSP and CVRP by learning to guide the search based on the evolving optimization landscape.
 \end{abstract}
 
 \maketitle
@@ -99,10 +100,11 @@ Traditional fixes involve "resets" or "mutation", which are random and undirecte
 We argue that overcoming stagnation requires a shift from passive heuristics to active \emph{trajectory shaping}.
 DeepACO~\cite{deepaco} and successors introduced neural priors, but mostly as static heatmaps (Open-loop) that do not adapt to the search progress.
 In contrast, our approach functions as a navigator. It monitors the \emph{Search Context}, the distribution of pheromones and the structure of the current best solution, and dynamically injects bias to warp the search space.
-For example, if the colony converges too prematurely (low pheromone entropy), the navigator can "heat up" exploration in specific regions. If the search is too diffuse, it can focus the beam.
+By conditioning on the evolving search state, the navigator learns to identify promising regions and guide exploration accordingly.
 
 \paragraph{Main idea.}
 We propose a \emph{dynamic neural prior over the metaheuristic state} that modulates \ACO{} transition probabilities in a closed loop.
+We call this approach \emph{Learning Guided Ant colony optimization} (\LGA{}).
 
 % ,  NEW: crisp definition box for reviewers , 
 \DefBox{
@@ -110,7 +112,7 @@ We propose a \emph{dynamic neural prior over the metaheuristic state} that modul
 Let $x$ denote a problem instance and let $s_t$ denote the solver state at \ACO{} iteration $t$ (including pheromone and incumbent/best-solution information).
 \emph{Open-loop} neural \ACO{} computes guidance $g_\theta(\cdot; x)$ that is fixed for the duration of a run (or depends only on $x$).
 \emph{Closed-loop} neural \ACO{} computes guidance $g_\theta(\cdot; s_t)$ at multiple iterations $t$ and conditions on solver state, enabling feedback control
-and adaptation to stagnation and trajectory changes.
+and adaptation to the evolving search trajectory.
 }
 
 \paragraph{Contributions.}
@@ -231,7 +233,7 @@ We define the context over the sparse candidate graph using:
         \item Incumbent indicator: $\mathbb{I}\{(i, j) \in b_{t-1}\}$, representing the \emph{current best path}.
     \end{itemize}
 \end{itemize}
-These features allow the navigator to detect stagnation (e.g., low pheromone entropy, unchanging incumbent) and intervene by shaping the trajectory.
+These features allow the navigator to observe the search dynamics and shape the trajectory by learning patterns that correlate with solution quality improvement.
 
 \subsection{Dynamic Trajectory Guidance}
 \label{sec:controller}
@@ -264,15 +266,15 @@ Thus, the navigator performs a \emph{KL-regularized policy improvement step} aro
 The per-node normalization of $g$ to $z$ (using rowwise mean and standard deviation) introduces a within-row competition term: guidance scores are coupled across neighbors of each node. When $\sigma_i \approx 0$ (uniform guidance), the $\epsilon$ term in the denominator clamps the controller influence, providing an intended stability feature that prevents amplification of noise when the network is uncertain.
 
 \begin{definition}[Trajectory Shaping (Operational Goal)]
-Let $\{s_t\}_{t=0}^T$ be the stochastic process induced by standard ACO (baseline) and $\{\tilde{s}_t\}_{t=0}^T$ be the process induced by our method. Define a stagnation indicator $\mathsf{stag}(s_t) \in \{0,1\}$ (e.g., pheromone entropy below threshold, or no incumbent improvement for $L$ consecutive steps). We say the navigator performs \emph{Trajectory Shaping} if:
+Let $\{s_t\}_{t=0}^T$ be the stochastic process induced by standard ACO (baseline) and $\{\tilde{s}_t\}_{t=0}^T$ be the process induced by our method. We say the navigator performs \emph{Trajectory Shaping} if:
 \begin{enumerate}
-    \item[(i)] \emph{Stagnation-conditional control:} The navigator exerts control effort specifically when search falters:
+    \item[(i)] \emph{Active guidance:} The navigator exerts non-trivial control effort throughout the search:
     \[
-    \mathbb{E}\!\left[\mathsf{stag}(s_t)\cdot \mathrm{KL}(p^\theta_t(\cdot\mid i)\,\|\,q_t(\cdot\mid i))\right] > 0 \quad \text{for some nodes } i;
+    \mathbb{E}\!\left[\mathrm{KL}(p^\theta_t(\cdot\mid i)\,\|\,q_t(\cdot\mid i))\right] > 0 \quad \text{for nodes } i \text{ and iterations } t;
     \]
     \item[(ii)] \emph{Performance improvement:} The expected final cost improves: $\mathbb{E}[\mathcal{C}(\tilde{b}_T)] < \mathbb{E}[\mathcal{C}(b_T)]$.
 \end{enumerate}
-Condition (i) aligns with our headline claim: the navigator ``intervenes exactly when the search falters.''
+The navigator shapes the search trajectory by continuously biasing transitions based on the evolving search context, learning to identify and exploit promising regions.
 \end{definition}
 
 \begin{proposition}[Support Preservation on Candidate Graph]
@@ -291,7 +293,10 @@ This architecture balances representational power with the speed required for it
 
 \subsection{Activation Schedule}
 \label{sec:activation}
-To balance computational overhead and control frequency, we employ an activation schedule. In our experiments, we activate the controller every iteration, as the lightweight MLP decoder is negligible compared to the cost of sampling and local search.
+To balance computational overhead and control frequency, we employ a sample-and-hold activation schedule.
+The neural navigator computes the prior once per \emph{outer iteration} (every $H$ steps), and this prior is held constant for $S$ \emph{inner iterations} of ACO sampling.
+This amortizes the cost of neural inference over multiple sampling steps while still allowing the controller to adapt to the evolving search state at each outer iteration.
+The prior can optionally be annealed within the inner loop to gradually shift from neural guidance toward pheromone-driven dynamics.
 
 % ======================================================================
 % 4.1 Smoothed MMAS
@@ -347,17 +352,36 @@ where $b_t$ is a baseline and we differentiate through $\pi_{a,t}$ (the pre-LS s
 Let the reward be $R_t = \text{Cost}(\text{LS}(\pi_t))$, where $\text{LS}$ is an arbitrary non-differentiable local search operator. The score-function estimator $\nabla_\theta \mathbb{E}[R_t] = \mathbb{E}[(R_t - b_t) \nabla_\theta \log \pi_\theta(\pi_t | s_t)]$ remains unbiased for any baseline $b_t$ independent of the sampled trace $\pi_t$ (conditional on $s_t$), as the LS operator is part of the environment transition and does not affect the validity of the log-derivative trick.
 \end{proposition}
 
-\paragraph{Baseline Choice and Bias Considerations.}
-In practice (Algorithm~\ref{alg:train}), we use a \emph{leave-one-out} baseline to ensure unbiasedness while retaining variance reduction. For each ant $a$:
+\paragraph{Baseline Choice and Variance Reduction.}
+For both REINFORCE and PPO, we use a \emph{batch mean} baseline for variance reduction. For each inner iteration $k$:
 \begin{equation}
-b_{k}^{(-a)} = \frac{1}{m-1}\sum_{a'\ne a} C(\hat{\pi}_{a',k}), \quad A_{a,k} = C(\hat{\pi}_{a,k}) - b_k^{(-a)}.
+b_{k} = \frac{1}{m}\sum_{a=1}^{m} C(\hat{\pi}_{a,k}), \quad A_{a,k} = C(\hat{\pi}_{a,k}) - b_k.
 \end{equation}
-This removes the $O(1/m)$ bias that arises when each sample's baseline includes its own cost, while preserving the variance reduction benefits of batch normalization. We note that the surrogate objective (average cost over iterations) is a reward-shaping choice that correlates with final incumbent quality while providing denser gradient signal; empirically, it improves $\mathcal{C}(b_T)$.
+This simple baseline provides effective variance reduction while maintaining computational efficiency. For PPO, we optionally apply advantage normalization: $\hat{A}_{a,k} = (A_{a,k} - \mu_A) / (\sigma_A + \epsilon)$.
+
+\paragraph{PPO-based Optimization.}
+While REINFORCE provides unbiased gradients, it can suffer from high variance and instability. We also implement a Proximal Policy Optimization (PPO) variant that offers improved sample efficiency and training stability.
+In the PPO setting, we first collect trajectories under the current policy $\pi_{\theta_{\text{old}}}$ for $S$ inner iterations, storing the log-probabilities $\log \pi_{\theta_{\text{old}}}(\pi_{a,k} | s_k)$ and associated costs.
+We then perform $K$ optimization epochs over these collected samples using the clipped surrogate objective:
+\begin{equation}
+\mathcal{L}^{\text{PPO}}(\theta) = -\mathbb{E}_{a,k}\left[ \min\left( r_{a,k}(\theta) \hat{A}_{a,k}, \; \text{clip}(r_{a,k}(\theta), 1-\epsilon, 1+\epsilon) \hat{A}_{a,k} \right) \right],
+\end{equation}
+where $r_{a,k}(\theta) = \frac{\pi_\theta(\pi_{a,k} | s_k)}{\pi_{\theta_{\text{old}}}(\pi_{a,k} | s_k)}$ is the probability ratio, $\hat{A}_{a,k}$ is the normalized advantage, and $\epsilon$ is the clipping parameter (typically 0.2).
+The clipping mechanism prevents large policy updates that could destabilize training, which is particularly important in our setting where the policy influences a complex search trajectory.
+
+\paragraph{Prior Annealing.}
+To balance exploration and exploitation during inner iterations, we optionally anneal the neural prior's influence.
+Specifically, within each outer iteration, we scale the prior by a factor that decays linearly from $\gamma$ to $\gamma_{\min}$:
+\begin{equation}
+\text{prior}_{\text{scaled}}^{(k)} = \text{prior} \cdot \left( \gamma \cdot \frac{S-1-k}{S-1} + \gamma_{\min} \cdot \frac{k}{S-1} \right),
+\end{equation}
+where $k$ indexes the inner iteration. This encourages stronger neural guidance early in each control period, gradually deferring to the ACO dynamics as pheromones accumulate information.
+
 We accumulate gradients over a short horizon (e.g., $T=10$) before updating weights.
-This "Online REINFORCE" approach directly optimizes the controller to generate search trajectories that minimize cost at every step.
+Both approaches directly optimize the controller to generate search trajectories that minimize cost at every step.
 
 \begin{algorithm}[t]
-\caption{Online REINFORCE Training}
+\caption{PPO Training for \LGA{} (Learning Guided ACO)}
 \label{alg:train}
 \begin{algorithmic}[1]
 \STATE Initialize policy $\theta$, optimizer
@@ -365,20 +389,27 @@ This "Online REINFORCE" approach directly optimizes the controller to generate s
     \FOR{step $= 1, \dots, \text{Steps}$}
         \STATE Sample random instance $x$
         \STATE Initialize \ACO{}
-        \FOR{outer\_iter $t = 1$ to $T/S$}
-            \STATE Build features $s_t$; Predict prior $g_\theta(s_t)$
-            \STATE Loss accumulator $\mathcal{L}_{t} \leftarrow 0$
+        \FOR{outer\_iter $t = 1$ to $H$}
+            \STATE Build features $s_t$; Predict prior $g_{\theta_{\text{old}}}(s_t)$
+            \STATE \textbf{// Rollout phase: collect trajectories}
             \FOR{inner\_iter $k = 1$ to $S$}
-                \STATE Sample $m$ ants $\pi_{a,k}$ (recording log-probs $\log p_{a,k}$)
+                \STATE Compute annealed prior: $g_k \leftarrow \text{anneal}(g_{\theta_{\text{old}}}, k, S)$
+                \STATE Sample $m$ ants $\pi_{a,k}$; store $\log \pi_{\theta_{\text{old}}}(\pi_{a,k} | s_k)$, $\tau_k$
                 \STATE Apply LS: $\hat{\pi}_{a,k} \leftarrow \mathrm{LS}(\pi_{a,k})$; compute costs $C(\hat{\pi}_{a,k})$
-                \STATE Leave-one-out baseline: $b_k^{(-a)} = \frac{1}{m-1}\sum_{a'\ne a} C(\hat{\pi}_{a',k})$
-                \STATE Advantage $A_{a,k} = C(\hat{\pi}_{a,k}) - b_k^{(-a)}$
-                \STATE $\mathcal{L}_{t} \leftarrow \mathcal{L}_{t} + \frac{1}{m}\sum_a A_{a,k} \log p_{a,k}$
                 \STATE Update pheromone and incumbent
             \ENDFOR
-            \STATE \emph{Backpropagate} $\mathcal{L}_{t}$ (accumulating gradients)
+            \STATE \textbf{// PPO update phase}
+            \FOR{PPO epoch $= 1$ to $K$}
+                \STATE Recompute prior $g_\theta(s_t)$ with current parameters
+                \FOR{inner\_iter $k = 1$ to $S$}
+                    \STATE Compute $\log \pi_\theta(\pi_{a,k} | s_k)$ using stored $\tau_k$
+                    \STATE Ratio: $r_{a,k} \leftarrow \exp(\log \pi_\theta - \log \pi_{\theta_{\text{old}}})$
+                    \STATE Advantage: $\hat{A}_{a,k} \leftarrow \text{normalize}(\bar{C}_k - C(\hat{\pi}_{a,k}))$
+                    \STATE Clipped loss: $\mathcal{L}_k \leftarrow -\min(r_{a,k} \hat{A}_{a,k}, \text{clip}(r_{a,k}, 1{\pm}\epsilon) \hat{A}_{a,k})$
+                \ENDFOR
+                \STATE Backpropagate $\sum_k \mathcal{L}_k$; Optimizer.Step() (clip grad norm 1.0)
+            \ENDFOR
         \ENDFOR
-        \STATE \emph{Optimizer.Step()} (Gradient Clipping 1.0)
     \ENDFOR
 \ENDFOR
 \end{algorithmic}
@@ -407,7 +438,7 @@ We distinguish between active computation and auxiliary costs:
     \item \emph{Active ($O(MK)$):} Sampling $M$ edge modifications, neural MLP forward pass over $M$ edges, localized LS neighborhood scans ($M$ checklist nodes $\times$ $K$ candidates).
     \item \emph{Auxiliary ($O(N)$):} Maintaining full tour representation, visited-set bookkeeping, and (if not incremental) full cost evaluation.
 \end{itemize}
-The key insight is that the \emph{computationally intensive} operations (neural inference, sampling, LS) scale with $M \cdot K$, enabling CL-ACO to handle instances with 10k nodes even though auxiliary bookkeeping remains $O(N)$.
+The key insight is that the \emph{computationally intensive} operations (neural inference, sampling, LS) scale with $M \cdot K$, enabling LGA to handle instances with 10k nodes even though auxiliary bookkeeping remains $O(N)$.
 
 \paragraph{Restricted Reachability.}
 Under perturbative sampling, the reachable tour space in a single iteration is restricted to a neighborhood around the incumbent. This is a deliberate design choice: we trade global reachability for tighter credit assignment. The trajectory shaping operates within this controlled neighborhood, steering local improvements rather than global reconstruction.
@@ -425,7 +456,7 @@ This design serves two purposes. First, it bounds the LS neighborhood: examining
 % ======================================================================
 \section{Extension to \CVRP{}}
 \label{sec:cvrp}
-To demonstrate the generality of CL-ACO, we extend it to the Capacitated Vehicle Routing Problem (\CVRP{}).
+To demonstrate the generality of LGA, we extend it to the Capacitated Vehicle Routing Problem (\CVRP{}).
 \subsection{Problem Representation}
 We adopt the \emph{Giant Tour} representation, commonly used in metaheuristics for VRP.
 A solution is represented as a permutation of all $n$ customer nodes. To evaluate the cost of a permutation, we employ the optimal \texttt{Split} algorithm \cite{prins2004}, which partitions the sequence into feasible routes (respecting capacity limits) and inserts the depot (node 0) optimally using a dynamic programming approach.
@@ -440,7 +471,7 @@ For efficiency, we implement a custom C++ version of Split that maintains prefix
 \end{itemize}
 
 \paragraph{Proxy Objective Mismatch.}
-We acknowledge that improving Euclidean giant-tour length is not guaranteed to improve post-split CVRP cost; in principle, it can even hurt. This introduces a mismatch between the LS proxy and the true objective. Crucially, however, the proxy is used \emph{only as a proposal mechanism} within LS---the \textbf{reward signal for REINFORCE is always the true CVRP cost} computed via Split after each ant completes. This ensures that the policy gradient points toward genuine CVRP improvements, even if individual LS moves are guided by the proxy. Empirically, giant-tour geometry correlates well with CVRP quality for Euclidean instances, and our experiments (Section~\ref{sec:experiments}) confirm that this approach yields competitive results despite the approximation.
+We acknowledge that improving Euclidean giant-tour length is not guaranteed to improve post-split CVRP cost; in principle, it can even hurt. This introduces a mismatch between the LS proxy and the true objective. Crucially, however, the proxy is used \emph{only as a proposal mechanism} within LS---the \textbf{reward signal for policy optimization is always the true CVRP cost} computed via Split after each ant completes. This ensures that the policy gradient points toward genuine CVRP improvements, even if individual LS moves are guided by the proxy. Empirically, giant-tour geometry correlates well with CVRP quality for Euclidean instances, and our experiments (Section~\ref{sec:experiments}) confirm that this approach yields competitive results despite the approximation.
 
 % ======================================================================
 % 7. Experiments
@@ -449,12 +480,19 @@ We acknowledge that improving Euclidean giant-tour length is not guaranteed to i
 \label{sec:experiments}
 
 \subsection{Experimental Setup}
-We evaluate CL-ACO on random Euclidean TSP and CVRP instances of size $N \in \{100, 500, 1000, 5000, 10000\}$.
+We evaluate LGA on random Euclidean TSP and CVRP instances of size $N \in \{100, 500, 1000, 5000, 10000\}$.
 Training data is generated on-the-fly (`Random` distribution). Validation uses fixed datasets of 128 instances.
 We use a single GPU (CUDA).
-\emph{Hyperparameters:} $\alpha=1.0$, $\beta=1.0$, $\rho=0.5$.
+
+\emph{ACO Hyperparameters:} $\alpha=1.0$, $\beta=1.0$, $\rho=0.1$ (TSP) / $\rho=0.5$ (CVRP).
 Ants $m=100$. Candidate list $K=32$.
-Perturbation limit $M=16$ edges (providing scalability to large graphs).
+Perturbation limit $M=12$ edges (providing scalability to large graphs).
+Outer iterations $H=10$, inner iterations $S=100$.
+
+\emph{Training Hyperparameters:} We use PPO with clipping parameter $\epsilon=0.2$, $K=4$ PPO epochs per outer iteration, and optional advantage normalization.
+Learning rate $5 \times 10^{-6}$ with cosine annealing.
+Prior annealing decays from $\gamma=1.0$ to $\gamma_{\min}=0.2$ across inner iterations when enabled.
+We track approximate KL divergence and clip fraction to monitor training stability.
 
 \subsection{Metrics}
 In addition to optimality gap, we track metrics to quantify the neural controller's behavior:
@@ -488,12 +526,12 @@ We compare against:
 \subsection{Budget Matching and Fair Evaluation Protocol}
 \label{sec:fairness}
 To ensure fair comparison, we report results under \emph{matched wall-clock time}.
-We adjust the number of iterations for Vanilla \ACO{} to match the runtime of CL-ACO (which includes model inference and feature extraction overhead).
+We adjust the number of iterations for Vanilla \ACO{} to match the runtime of LGA (which includes model inference and feature extraction overhead).
 
 \subsection{Main Results}
 \begin{table}[t]
 \centering
-\caption{TSP Results (N=100). CL-ACO achieves lower gaps under matched time budgets.}
+\caption{TSP Results (N=100). LGA achieves lower gaps under matched time budgets.}
 \label{tab:main-tsp}
 \begin{tabular}{lcccc}
 \toprule
@@ -501,7 +539,7 @@ Method & Size & Time budget & Cost & Gap(\%) \\
 \midrule
 LKH-3 (Ref) & 100 & 2.0s & 7.76 & 0.00 \\
 Vanilla MFACO & 100 & 2.0s & 7.82 & 0.75 \\
-CL-ACO (Ours) & 100 & 2.0s & \emph{7.78} & \emph{0.25} \\
+LGA (Ours) & 100 & 2.0s & \emph{7.78} & \emph{0.25} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -516,7 +554,7 @@ Method & Size & Time budget & Cost & Gap(\%) \\
 \midrule
 HGS (Ref) & 100 & 10.0s & 15.65 & 0.00 \\
 Vanilla MFACO & 100 & 10.0s & 16.10 & 2.87 \\
-CL-ACO (Ours) & 100 & 10.0s & \emph{15.80} & \emph{0.96} \\
+LGA (Ours) & 100 & 10.0s & \emph{15.80} & \emph{0.96} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -533,7 +571,7 @@ CL-ACO (Ours) & 100 & 10.0s & \emph{15.80} & \emph{0.96} \\
         \caption{Controller Dynamics (Drift/Turnover).}
         \label{fig:drift}
     \end{subfigure}
-    \caption{Training dynamics on TSP-100. CL-ACO (blue) converges faster than Vanilla ACO. The controller maintains non-zero drift (right), indicating active trajectory modulation throughout the search.}
+    \caption{Training dynamics on TSP-100. LGA (blue) converges faster than Vanilla ACO. The controller maintains non-zero drift (right), indicating active trajectory modulation throughout the search.}
     \label{fig:main-results}
 \end{figure}
 
@@ -550,9 +588,9 @@ We systematically validate key components:
 % ,  NEW: trajectory control diagnostics section (supports headline claim) , 
 \subsection{Analysis: Active Trajectory Shaping}
 \label{sec:trajectory}
-\paragraph{C1. Stagnation Intervention.} We analyze pheromone entropy during stagnation. CL-ACO prevents collapse by maintaining higher entropy when improving moves are scarce ("heating up").
-\paragraph{C2. Counterfactual Control.} Freezing pheromones reveals that the neural navigator alone can drive search progress, while freezing the navigator degrades performance to open-loop baselines.
-\paragraph{C3. Edge-Level Audits.} Probability mass analysis confirms the navigator effectively steers sampling towards the incumbent neighborhood without enforcing determinism.
+\paragraph{C1. Control Effort Analysis.} We measure the KL divergence between the shaped and baseline ACO distributions throughout the search. LGA maintains non-trivial control effort, indicating active guidance rather than passive observation.
+\paragraph{C2. Ablation: Dynamic vs Static Features.} Removing dynamic features (pheromone, incumbent) and using only static instance features degrades performance to open-loop baselines, confirming that the navigator leverages search context.
+\paragraph{C3. Edge-Level Audits.} Probability mass analysis confirms the navigator effectively steers sampling towards promising edges without collapsing to determinism.
 
 \subsection{Runtime and Scalability}
 The neural navigator adds approximately 15-20\% overhead per iteration. However, the faster convergence rate compensates for this, yielding better solutions within the same total time.
@@ -561,7 +599,7 @@ The neural navigator adds approximately 15-20\% overhead per iteration. However,
 % 8. Discussion, Limitations, and Future Work
 % ======================================================================
 \section{Discussion and Limitations}
-CL-ACO demonstrates that a learned \emph{navigator} can successfully guide a "blind" metaheuristic by observing the global search context.
+LGA demonstrates that a learned \emph{navigator} can successfully guide a "blind" metaheuristic by observing the global search context.
 Limitations include the overhead of the GNN encoder and the need for careful hyperparameter tuning of the RL reward.
 Future work includes applying Active Trajectory Shaping to other domains (Job Shop Scheduling) and exploring Transformers for richer context encoding.
 
@@ -578,7 +616,7 @@ Future work includes applying Active Trajectory Shaping to other domains (Job Sh
 % 9. Conclusion
 % ======================================================================
 \section{Conclusion}
-We introduced a framework for \emph{Active Trajectory Shaping} in metaheuristics. By transforming the neural model into a dynamic navigator that conditions on Search Context, and training it via Snapshot RL with localized perturbations, we overcome the stagnation limits of standard ACO. Our results on TSP and CVRP show that "future intuition" can effectively guide "blind" search, paving the way for more autonomous and robust optimization solvers.
+We introduced a framework for \emph{Active Trajectory Shaping} in metaheuristics. By transforming the neural model into a dynamic navigator that conditions on Search Context, and training it via policy optimization with localized perturbations, we improve upon standard ACO by learning to guide the search based on the evolving optimization state. Our results on TSP and CVRP show that conditioning on search dynamics can effectively enhance metaheuristic performance, paving the way for more autonomous and robust optimization solvers.
 
 % ======================================================================
 % Acknowledgments

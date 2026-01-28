@@ -1,0 +1,13 @@
+# Fdb version 4
+["pdflatex"] 1769614046.94121 "/home/shora/Research/old/NGFACO/paper.tex" "paper.pdf" "paper" 1769614046.97289 2
+  "/home/shora/Research/old/NGFACO/paper.tex" 1769614046.6324 45612 27e8b647be2ad6244ceb8fb2bf1ff75f ""
+  "/usr/share/texmf-dist/web2c/texmf.cnf" 1767555874 42087 b0f9697c952c8f5a8eede4134282cb0d ""
+  "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1767701541 2686924 c7d7329b5d9f70a6e3c582730a394bc3 ""
+  "acmart.cls" 0 -1 0 ""
+  "paper.aux" 1769614046.94086 32 3985256e7290058c681f74d7a3565a19 "pdflatex"
+  "paper.tex" 1769614046.6324 45612 27e8b647be2ad6244ceb8fb2bf1ff75f ""
+  (generated)
+  "paper.aux"
+  "paper.log"
+  "paper.pdf"
+  (rewritten before read)

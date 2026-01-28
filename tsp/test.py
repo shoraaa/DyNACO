@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 from net import Net
 from utils import load_val_dataset, build_pyg_data
-from faco import MFACO_TSP
+from faco import MFACO_TSP, set_faco_cpp_threads
 from baselines import get_baseline_tsp
 
 EPS = 1e-10
@@ -234,8 +234,11 @@ def main():
     parser.add_argument("--visualize_output", type=str, default="visualizations", help="Output directory for visualization plots")
     parser.add_argument("--timed", action="store_true", help="Show performance timings")
     parser.add_argument("--L", type=int, default=0, help="Fixed ant trajectory length")
+    parser.add_argument("--threads", type=int, default=16, help="OpenMP threads for C++ backend")
 
     args = parser.parse_args()
+
+    set_faco_cpp_threads(args.threads)
     
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)

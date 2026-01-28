@@ -14,7 +14,7 @@ from test import infer_instance
 # Adjust imports assuming script is run from tsp directory
 from net import Net
 from utils import load_val_dataset, build_pyg_data
-from faco import MFACO_TSP
+from faco import MFACO_TSP, set_faco_cpp_threads
 from baselines import get_baseline_tsp
 import wandb
 
@@ -455,10 +455,13 @@ def main():
     parser.add_argument("--baseline", type=str, choices=['none', 'lkh'], default='lkh', help="Baseline for validation")
     parser.add_argument("--baseline_runs", type=int, default=1, help="LKH runs per instance")
     parser.add_argument("--baseline_time_limit", type=float, default=10.0, help="LKH time limit per instance (seconds)")
+    parser.add_argument("--threads", type=int, default=16, help="OpenMP threads for C++ backend")
     
     parser.add_argument("--L", type=int, default=0, help="Fixed ant trajectory length (L). If > 0, ants take exactly L steps.")
 
     args = parser.parse_args()
+
+    set_faco_cpp_threads(args.threads)
 
     # Setup
     PROJECT_ROOT = Path.cwd().resolve()

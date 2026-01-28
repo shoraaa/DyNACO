@@ -12,7 +12,7 @@ from tqdm import tqdm
 # Adjust imports assuming script is run from cvrp directory
 from net import Net
 from utils import load_val_dataset, build_pyg_data, gen_instance_for_mfaco
-from faco import MFACO_CVRP
+from faco import MFACO_CVRP, set_faco_cpp_threads
 from baselines import get_baseline_cvrp
 from test import infer_instance
 import wandb
@@ -305,8 +305,10 @@ def main():
     parser.add_argument("--baseline_time_limit", type=float, default=10.0, help="Time limit per instance for baseline solver")
 
     parser.add_argument("--L", type=int, default=0, help="Fixed ant trajectory length (L). If > 0, ants take exactly L steps.")
+    parser.add_argument("--threads", type=int, default=16, help="OpenMP threads for C++ backend")
 
     args = parser.parse_args()
+    set_faco_cpp_threads(args.threads)
     args.extend_ls = True # To remove
 
 

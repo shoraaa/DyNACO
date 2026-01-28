@@ -9,6 +9,12 @@ except ImportError as e:
     ) from e
 
 
+
+def set_faco_cpp_threads(n_threads: int) -> None:
+    """Set OpenMP thread count for the C++ backend."""
+    faco_cpp.set_num_threads(int(n_threads))
+
+
 def _as_numpy_f32(x):
     if isinstance(x, torch.Tensor):
         x = x.detach().cpu().numpy()
