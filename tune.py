@@ -106,7 +106,7 @@ def stage1_solver(args, output_dir):
             "--device", args.device,
             "--seed", str(1000),
             "--run_name", f"{config_name}_vanilla",
-            "--wandb_project", f"lga_stage{args.stage}"
+            "--wandb_project", f"lga_{args.problem}_stage{args.stage}"
         ] + get_defaults(args.problem)
         
         if not vanilla_log.exists():
@@ -128,7 +128,7 @@ def stage1_solver(args, output_dir):
             "--device", args.device,
             "--seed", str(2000),
             "--run_name", f"{config_name}_neural",
-            "--wandb_project", f"lga_stage{args.stage}"
+            "--wandb_project", f"lga_{args.problem}_stage{args.stage}"
         ] + get_defaults(args.problem)
         
         if not neural_log.exists():
@@ -211,7 +211,7 @@ def stage2_rl_stability(args, output_dir):
                 "--run_name", run_name
             ]
             if adv: cmd.append("--adv_norm")
-            cmd += ["--wandb_project", f"lga_stage{args.stage}"]
+            cmd += ["--wandb_project", f"lga_{args.problem}_stage{args.stage}"]
             cmd += get_defaults(args.problem)
             
             if not log_file.exists():
@@ -254,7 +254,7 @@ def stage2_rl_stability(args, output_dir):
                 "--device", args.device,
                 "--seed", str(2345 + seed),
                 "--run_name", run_name,
-                "--wandb_project", f"lga_stage{args.stage}"
+                "--wandb_project", f"lga_{args.problem}_stage{args.stage}"
             ]
             cmd += get_defaults(args.problem)
             
@@ -324,7 +324,7 @@ def stage3_budget(args, output_dir):
                 "--device", args.device,
                 "--seed", str(3456 + seed),
                 "--run_name", config_name,
-                "--wandb_project", f"lga_stage{args.stage}"
+                "--wandb_project", f"lga_{args.problem}_stage{args.stage}"
             ] + get_defaults(args.problem)
             
             if not log_file.exists():
@@ -374,7 +374,7 @@ def stage4_ablations(args, output_dir):
                 "--device", args.device,
                 "--seed", str(4567 + seed),
                 "--run_name", f"{name}_ablation",
-                "--wandb_project", f"lga_stage{args.stage}"
+                "--wandb_project", f"lga_{args.problem}_stage{args.stage}"
             ] + extra_args + get_defaults(args.problem)
             
             if not log_file.exists():
