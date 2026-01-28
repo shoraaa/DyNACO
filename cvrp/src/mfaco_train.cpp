@@ -474,6 +474,7 @@ void MFACO_CVRP::compute_probmat(const float *prior_ptr,
   const float gamma = 1.0f; // strength of learned prior
   const float eps = EPS;
 
+#pragma omp parallel for schedule(static)
   for (int32_t u = 0; u < n; ++u) {
     // ---- compute prior normalization stats for this row (u) ----
     float mean_z = 0.0f;
