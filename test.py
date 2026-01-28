@@ -465,20 +465,26 @@ def main():
             if torch.is_tensor(item[2]): item[2] = float(item[2])
             
         # Base
+        tb0 = time.time()
         base_ret = infer_instance(args.problem, MFACO, build_pyg_data, None, item, args.k_sparse, args.n_ants, not args.no_dynamic_feats, args, use_heuristic_only=True, collect_metrics=args.visualize)
-        if len(base_ret) == 4: _, base_best, base_time, base_m = base_ret
-        else: _, base_best, base_time = base_ret; base_m = None
+        tb1 = time.time()
+        if len(base_ret) == 4: _, base_best, base_timings, base_m = base_ret
+        else: _, base_best, base_timings = base_ret; base_m = None
         
         results["base_cost"].append(base_best)
+        results["base_time"].append(tb1 - tb0)
         
         # Model
         model_best = float("inf")
         model_m = None
         if model:
+             tm0 = time.time()
              mod_ret = infer_instance(args.problem, MFACO, build_pyg_data, model, item, args.k_sparse, args.n_ants, not args.no_dynamic_feats, args, use_heuristic_only=False, collect_metrics=args.visualize)
+             tm1 = time.time()
              if len(mod_ret) == 4: _, model_best, _, model_m = mod_ret
              else: _, model_best, _ = mod_ret
              results["model_cost"].append(model_best)
+             results["model_time"].append(tm1 - tm0)
         
         # Accumulate metrics for vis
         if args.visualize:
@@ -497,6 +503,7 @@ def main():
     base_costs = np.array(results["base_cost"])
     avg_base = base_costs.mean()
     print(f"Base Avg: {avg_base}")
+    print(f"Base Total Time: {np.sum(results['base_time']):.2f}s")
     
     if baseline_values is not None:
         gap = (base_costs - baseline_values) / baseline_values * 100
@@ -506,6 +513,7 @@ def main():
         mod_costs = np.array(results["model_cost"])
         avg_mod = mod_costs.mean()
         print(f"Model Avg: {avg_mod}")
+        print(f"Model Total Time: {np.sum(results['model_time']):.2f}s")
         if baseline_values is not None:
              gap_m = (mod_costs - baseline_values) / baseline_values * 100
              print(f"Model Gap: {gap_m.mean():.4f}%")

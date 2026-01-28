@@ -47,24 +47,22 @@ def replay_logp_from_cpp_batch_trace(traces, prob_sparse: torch.Tensor):
         counts_t,
     )
 
-    if bool(is_stoch.any().item()):
-        ndec = torch.bincount(ant_idx_all[is_stoch], minlength=n_ants).to(torch.int32)
-    else:
-        ndec = torch.zeros((n_ants,), device=device, dtype=torch.int32)
+    # Optimization: blind bincount
+    ndec = torch.bincount(ant_idx_all[is_stoch], minlength=n_ants).to(torch.int32)
 
     logp = torch.zeros((n_ants,), device=device, dtype=torch.float32)
 
     roulette = is_stoch & (pick >= 0)
-    if bool(roulette.any().item()):
-        idx = roulette.nonzero(as_tuple=False).squeeze(1)
+    
+    # Optimization: Blindly index. nonzero() works on empty tensors.
+    idx = roulette.nonzero(as_tuple=False).squeeze(1)
+    
+    # Optional: check size if overhead of empty slicing is high, but usually stochastic is true
+    if idx.numel() > 0:
         curr_r = curr[idx]
         pick_r = pick[idx]
 
-        in_range = (pick_r >= 0) & (pick_r < k)
-        if not bool(in_range.all().item()):
-            bad = pick_r[~in_range][:10].detach().cpu().tolist()
-            # raise ValueError(f"pick_j out of range (k={k}). Examples: {bad}")
-
+        # Debug checks removed
         vm_r = vm_i64[idx]
         w = prob_sparse[curr_r]
 
