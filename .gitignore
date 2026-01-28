@@ -12,3 +12,8 @@ LKH-3.0.13
 .venv
 gpucore.218289
 tuning_results
+visualizations
+outputs
+outputs_v3
+outputs_v4
+pretrained

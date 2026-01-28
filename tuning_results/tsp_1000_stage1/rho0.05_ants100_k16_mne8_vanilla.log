@@ -1,17 +1,0 @@
-wandb: Currently logged in as: shoraaa (shoraaa-vnu) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
-wandb: setting up run ixgsbxx1
-wandb: Tracking run with wandb version 0.23.1
-wandb: Run data is saved locally in /home/shora/Research/old/NGFACO/wandb/run-20260128_201005-ixgsbxx1
-wandb: Run `wandb offline` to turn off syncing.
-wandb: Syncing run rho0.05_ants100_k16_mne8_vanilla
-wandb: ⭐️ View project at https://wandb.ai/shoraaa-vnu/lga
-wandb: 🚀 View run at https://wandb.ai/shoraaa-vnu/lga/runs/ixgsbxx1
-Loading validation dataset...
-Computing baseline...
-Loading LKH baseline from /home/shora/Research/old/NGFACO/data/tsp/valDataset-1000-43491013d257d0c1-lkh.pt
-Baseline run time: 78.06s
-Baseline mean: 23.169538497924805
-Validating:   0%|          | 0/16 [00:00<?, ?it/s]Validating:   6%|▋         | 1/16 [00:00<00:13,  1.09it/s]Validating:  12%|█▎        | 2/16 [00:01<00:10,  1.33it/s]Validating:  19%|█▉        | 3/16 [00:02<00:09,  1.43it/s]Validating:  25%|██▌       | 4/16 [00:02<00:08,  1.47it/s]Validating:  31%|███▏      | 5/16 [00:03<00:07,  1.49it/s]Validating:  38%|███▊      | 6/16 [00:04<00:06,  1.52it/s]Validating:  44%|████▍     | 7/16 [00:04<00:05,  1.53it/s]Validating:  50%|█████     | 8/16 [00:05<00:05,  1.55it/s]Validating:  56%|█████▋    | 9/16 [00:06<00:04,  1.55it/s]Validating:  62%|██████▎   | 10/16 [00:06<00:03,  1.55it/s]Validating:  69%|██████▉   | 11/16 [00:07<00:03,  1.55it/s]Validating:  75%|███████▌  | 12/16 [00:07<00:02,  1.55it/s]Validating:  81%|████████▏ | 13/16 [00:08<00:01,  1.55it/s]Validating:  88%|████████▊ | 14/16 [00:09<00:01,  1.54it/s]Validating:  94%|█████████▍| 15/16 [00:10<00:00,  1.44it/s]Validating: 100%|██████████| 16/16 [00:10<00:00,  1.42it/s]                                                           Epoch -1: ValLast=23.4789 ValBest=23.3342 Gap=0.71%
-[1;34mwandb[0m: 
-[1;34mwandb[0m: 🚀 View run [33mrho0.05_ants100_k16_mne8_vanilla[0m at: [34m[0m
-[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20260128_201005-ixgsbxx1/logs[0m

@@ -1,3 +1,0 @@
-algo,lr,ppo_clip,ppo_epochs,adv_norm,score
-ppo,1e-06,0.1,1,True,23.3342
-ppo,1e-06,0.1,1,False,23.3422
