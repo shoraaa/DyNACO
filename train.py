@@ -573,9 +573,16 @@ def main():
     
     optimizer = torch.optim.AdamW(net_model.parameters(), lr=args.lr)
 
+    # Generate descriptive filename based on key parameters
+    model_name = f"{args.problem}_n{args.n_node}_k{args.k_sparse}_ants{args.n_ants}_H{args.H}_miniH{args.mini_H}_rho{args.rho}_mne{args.min_new_edges}_{args.algo}"
+    if args.anneal_prior:
+        model_name += f"_anneal_g{args.gamma}_mg{args.min_gamma}"
+    if args.L > 0:
+        model_name += f"_L{args.L}"
+
     run_id = wandb.util.generate_id()
     if not args.no_wandb:
-        run_name = args.run_name if args.run_name else f"{args.problem}-{args.n_node}-H{args.H}"
+        run_name = args.run_name if args.run_name else model_name
         wandb.init(
             project=args.wandb_project,
             entity=args.wandb_entity,
@@ -614,13 +621,6 @@ def main():
     # Create problem-specific save directory
     save_dir = Path(args.save_dir) / args.problem
     save_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Generate descriptive filename based on key parameters
-    model_name = f"n{args.n_node}_k{args.k_sparse}_ants{args.n_ants}_H{args.H}_miniH{args.mini_H}_rho{args.rho}_mne{args.min_new_edges}_{args.algo}"
-    if args.anneal_prior:
-        model_name += f"_anneal_g{args.gamma}_mg{args.min_gamma}"
-    if args.L > 0:
-        model_name += f"_L{args.L}"
     
     for epoch in range(args.epochs):
         # Train
