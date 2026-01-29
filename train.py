@@ -381,7 +381,7 @@ def train_epoch(net, optimizer, global_step, epoch, args):
     
     return global_step, sum_avg_cost / steps, epoch_time_neural, epoch_time_aco
 
-def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics=False):
+def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics=True):
     """
     Unified inference. 
     tsp -> instance_data = coords

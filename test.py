@@ -121,7 +121,7 @@ def verify_solution_cvrp(coords, demand, capacity, cost, route0):
 
 
 
-def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=False):
+def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=True):
     if model is not None:
         model.eval()
 
