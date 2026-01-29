@@ -286,7 +286,7 @@ def safe_corr(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-12) -> float:
         return float("nan")
     
     a = a[mask]
-    b = b[mask]
+    b = b[mask]zf
     
     # Check for zero variance
     a_std = a.std()

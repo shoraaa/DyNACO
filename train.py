@@ -231,10 +231,9 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                     require_prob=True, prior=current_prior
                 )
             else: # cvrp
-                costs, perms, _, logps, traces, new_edges, survival = aco.sample(
+                costs, flats, _, logps, traces, new_edges, survival = aco.sample(
                     require_prob=True, prior=current_prior
                 )
-                flats = perms 
             
             # Record survival
             metrics["survival"].append(survival.mean().item()) 
@@ -488,8 +487,7 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
             if args.problem == 'tsp':
                 costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=current_prior.cpu().numpy(), require_prob=False)
             else:
-                costs, perms, _, _, _, new_edges, survival = aco.sample(prior=current_prior.cpu().numpy(), require_prob=False)
-                flats = perms
+                costs, flats, _, _, _, new_edges, survival = aco.sample(prior=current_prior.cpu().numpy(), require_prob=False)
             
             if collect_metrics:
                 metrics_log['new_edges'].append(new_edges.astype(np.float32).mean())
