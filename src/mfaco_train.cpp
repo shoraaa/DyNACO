@@ -81,6 +81,7 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
     result.routes_raw.resize(n_ants);
   }
   result.new_edges_count.resize(n_ants);
+  result.edge_survival.resize(n_ants);
 
   // Compute probability matrix: tau^alpha * eta * prior
   std::vector<float> probmat(n * k);
@@ -126,11 +127,13 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
 
         float logp_sum = 0.0f;
         int32_t mne_out = 0;
-        float cost =
-            sample_ant_traced(probmat.data(), start_nodes[a], result.routes[a],
-                              result.routes_raw[a], result.costs_raw[a],
-                              mne_out, checklist, trace, rng_, logp_sum);
+        float surv_out = 0.0f;
+        float cost = sample_ant_traced(probmat.data(), start_nodes[a],
+                                       result.routes[a], result.routes_raw[a],
+                                       result.costs_raw[a], mne_out, checklist,
+                                       trace, rng_, logp_sum, surv_out);
         result.new_edges_count[a] = mne_out;
+        result.edge_survival[a] = surv_out;
 
         result.costs[a] = cost;
         result.logps[a] = logp_sum;
@@ -169,11 +172,13 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
 
           float logp_sum = 0.0f;
           int32_t mne_out = 0;
+          float surv_out = 0.0f;
           result.costs[a] = sample_ant_traced(
               probmat.data(), start_nodes[a], result.routes[a],
               result.routes_raw[a], result.costs_raw[a], mne_out, checklist,
-              trace, rng_local, logp_sum);
+              trace, rng_local, logp_sum, surv_out);
           result.new_edges_count[a] = mne_out;
+          result.edge_survival[a] = surv_out;
           result.logps[a] = logp_sum;
         }
       }
@@ -687,7 +692,7 @@ float MFACO_TSP::sample_ant_traced(const float *probmat, int32_t start_node,
                                    float &cost_raw_out, int32_t &new_edges_out,
                                    std::vector<int32_t> &checklist,
                                    MFACOTrace &trace, Xoshiro128Plus &rng,
-                                   float &logp_sum) {
+                                   float &logp_sum, float &survival_out) {
   trace.clear();
   trace.start_node = start_node;
   trace.reserve(min_new_edges * 2);
@@ -777,6 +782,32 @@ float MFACO_TSP::sample_ant_traced(const float *probmat, int32_t start_node,
   if (use_local_search && !checklist.empty()) {
     two_opt_nn(route, positions, checklist);
   }
+
+  // Compute survival
+  float sv_num = 0.0f;
+  float sv_den = 0.0f;
+  size_t trace_sz = trace.curr_nodes.size();
+  for (size_t i = 0; i < trace_sz; ++i) {
+    if (trace.pick_j[i] >= 0) {
+      sv_den += 1.0f;
+      // Check existence using local positions
+      int32_t u = trace.curr_nodes[i];
+      int32_t v = trace.chosen_nodes[i];
+      // Bounds check to prevent out-of-bounds access
+      if (u >= 0 && u < n && v >= 0 && v < n) {
+        int32_t pos_u = positions[u];
+        int32_t pos_v = positions[v];
+        // Additional check: positions should be valid (>= 0 and < n)
+        if (pos_u >= 0 && pos_u < n && pos_v >= 0 && pos_v < n) {
+          int32_t diff = std::abs(pos_u - pos_v);
+          if (diff == 1 || diff == (n - 1)) {
+            sv_num += 1.0f;
+          }
+        }
+      }
+    }
+  }
+  survival_out = (sv_den > 0.5f) ? (sv_num / sv_den) : 0.0f;
 
   // Copy result
   route_out = route;
@@ -2023,7 +2054,7 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
                                     int32_t &new_edges_out,
                                     std::vector<int32_t> &checklist,
                                     MFACOTrace &trace, Xoshiro128Plus &rng,
-                                    float &logp_sum) {
+                                    float &logp_sum, float &survival_out) {
   trace.clear();
   trace.start_node = start_node;
   trace.reserve(min_new_edges * 2);
@@ -2113,6 +2144,34 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
   time_split += std::chrono::duration<double>(end_split - start_split).count();
 
   perm_out = perm;
+  perm_out = perm;
+
+  // Compute survival
+  float sv_num = 0.0f;
+  float sv_den = 0.0f;
+  size_t trace_sz = trace.curr_nodes.size();
+  for (size_t i = 0; i < trace_sz; ++i) {
+    if (trace.pick_j[i] >= 0) {
+      sv_den += 1.0f;
+      // Check existence using local positions
+      int32_t u = trace.curr_nodes[i];
+      int32_t v = trace.chosen_nodes[i];
+      // Bounds check to prevent out-of-bounds access
+      if (u >= 0 && u < n && v >= 0 && v < n) {
+        int32_t pos_u = positions[u];
+        int32_t pos_v = positions[v];
+        // Additional check: positions should be valid (>= 0 and < m)
+        if (pos_u >= 0 && pos_u < m && pos_v >= 0 && pos_v < m) {
+          int32_t diff = std::abs(pos_u - pos_v);
+          if (diff == 1 || diff == (m - 1)) {
+            sv_num += 1.0f;
+          }
+        }
+      }
+    }
+  }
+  survival_out = (sv_den > 0.5f) ? (sv_num / sv_den) : 0.0f;
+
   return cost;
 }
 
@@ -2121,7 +2180,10 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
   result.clear();
   result.costs.resize(n_ants);
   result.routes.resize(n_ants); // each is perm length m
+  result.costs.resize(n_ants);
+  result.routes.resize(n_ants); // each is perm length m
   result.new_edges_count.resize(n_ants);
+  result.edge_survival.resize(n_ants);
 
   std::vector<float> probmat;
   compute_probmat(prior_ptr, probmat);
@@ -2160,11 +2222,13 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
 
         float logp_sum = 0.0f;
         int32_t mne_out = 0;
-        float cost =
-            sample_ant_traced(probmat.data(), start_nodes[a], result.routes[a],
-                              mne_out, checklist, trace, rng_, logp_sum);
+        float surv_out = 0.0f;
+        float cost = sample_ant_traced(probmat.data(), start_nodes[a],
+                                       result.routes[a], mne_out, checklist,
+                                       trace, rng_, logp_sum, surv_out);
         result.costs[a] = cost;
         result.new_edges_count[a] = mne_out;
+        result.edge_survival[a] = surv_out;
         result.logps[a] = logp_sum;
 
         result.traces.start_nodes.push_back(trace.start_node);
@@ -2197,10 +2261,12 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
 
           float logp_sum = 0.0f;
           int32_t mne_out = 0;
+          float surv_out = 0.0f;
           result.costs[a] = sample_ant_traced(
               probmat.data(), start_nodes[a], result.routes[a], mne_out,
-              checklist, trace, rng_local, logp_sum);
+              checklist, trace, rng_local, logp_sum, surv_out);
           result.new_edges_count[a] = mne_out;
+          result.edge_survival[a] = surv_out;
           result.logps[a] = logp_sum;
         }
       }

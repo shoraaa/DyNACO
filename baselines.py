@@ -134,11 +134,23 @@ def solve_with_hgs(coords, demand, capacity, time_limit=2.0, seed=1, verbose=Fal
 
 def get_dataset_hash(dataset):
     hasher = hashlib.sha256()
-    # If list (TSP utils often returns list of tensors)
+    # If list (TSP utils often returns list of tensors, or CVRP list of tuples)
     if isinstance(dataset, list):
-        for t in dataset:
-            b = t.cpu().numpy().tobytes()
-            hasher.update(b)
+        for item in dataset:
+            # Handle tuple format (coords, demand, capacity) for CVRP
+            if isinstance(item, (tuple, list)):
+                for t in item:
+                    if isinstance(t, torch.Tensor):
+                        b = t.cpu().numpy().tobytes()
+                    elif isinstance(t, (int, float)):
+                        b = np.array([t]).tobytes()
+                    else:
+                        b = np.array(t).tobytes()
+                    hasher.update(b)
+            else:
+                # Tensor directly
+                b = item.cpu().numpy().tobytes()
+                hasher.update(b)
     # If TensorDataset (CVRP)
     elif hasattr(dataset, "tensors"):
         for t in dataset.tensors:
@@ -185,10 +197,16 @@ def get_baseline(dataset, problem='tsp', n_node=100, device="cpu", **kwargs):
             if isinstance(coords, torch.Tensor): coords = coords.cpu().numpy()
             c = solve_with_lkh(coords, runs=runs, time_limit=time_limit)
         else:
-            # CVRP TensorDataset
-            coords = dataset.tensors[0][i]
-            demand = dataset.tensors[1][i]
-            capacity = float(dataset.tensors[2][i])
+            # CVRP: can be TensorDataset or list of tuples
+            if hasattr(dataset, "tensors"):
+                coords = dataset.tensors[0][i]
+                demand = dataset.tensors[1][i]
+                capacity = float(dataset.tensors[2][i])
+            else:
+                # List of tuples (coords, demand, capacity)
+                coords, demand, capacity = dataset[i]
+                if isinstance(capacity, torch.Tensor):
+                    capacity = float(capacity.item())
             c = solve_with_hgs(coords, demand, capacity, time_limit=time_limit)
         costs.append(c)
         

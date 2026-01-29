@@ -207,14 +207,18 @@ class MFACO_TSP:
             elif arr.ndim == 1 and arr.size == n*k: arr = arr.reshape(n, k)
             prior = arr
 
-        costs, flats, touched, logps, traces, costs_raw, flats_raw, new_edges_count = self._cpp.sample(
+        costs, flats, touched, logps, traces, costs_raw, flats_raw, new_edges_count, survival = self._cpp.sample(
             invtemp, require_prob, prior, parallel_traced
         )
 
         if require_prob and self._enable_torch_sync:
             self.sync_pheromone_to_torch()
         
-        return costs, flats, touched, logps, traces, costs_raw, flats_raw, new_edges_count
+        # Convert survival to torch tensor if needed, or keep as numpy/array
+        if isinstance(survival, np.ndarray):
+            survival = torch.from_numpy(survival).to(self.device)
+
+        return costs, flats, touched, logps, traces, costs_raw, flats_raw, new_edges_count, survival
 
     def _update_pheromone_from_flat(self, best_flat: np.ndarray, best_cost: float) -> None:
         self._cpp._update_pheromone_from_flat(best_flat.astype(np.int32), float(best_cost))
@@ -339,10 +343,14 @@ class MFACO_CVRP:
     def sample(self, require_prob: bool = False, prior=None, parallel_traced: bool = False, return_decoded: bool = False):
         if prior is not None:
             prior = _as_numpy_f32(prior)
-        costs, perms, decoded, logps, traces, new_edges_count = self.solver.sample(
+        costs, perms, decoded, logps, traces, new_edges_count, survival = self.solver.sample(
             require_prob, prior, parallel_traced, return_decoded
         )
-        return costs, perms, decoded, logps, traces, new_edges_count
+
+        if isinstance(survival, np.ndarray):
+             survival = torch.from_numpy(survival).to(self.device)
+
+        return costs, perms, decoded, logps, traces, new_edges_count, survival
 
     def update_pheromone(self, best_perm, best_cost: float):
         p = _as_numpy_i32(best_perm)

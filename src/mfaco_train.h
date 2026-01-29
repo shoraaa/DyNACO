@@ -176,6 +176,8 @@ struct SampleResult {
   std::vector<std::vector<int32_t>>
       routes_raw; // (n_ants, n) - each route before LS (TSP only)
   std::vector<int32_t> new_edges_count; // (n_ants,)
+  std::vector<float>
+      edge_survival; // (n_ants,) ratio of sampled edges surviving in final tour
 
   void clear() {
     costs.clear();
@@ -185,6 +187,7 @@ struct SampleResult {
     costs_raw.clear();
     routes_raw.clear();
     new_edges_count.clear();
+    edge_survival.clear();
   }
 };
 
@@ -342,7 +345,8 @@ private:
                           std::vector<int32_t> &route_raw_out,
                           float &cost_raw_out, int32_t &new_edges_out,
                           std::vector<int32_t> &checklist, MFACOTrace &trace,
-                          Xoshiro128Plus &rng, float &logp_sum);
+                          Xoshiro128Plus &rng, float &logp_sum,
+                          float &survival_out);
 
   std::tuple<int32_t, bool, float>
   select_next_node(int32_t curr,
@@ -490,7 +494,7 @@ private:
                           int32_t &new_edges_out,
                           std::vector<int32_t> &checklist,
                           class MFACOTrace &trace, Xoshiro128Plus &rng,
-                          float &logp_sum);
+                          float &logp_sum, float &survival_out);
 
   std::tuple<int32_t, bool, float>
   select_next_node(int32_t curr, const float *probmat_row,

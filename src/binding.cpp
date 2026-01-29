@@ -285,8 +285,19 @@ public:
         ne_buf(a) = 0;
     }
 
+    py::array_t<float> survival_arr(solver->n_ants);
+    auto surv_buf = survival_arr.mutable_unchecked<1>();
+    if (!result.edge_survival.empty()) {
+      for (int32_t a = 0; a < solver->n_ants; ++a)
+        surv_buf(a) = result.edge_survival[a];
+    } else {
+      for (int32_t a = 0; a < solver->n_ants; ++a)
+        surv_buf(a) = 0.0f;
+    }
+
     return py::make_tuple(costs, flats, touched_list, logps_arr, traces_obj,
-                          costs_raw_obj, flats_raw_obj, new_edges_arr);
+                          costs_raw_obj, flats_raw_obj, new_edges_arr,
+                          survival_arr);
   }
 
   void update_pheromone_from_flat(
@@ -490,8 +501,18 @@ public:
         ne_buf(a) = 0;
     }
 
+    py::array_t<float> survival_arr(solver->n_ants);
+    auto surv_buf = survival_arr.mutable_unchecked<1>();
+    if (!result.edge_survival.empty()) {
+      for (int32_t a = 0; a < solver->n_ants; ++a)
+        surv_buf(a) = result.edge_survival[a];
+    } else {
+      for (int32_t a = 0; a < solver->n_ants; ++a)
+        surv_buf(a) = 0.0f;
+    }
+
     return py::make_tuple(costs, perms, decoded_obj, logps_arr, traces_obj,
-                          new_edges_arr);
+                          new_edges_arr, survival_arr);
   }
 
   void update_pheromone_from_perm(

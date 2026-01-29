@@ -91,72 +91,7 @@ def prob_sparse_from_tau_eta_prior(tau_nk, eta_nk, prior_nk, alpha=1.0, beta=1.0
     return w.clamp_min(eps)
 
 
-def compute_edge_survival(traces, flats, aco, device):
-    """
-    Compute fraction of sampled edges that survived local search.
-    Vectorized version.
-    """
-    # 1. Sampled Edges
-    curr_nodes = torch.from_numpy(traces.curr_nodes).to(device, dtype=torch.long)
-    pick_j = torch.from_numpy(traces.pick_j).to(device, dtype=torch.long)
-    
-    # Filter valid
-    valid = (pick_j >= 0)
-    u_samp = curr_nodes[valid]
-    idx_samp = pick_j[valid]
-    
-    # Resolve v
-    nn = aco.nn_torch
-    if nn.device != device:
-        nn = nn.to(device)
-        
-    v_samp = nn[u_samp, idx_samp]
-    
-    min_uv, max_uv = torch.min(u_samp, v_samp), torch.max(u_samp, v_samp)
-    
-    starts = torch.from_numpy(traces.starts).to(device, dtype=torch.long)
-    n_ants = int(getattr(traces, "n_ants", int(starts.numel() - 1)))
-    
-    counts = (starts[1:1+n_ants] - starts[:n_ants])
-    ant_ids_full = torch.repeat_interleave(torch.arange(n_ants, device=device), counts)
-    ant_ids_samp = ant_ids_full[valid]
-    
-    N = int(aco.n)
-    Offset = N * N + 1
-    samp_hashes = (ant_ids_samp * Offset) + (min_uv * N) + max_uv
-    
-    # 2. Final Edges from Flats
-    try:
-        flats_arr = np.stack(flats)
-        flats_t = torch.from_numpy(flats_arr).to(device, dtype=torch.long)
-    except ValueError:
-        lengths = [len(f) for f in flats]
-        max_len = max(lengths)
-        flats_arr = np.zeros((n_ants, max_len), dtype=np.int64)
-        for i, f in enumerate(flats):
-            flats_arr[i, :len(f)] = f
-        flats_t = torch.from_numpy(flats_arr).to(device, dtype=torch.long)
-        
-    u_final = flats_t[:, :-1].reshape(-1)
-    v_final = flats_t[:, 1:].reshape(-1)
-    
-    L_minus_1 = flats_t.shape[1] - 1
-    ant_ids_final = torch.arange(n_ants, device=device).repeat_interleave(L_minus_1)
-    
-    min_final, max_final = torch.min(u_final, v_final), torch.max(u_final, v_final)
-    final_hashes = (ant_ids_final * Offset) + (min_final * N) + max_final
-    
-    # 3. Intersection
-    mask = torch.isin(samp_hashes, final_hashes)
-    
-    survived_count = torch.zeros(n_ants, device=device, dtype=torch.float)
-    survived_count.index_add_(0, ant_ids_samp, mask.float())
-    
-    total_count = torch.zeros(n_ants, device=device, dtype=torch.float)
-    total_count.index_add_(0, ant_ids_samp, torch.ones_like(mask, dtype=torch.float))
-    
-    ratio = survived_count / total_count.clamp_min(1.0)
-    return ratio.mean().item()
+
 
 
 def setup_aco(args, instance_data, problem_type):
@@ -272,14 +207,17 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 current_prior = prior_old * factor
 
             if args.problem == 'tsp':
-                costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges = aco.sample(
+                costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges, survival = aco.sample(
                     require_prob=True, prior=current_prior
                 )
             else: # cvrp
-                costs, perms, _, logps, traces, new_edges = aco.sample(
+                costs, perms, _, logps, traces, new_edges, survival = aco.sample(
                     require_prob=True, prior=current_prior
                 )
                 flats = perms 
+            
+            # Record survival
+            metrics["survival"].append(survival.mean().item()) 
             
             costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
             tau_nk = aco.tau_nk_torch().detach()
@@ -476,9 +414,9 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
         prior = heuristics
 
         if args.problem == 'tsp':
-            costs, flats, _, _, _, _, _, new_edges = aco.sample(prior=prior.cpu().numpy(), require_prob=False)
+            costs, flats, _, _, _, _, _, new_edges, _ = aco.sample(prior=prior.cpu().numpy(), require_prob=False)
         else:
-             costs, perms, _, _, _, new_edges = aco.sample(prior=prior.cpu().numpy(), require_prob=False)
+             costs, perms, _, _, _, new_edges, _ = aco.sample(prior=prior.cpu().numpy(), require_prob=False)
              flats = perms
         
         if collect_metrics:
@@ -601,7 +539,7 @@ def main():
     parser.add_argument("--no_dynamic_feats", action="store_true")
     parser.add_argument("--baseline", type=str, default='default') 
     parser.add_argument("--baseline_runs", type=int, default=1)
-    parser.add_argument("--baseline_time_limit", type=float, default=10.0)
+    parser.add_argument("--baseline_time_limit", type=float, default=300.0)
     parser.add_argument("--anneal_prior", action="store_true")
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--min_gamma", type=float, default=0.2)
@@ -653,13 +591,36 @@ def main():
     val_dataset = utils.load_val_dataset(args.n_node, problem=args.problem, device='cpu')
     baseline_values = None
     
-    if val_dataset is not None:
-        baseline_values = get_baseline(val_dataset, problem=args.problem, n_node=args.n_node, 
-                                       runs=args.baseline_runs, time_limit=args.baseline_time_limit)
-    else:
-        print("Validation dataset not found. Skipping validation setup.")
+    if val_dataset is None:
+        print("Validation dataset not found. Generating 16 instances on fly...")
+        val_dataset = []
+        gen_fn = utils.generate_tsp_instance if args.problem == 'tsp' else utils.gen_cvrp_instance
+        for _ in range(16):
+            if args.problem == 'tsp':
+                val_dataset.append(torch.from_numpy(gen_fn(args.n_node)))
+            else:
+                 c, d, cap = gen_fn(args.n_node, device='cpu')
+                 val_dataset.append((c.cpu(), d.cpu(), cap))
+        
+        # Save it for future reuse
+        utils.save_val_dataset(val_dataset, args.n_node, problem=args.problem)
+    
+    baseline_values = get_baseline(val_dataset, problem=args.problem, n_node=args.n_node, runs=args.baseline_runs, time_limit=args.baseline_time_limit)
 
     global_step = 0
+    best_val_cost = float('inf')
+    best_model_state = None
+    
+    # Create problem-specific save directory
+    save_dir = Path(args.save_dir) / args.problem
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate descriptive filename based on key parameters
+    model_name = f"n{args.n_node}_k{args.k_sparse}_ants{args.n_ants}_H{args.H}_miniH{args.mini_H}_rho{args.rho}_mne{args.min_new_edges}_{args.algo}"
+    if args.anneal_prior:
+        model_name += f"_anneal_g{args.gamma}_mg{args.min_gamma}"
+    if args.L > 0:
+        model_name += f"_L{args.L}"
     
     for epoch in range(args.epochs):
         # Train
@@ -669,6 +630,18 @@ def main():
         if val_dataset is not None:
              avg_last, avg_best, avg_gap, val_metrics = validation(net_model, val_dataset, args, baseline_values)
              print(f"Epoch {epoch}: TrainCost={avg_train:.4f} ValBest={avg_best:.4f} Gap={avg_gap:.2f}%")
+             
+             # Track best model
+             if avg_best < best_val_cost:
+                 best_val_cost = avg_best
+                 best_model_state = {
+                     "model_state_dict": net_model.state_dict(),
+                     "optimizer_state_dict": optimizer.state_dict(),
+                     "epoch": epoch,
+                     "val_cost": avg_best,
+                     "val_gap": avg_gap,
+                     "config": vars(args)
+                 }
              
              if not args.no_wandb:
                  log_dict = {
@@ -681,15 +654,33 @@ def main():
                  }
                  wandb.log(log_dict, step=global_step)
         
-        # Save
-        if args.save_dir:
+        # Save latest checkpoint periodically
+        if args.save_dir and (epoch + 1) % 5 == 0:
             chkpt = {
-                "model": net_model.state_dict(),
-                "optimizer": optimizer.state_dict(),
+                "model_state_dict": net_model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
                 "epoch": epoch,
-                "args": vars(args)
+                "config": vars(args)
             }
-            torch.save(chkpt, f"{args.save_dir}/{run_id}_latest.pt")
+            torch.save(chkpt, save_dir / f"{model_name}_latest.pt")
+    
+    # Save best model
+    if best_model_state is not None and args.save_dir:
+        best_path = save_dir / f"{model_name}_best.pt"
+        torch.save(best_model_state, best_path)
+        print(f"Saved best model to {best_path} (Val Cost: {best_val_cost:.4f})")
+    
+    # Save final model
+    if args.save_dir:
+        final_chkpt = {
+            "model_state_dict": net_model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "epoch": args.epochs - 1,
+            "config": vars(args)
+        }
+        final_path = save_dir / f"{model_name}_final.pt"
+        torch.save(final_chkpt, final_path)
+        print(f"Saved final model to {final_path}")
 
 if __name__ == "__main__":
     main()

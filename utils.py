@@ -86,7 +86,15 @@ DEMAND_LOW = 1
 DEMAND_HIGH = 9
 DEPOT_COOR = [0.5, 0.5]
 
-def gen_cvrp_instance(n, device, capacity=CAPACITY):
+def gen_cvrp_instance(n, device, capacity=None):
+    if capacity is None:
+        if n > 1000:
+             capacity = 300 # Larger scale
+        elif n == 1000:
+             capacity = 200 # CVRP1K
+        else:
+             capacity = 50 # Standard small scale
+
     locations = torch.rand(size=(n, 2), device=device)
     demands = torch.randint(low=DEMAND_LOW, high=DEMAND_HIGH+1, size=(n,), device=device)
 
@@ -195,4 +203,23 @@ def load_val_dataset(n, problem='tsp', device='cpu'):
     except Exception as e:
         print(f"Failed to load dataset: {e}")
         return None
+
+
+def save_val_dataset(dataset, n, problem='tsp'):
+    path_dir = DATA_DIR / problem
+    path_dir.mkdir(parents=True, exist_ok=True)
+    path = path_dir / f'valDataset-{n}.pt'
+    
+    # Store in dict format for TSP as load_val_dataset expects "coords" key
+    if problem == 'tsp':
+        # Assuming dataset is list of tensors or single tensor
+        if isinstance(dataset, list):
+            coords = torch.stack(dataset)
+        else:
+            coords = dataset
+        torch.save({"coords": coords}, path)
+    else:
+        # CVRP: save directly (list of tuples or whatever structure)
+        torch.save(dataset, path)
+    print(f"Saved generated dataset to {path}")
 

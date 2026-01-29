@@ -118,62 +118,7 @@ def verify_solution_cvrp(coords, demand, capacity, cost, route0):
         raise ValueError(f"Cost mismatch: recalculated {total_dist:.6f} vs reported {cost:.6f}")
     return True
 
-def compute_edge_survival(traces, flats, aco, device):
-    curr_nodes = torch.from_numpy(traces.curr_nodes).to(device, dtype=torch.long)
-    pick_j = torch.from_numpy(traces.pick_j).to(device, dtype=torch.long)
-    
-    valid = (pick_j >= 0)
-    u_samp = curr_nodes[valid]
-    idx_samp = pick_j[valid]
-    
-    nn = aco.nn_torch
-    if nn.device != device:
-        nn = nn.to(device)
-        
-    v_samp = nn[u_samp, idx_samp]
-    min_uv, max_uv = torch.min(u_samp, v_samp), torch.max(u_samp, v_samp)
-    
-    starts = torch.from_numpy(traces.starts).to(device, dtype=torch.long)
-    n_ants = int(getattr(traces, "n_ants", int(starts.numel() - 1)))
-    
-    counts = (starts[1:1+n_ants] - starts[:n_ants])
-    ant_ids_full = torch.repeat_interleave(torch.arange(n_ants, device=device), counts)
-    ant_ids_samp = ant_ids_full[valid]
-    
-    N = int(aco.n)
-    Offset = N * N + 1
-    samp_hashes = (ant_ids_samp * Offset) + (min_uv * N) + max_uv
-    
-    try:
-        flats_arr = np.stack(flats)
-        flats_t = torch.from_numpy(flats_arr).to(device, dtype=torch.long)
-    except ValueError:
-        lengths = [len(f) for f in flats]
-        max_len = max(lengths)
-        flats_arr = np.zeros((n_ants, max_len), dtype=np.int64)
-        for i, f in enumerate(flats):
-            flats_arr[i, :len(f)] = f
-        flats_t = torch.from_numpy(flats_arr).to(device, dtype=torch.long)
-        
-    u_final = flats_t[:, :-1].reshape(-1)
-    v_final = flats_t[:, 1:].reshape(-1)
-    
-    L_minus_1 = flats_t.shape[1] - 1
-    ant_ids_final = torch.arange(n_ants, device=device).repeat_interleave(L_minus_1)
-    
-    min_final, max_final = torch.min(u_final, v_final), torch.max(u_final, v_final)
-    final_hashes = (ant_ids_final * Offset) + (min_final * N) + max_final
-    
-    mask = torch.isin(samp_hashes, final_hashes)
-    
-    survived_count = torch.zeros(n_ants, device=device, dtype=torch.float)
-    survived_count.index_add_(0, ant_ids_samp, mask.float())
-    
-    total_count = torch.zeros(n_ants, device=device, dtype=torch.float)
-    total_count.index_add_(0, ant_ids_samp, torch.ones_like(mask, dtype=torch.float))
-    
-    ratio = survived_count / total_count.clamp_min(1.0)
-    return ratio.mean().item()
+
 
 
 def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=False):
@@ -269,14 +214,13 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                 return_decoded = getattr(args, 'verify', False) and (problem == 'cvrp')
                 
                 if problem == 'tsp':
-                    costs_t, flats, _, _, traces, _, _, _ = aco.sample(require_prob=do_metrics, prior=current_prior)
+                    costs_t, flats, _, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=current_prior)
                 else:
-                    costs_t, perms, decoded, _, traces, _ = aco.sample(require_prob=do_metrics, prior=current_prior, return_decoded=return_decoded)
+                    costs_t, perms, decoded, _, traces, _, survival = aco.sample(require_prob=do_metrics, prior=current_prior, return_decoded=return_decoded)
                     flats = perms
 
                 if do_metrics:
-                    surv = compute_edge_survival(traces, flats, aco, args.device)
-                    metrics_log["survival"].append(surv)
+                    metrics_log["survival"].append(survival.mean())
 
                 if return_decoded and problem == 'cvrp':
                      best_idx_t = int(costs_t.argmin().item())
@@ -434,6 +378,10 @@ def main():
                 else:
                     c, d, cap = gen_fn(args.n_node, device='cpu')
                     val_list.append((c.cpu(), d.cpu(), cap))
+            
+            # Save for reuse
+            utils.save_val_dataset(val_list, args.n_node, problem=args.problem)
+            
             # Wrap CVRP in dataset? List of tuples is fine for custom loop below
 
     # Baseline
@@ -488,7 +436,9 @@ def main():
             # item is [coords, demand, cap] tensors if from DataLoader
             # or (coords, demand, cap) tuple if from list
             if isinstance(item, (list, tuple)):
-                item = [x[0] if torch.is_tensor(x) and x.dim()>1 else x for x in item] # Unbatch if batched?
+                # If from DataLoader batch=1, we might have (1, N, 2). If from list, (N, 2).
+                # Only unbatch if looks like batch dim 
+                item = [x[0] if torch.is_tensor(x) and x.dim()==3 else x for x in item] # Unbatch if batched?
                 # DataLoader adds batch dim? Yes batch_size=1 -> (1, n, 2).
                 if torch.is_tensor(item[0]) and item[0].shape[0] == 1 and item[0].dim() == 3:
                      item[0] = item[0].squeeze(0).numpy()
