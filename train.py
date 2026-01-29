@@ -430,7 +430,7 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
         metrics_log = {
             'new_edges': [], 'prior_mean': [], 'prior_std': [],
             'prior_l2_drift': [], 'prior_kl': [], 'prior_turnover': [], 'prior_flip': [],
-            'prior_eta_corr': []
+            'prior_eta_corr': [], 'survival': []
         }
     else:
         metrics_log = {}
@@ -486,13 +486,14 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
                 current_prior = heuristics * factor
 
             if args.problem == 'tsp':
-                costs, flats, _, _, _, _, _, new_edges, _ = aco.sample(prior=current_prior.cpu().numpy(), require_prob=False)
+                costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=current_prior.cpu().numpy(), require_prob=False)
             else:
-                costs, perms, _, _, _, new_edges, _ = aco.sample(prior=current_prior.cpu().numpy(), require_prob=False)
+                costs, perms, _, _, _, new_edges, survival = aco.sample(prior=current_prior.cpu().numpy(), require_prob=False)
                 flats = perms
             
             if collect_metrics:
                 metrics_log['new_edges'].append(new_edges.astype(np.float32).mean())
+                metrics_log['survival'].append(survival.mean().item())
 
             best_idx = np.argmin(costs)
             best_val = costs[best_idx]
