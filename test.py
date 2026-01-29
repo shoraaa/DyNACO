@@ -305,11 +305,6 @@ def main():
         
         if val_list is None:
             print("Generating data...")
-            # We don't have batch gen in utils really exposed properly for this script easily 
-            # but we can loop generate if needed or rely on pre-generated.
-            # For simplicity, let's error or generate on fly if needed?
-            # Unified utils script removed main "generation" block for batch saving.
-            # Let's generate a small test set on fly if missing.
             print("Generating 16 instances on fly...")
             val_list = []
             for _ in range(16):
@@ -321,8 +316,6 @@ def main():
             
             # Save for reuse
             utils.save_val_dataset(val_list, args.n_node, problem=args.problem)
-            
-            # Wrap CVRP in dataset? List of tuples is fine for custom loop below
 
     # Baseline
     baseline_values = None

@@ -424,9 +424,27 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
 
     # Inference loop (H steps)
     best_seen = float("inf")
-    metrics_log = {'new_edges': []} if collect_metrics else {}
+    
+    # Initialize metrics
+    if collect_metrics:
+        metrics_log = {
+            'new_edges': [], 'prior_mean': [], 'prior_std': [],
+            'prior_l2_drift': [], 'prior_kl': [], 'prior_turnover': [], 'prior_flip': [],
+            'prior_eta_corr': []
+        }
+    else:
+        metrics_log = {}
     
     net.eval()
+    
+    # Get heuristic for correlation tracking
+    if collect_metrics:
+        if args.problem == 'tsp':
+            eta_nk = aco.h_sparse_torch.to(device=args.device)
+        else:
+            eta_nk = torch.tensor(aco.heuristic_sparse_np, device=args.device)
+    
+    prior_prev_outer = None
 
     timer_sampling = 0
     timer_ls = 0
@@ -437,6 +455,23 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
         
         with torch.no_grad():
             heuristics = net(pyg_data).view(-1).view(aco.n, aco.k)
+        
+        # Track prior metrics
+        if collect_metrics:
+            metrics_log['prior_mean'].append(heuristics.mean().item())
+            metrics_log['prior_std'].append(heuristics.std().item())
+            
+            # Track prior drift metrics
+            if prior_prev_outer is not None:
+                metrics_log['prior_l2_drift'].append(rel_l2_drift(prior_prev_outer, heuristics))
+                metrics_log['prior_kl'].append(mean_row_kl(prior_prev_outer, heuristics))
+                metrics_log['prior_turnover'].append(top_turnover(prior_prev_outer, heuristics))
+                metrics_log['prior_flip'].append(top1_flip_rate(prior_prev_outer, heuristics))
+            
+            # Track prior-eta correlation
+            metrics_log['prior_eta_corr'].append(safe_corr(heuristics, eta_nk))
+            
+            prior_prev_outer = heuristics.detach().clone()
         
         # Inner loop with mini_H iterations (matching training and test.py)
         for inner in range(args.mini_H):
@@ -480,6 +515,7 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
         return avg_cost, best_seen, timings, metrics_log
     
     return avg_cost, best_seen, timings
+
 
 
 def validation(net, val_dataset, args, baseline_values=None):
@@ -694,6 +730,10 @@ def main():
                      "time/neural_epoch": t_neural,
                      "time/aco_epoch": t_aco
                  }
+                 # Add validation metrics
+                 if val_metrics:
+                     for k, v in val_metrics.items():
+                         log_dict[f"val/{k}"] = float(v)
                  wandb.log(log_dict, step=global_step)
         
         # Save latest checkpoint periodically
