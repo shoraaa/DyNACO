@@ -1,8 +1,0 @@
-binding.cpp
-mfaco_train.cpp
-setup.py
-faco_cvrp.egg-info/PKG-INFO
-faco_cvrp.egg-info/SOURCES.txt
-faco_cvrp.egg-info/dependency_links.txt
-faco_cvrp.egg-info/not-zip-safe
-faco_cvrp.egg-info/top_level.txt
