@@ -410,26 +410,35 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
         with torch.no_grad():
             heuristics = net(pyg_data).view(-1).view(aco.n, aco.k)
         
-        # Annealing (if enabled in test?) usually disabled in validation
-        prior = heuristics
+        # Inner loop with mini_H iterations (matching training and test.py)
+        for inner in range(args.mini_H):
+            # Annealing
+            current_prior = heuristics
+            if args.anneal_prior:
+                if args.mini_H > 1:
+                    ratio = inner / (args.mini_H - 1)
+                    factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
+                else:
+                    factor = args.gamma
+                current_prior = heuristics * factor
 
-        if args.problem == 'tsp':
-            costs, flats, _, _, _, _, _, new_edges, _ = aco.sample(prior=prior.cpu().numpy(), require_prob=False)
-        else:
-             costs, perms, _, _, _, new_edges, _ = aco.sample(prior=prior.cpu().numpy(), require_prob=False)
-             flats = perms
-        
-        if collect_metrics:
-            metrics_log['new_edges'].append(new_edges.astype(np.float32).mean())
+            if args.problem == 'tsp':
+                costs, flats, _, _, _, _, _, new_edges, _ = aco.sample(prior=current_prior.cpu().numpy(), require_prob=False)
+            else:
+                costs, perms, _, _, _, new_edges, _ = aco.sample(prior=current_prior.cpu().numpy(), require_prob=False)
+                flats = perms
+            
+            if collect_metrics:
+                metrics_log['new_edges'].append(new_edges.astype(np.float32).mean())
 
-        best_idx = np.argmin(costs)
-        best_val = costs[best_idx]
-        best_seen = min(best_seen, best_val)
-        
-        if args.problem == 'tsp':
-            aco._update_pheromone_from_flat(flats[best_idx], best_val)
-        else:
-            aco.update_pheromone(flats[best_idx], best_val)
+            best_idx = np.argmin(costs)
+            best_val = costs[best_idx]
+            best_seen = min(best_seen, best_val)
+            
+            if args.problem == 'tsp':
+                aco._update_pheromone_from_flat(flats[best_idx], best_val)
+            else:
+                aco.update_pheromone(flats[best_idx], best_val)
     
     avg_cost = float(np.mean(costs))
     
@@ -631,7 +640,7 @@ def main():
              avg_last, avg_best, avg_gap, val_metrics = validation(net_model, val_dataset, args, baseline_values)
              print(f"Epoch {epoch}: TrainCost={avg_train:.4f} ValBest={avg_best:.4f} Gap={avg_gap:.2f}%")
              
-             # Track best model
+             # Track best model and save immediately
              if avg_best < best_val_cost:
                  best_val_cost = avg_best
                  best_model_state = {
@@ -642,6 +651,11 @@ def main():
                      "val_gap": avg_gap,
                      "config": vars(args)
                  }
+                 # Save best model immediately
+                 if args.save_dir:
+                     best_path = save_dir / f"{model_name}_best.pt"
+                     torch.save(best_model_state, best_path)
+                     print(f"Saved new best model to {best_path} (Epoch {epoch}, Val Cost: {avg_best:.4f}, Gap: {avg_gap:.2f}%)")
              
              if not args.no_wandb:
                  log_dict = {
