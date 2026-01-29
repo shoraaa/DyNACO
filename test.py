@@ -109,6 +109,100 @@ def verify_solution_cvrp(coords, demand, capacity, cost, route0):
     return True
 
 # -----------------------------------------------------------------------------
+# Survival Metric
+# -----------------------------------------------------------------------------
+
+def compute_edge_survival(traces, flats, aco, device):
+    """
+    Compute fraction of sampled edges that survived local search.
+    Vectorized version.
+    """
+    # 1. Sampled Edges
+    # Extracts pointers from traces
+    # traces.curr_nodes etc are numpy arrays
+    
+    curr_nodes = torch.from_numpy(traces.curr_nodes).to(device, dtype=torch.long)
+    pick_j = torch.from_numpy(traces.pick_j).to(device, dtype=torch.long)
+    
+    # Filter valid
+    valid = (pick_j >= 0)
+    u_samp = curr_nodes[valid]
+    idx_samp = pick_j[valid]
+    
+    # Resolve v
+    # aco.nn_torch is (N, K)
+    # Ensure nn_torch is available and on device
+    nn = aco.nn_torch
+    if nn.device != device:
+        nn = nn.to(device)
+        
+    v_samp = nn[u_samp, idx_samp]
+    
+    # Edge IDs: (min, max)
+    min_uv, max_uv = torch.min(u_samp, v_samp), torch.max(u_samp, v_samp)
+    
+    # Ant IDs
+    starts = torch.from_numpy(traces.starts).to(device, dtype=torch.long)
+    n_ants = int(getattr(traces, "n_ants", int(starts.numel() - 1)))
+    
+    counts = (starts[1:1+n_ants] - starts[:n_ants])
+    ant_ids_full = torch.repeat_interleave(torch.arange(n_ants, device=device), counts)
+    ant_ids_samp = ant_ids_full[valid]
+    
+    # Global Hash for Sampled: AntID * Offset + Min * N + Max
+    # Offset needs to be > N*N
+    N = int(aco.n)
+    Offset = N * N + 1
+    # Use int64
+    samp_hashes = (ant_ids_samp * Offset) + (min_uv * N) + max_uv
+    
+    # 2. Final Edges from Flats
+    # flats is list of arrays.
+    # Check shape consistency.
+    try:
+        # Optimistic stacking
+        flats_arr = np.stack(flats)
+        flats_t = torch.from_numpy(flats_arr).to(device, dtype=torch.long)
+    except ValueError:
+        # Ragged arrays? Fallback to padding
+        lengths = [len(f) for f in flats]
+        max_len = max(lengths)
+        flats_arr = np.zeros((n_ants, max_len), dtype=np.int64)
+        for i, f in enumerate(flats):
+            flats_arr[i, :len(f)] = f
+        flats_t = torch.from_numpy(flats_arr).to(device, dtype=torch.long)
+        
+    # Edges in flats: (i, i+1)
+    # Allows vectorized pairing
+    u_final = flats_t[:, :-1].reshape(-1)
+    v_final = flats_t[:, 1:].reshape(-1)
+    
+    # Ant IDs for final
+    # (n_ants, L-1) flat
+    L_minus_1 = flats_t.shape[1] - 1
+    ant_ids_final = torch.arange(n_ants, device=device).repeat_interleave(L_minus_1)
+    
+    min_final, max_final = torch.min(u_final, v_final), torch.max(u_final, v_final)
+    
+    final_hashes = (ant_ids_final * Offset) + (min_final * N) + max_final
+    
+    # 3. Intersection
+    # torch.isin(elements, test_elements)
+    mask = torch.isin(samp_hashes, final_hashes)
+    
+    # Aggregation
+    survived_count = torch.zeros(n_ants, device=device, dtype=torch.float)
+    survived_count.index_add_(0, ant_ids_samp, mask.float())
+    
+    total_count = torch.zeros(n_ants, device=device, dtype=torch.float)
+    total_count.index_add_(0, ant_ids_samp, torch.ones_like(mask, dtype=torch.float))
+    
+    # Avoid div by zero
+    ratio = survived_count / total_count.clamp_min(1.0)
+    
+    return ratio.mean().item()
+
+# -----------------------------------------------------------------------------
 # Unified Logic
 # -----------------------------------------------------------------------------
 
@@ -149,7 +243,7 @@ def get_modules(problem):
     else:
         raise ValueError(f"Unknown problem: {problem}")
 
-def infer_instance(problem, MFACOClass, build_pyg_data_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False):
+def infer_instance(problem, MFACOClass, build_pyg_data_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=False):
     if model is not None:
         model.eval()
 
@@ -206,12 +300,15 @@ def infer_instance(problem, MFACOClass, build_pyg_data_fn, model, instance_data,
     best_seen = float("inf")
     avg_last = None
     priors, pher_before = [], []
-    metrics_log = {k: [] for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match"]}
+    metrics_log = {k: [] for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match", "survival"]}
     
     with torch.no_grad():
         for t in range(args.H):
+            # Check if we should compute metrics this step
+            do_metrics = collect_metrics and (metrics_every_step or t == args.H - 1)
+            
             prior_mat = None
-            if collect_metrics:
+            if do_metrics:
                 pher_before.append(aco.pheromone_sparse.detach().cpu().clone())
 
             if model is not None and not use_heuristic_only:
@@ -224,7 +321,7 @@ def infer_instance(problem, MFACOClass, build_pyg_data_fn, model, instance_data,
                 prior_mat = heu_vec.view(aco.n, aco.k)
                 if problem == 'cvrp': prior_mat += EPS
                 
-                if collect_metrics:
+                if do_metrics:
                     priors.append(prior_mat.detach().cpu().clone())
 
             for mini_t in range(args.mini_H):
@@ -242,12 +339,15 @@ def infer_instance(problem, MFACOClass, build_pyg_data_fn, model, instance_data,
                 return_decoded = getattr(args, 'verify', False) and (problem == 'cvrp')
                 
                 if problem == 'tsp':
-                    costs_t, flats, _, _, traces, _, _, _ = aco.sample(require_prob=False, prior=current_prior)
-                    # TSP sample signature doesn't support return_decoded yet in python wrapper?
-                    # TSP python wrapper sample: costs, flats, touched, logps, traces, ...
+                    # Only request prob (traces) if we need to compute survival metric
+                    costs_t, flats, _, _, traces, _, _, _ = aco.sample(require_prob=do_metrics, prior=current_prior)
                 else:
-                    costs_t, perms, decoded, _, traces, _ = aco.sample(require_prob=False, prior=current_prior, return_decoded=return_decoded)
+                    costs_t, perms, decoded, _, traces, _ = aco.sample(require_prob=do_metrics, prior=current_prior, return_decoded=return_decoded)
                     flats = perms
+
+                if do_metrics:
+                    surv = compute_edge_survival(traces, flats, aco, args.device)
+                    metrics_log["survival"].append(surv)
 
                 if return_decoded and problem == 'cvrp':
                      best_idx_t = int(costs_t.argmin().item())
@@ -267,12 +367,16 @@ def infer_instance(problem, MFACOClass, build_pyg_data_fn, model, instance_data,
                 else:
                     aco.update_pheromone(flats[best_idx], best_cost)
 
-            if collect_metrics:
+            if do_metrics:
                 metrics_log["cost"].append(best_seen)
                 
                 is_prior_avail = (len(priors) > 0)
-                if is_prior_avail and t > 0:
-                     P_prev, P_cur = priors[t-1], priors[t]
+                # If we skipped steps, we can't do t-1 easily unless we stored it.
+                # But here 'priors' list only grows when do_metrics is True.
+                # So priors[-1] is current, priors[-2] is previous captured step.
+                
+                if is_prior_avail and len(priors) > 1:
+                     P_prev, P_cur = priors[-2], priors[-1]
                      metrics_log["l2"].append(rel_l2_drift(P_prev, P_cur))
                      metrics_log["kl"].append(mean_row_kl(P_prev, P_cur))
                      metrics_log["turnover"].append(top_turnover(P_prev, P_cur))
@@ -281,8 +385,8 @@ def infer_instance(problem, MFACOClass, build_pyg_data_fn, model, instance_data,
                      for k in ["l2", "kl", "turnover", "flip"]: metrics_log[k].append(0.0)
 
                 if is_prior_avail:
-                    tau = pher_before[t]
-                    pr = priors[t]
+                    tau = pher_before[-1] # Match last captured
+                    pr = priors[-1]
                     metrics_log["corr"].append(safe_corr(tau, pr))
                     metrics_log["ov"].append(top_overlap_frac(tau, pr))
                     metrics_log["row_match"].append(row_top1_match_rate(tau, pr))
@@ -473,7 +577,7 @@ def main():
             
         # Base
         tb0 = time.time()
-        base_ret = infer_instance(args.problem, MFACO, build_pyg_data, None, item, args.k_sparse, args.n_ants, not args.no_dynamic_feats, args, use_heuristic_only=True, collect_metrics=args.visualize)
+        base_ret = infer_instance(args.problem, MFACO, build_pyg_data, None, item, args.k_sparse, args.n_ants, not args.no_dynamic_feats, args, use_heuristic_only=True, collect_metrics=args.visualize, metrics_every_step=args.visualize)
         tb1 = time.time()
         if len(base_ret) == 4: _, base_best, base_timings, base_m = base_ret
         else: _, base_best, base_timings = base_ret; base_m = None
@@ -486,7 +590,7 @@ def main():
         model_m = None
         if model:
              tm0 = time.time()
-             mod_ret = infer_instance(args.problem, MFACO, build_pyg_data, model, item, args.k_sparse, args.n_ants, not args.no_dynamic_feats, args, use_heuristic_only=False, collect_metrics=args.visualize)
+             mod_ret = infer_instance(args.problem, MFACO, build_pyg_data, model, item, args.k_sparse, args.n_ants, not args.no_dynamic_feats, args, use_heuristic_only=False, collect_metrics=args.visualize, metrics_every_step=args.visualize)
              tm1 = time.time()
              if len(mod_ret) == 4: _, model_best, _, model_m = mod_ret
              else: _, model_best, _ = mod_ret

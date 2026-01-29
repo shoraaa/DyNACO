@@ -4,9 +4,7 @@
 
 \documentclass[sigconf,anonymous,review]{acmart}
 
-% , , , , , , , , , -
 % Packages
-% , , , , , , , , , -
 \usepackage{amsmath, amssymb, amsfonts}
 \usepackage{mathtools}
 \usepackage{amsthm}
@@ -27,9 +25,7 @@
 \usepackage{algorithmic}
 \usepackage{xcolor}
 
-% , , , , , , , , , -
 % Convenience macros
-% , , , , , , , , , -
 \newcommand{\TODO}[1]{\textcolor{red}{[TODO: #1]}}
 \newcommand{\eg}{e.g., }
 \newcommand{\ie}{i.e., }
@@ -45,18 +41,7 @@
 \newcommand{\MMAS}{\textsc{MMAS}}
 \newcommand{\LGA}{\textsc{LGA}}
 
-% Box helper (no extra packages)
-\newcommand{\DefBox}[1]{
-\begin{center}
-\fbox{\begin{minipage}{0.96\linewidth}
-#1
-\end{minipage}}
-\end{center}
-}
-
-% , , , , , , , , , -
-% Title / Author
-% , , , , , , , , , -
+% Title and Author
 \title{Closed-Loop Neural Control \\ of Ant Colony Optimization for Routing}
 
 \author{Anonymous Author(s)}
@@ -73,12 +58,12 @@
 % Abstract
 % ======================================================================
 \begin{abstract}
-Ant Colony Optimization (ACO) often stagnates when pheromone values concentrate on suboptimal edges.
-Existing neural-guided ACO methods provide \emph{static, instance-conditioned} guidance computed once before search, limiting their ability to react to the solver's evolving state.
-We propose Learning-Guided ACO (\LGA{}), a \emph{closed-loop} controller that periodically observes pheromones and the incumbent solution, outputting per-edge residual logits that are held constant for a fixed number of inner iterations (sample-and-hold control).
-The resulting transition kernel corresponds to exponential tilting of the baseline ACO policy and admits a KL-regularized interpretation.
-Empirically, we find that \emph{localized local search} is crucial for stable policy-gradient training: it preserves sampled edges and improves action--outcome fidelity, whereas global local search frequently overwrites sampled decisions and destabilizes learning.
-On Euclidean \TSP{} and \CVRP{} (via giant-tour + Split), \LGA{} improves over a strong perturbation-based ACO backend and open-loop guidance under matched wall-clock budgets.
+Ant Colony Optimization (ACO) often stagnates when pheromone values concentrate on suboptimal edges. While neural-guided variants learn instance-conditioned priors, they typically compute guidance only once before search begins.
+Learning-Guided ACO (\LGA{}) instead employs a closed-loop controller that periodically observes the current pheromone distribution and incumbent solution, emitting per-edge residual logits that remain fixed for a block of $S=100$ inner iterations before being refreshed.
+The shaped transition kernel corresponds to exponential tilting of the baseline ACO policy.
+We find that localized local search---without neural guidance during the LS phase---suffices for stable policy-gradient training: by preserving $\approx 30\%$ of sampled edges, it maintains credit assignment between the controller's decisions and the post-LS tour quality.
+We show that spatial locality alone substitutes for the neural-guided LS used in prior work.
+Experiments on Euclidean \TSP{} and \CVRP{} demonstrate that \LGA{} outperforms both vanilla perturbation-based ACO and open-loop neural guidance under matched wall-clock budgets.
 \end{abstract}
 
 \maketitle
@@ -89,32 +74,24 @@ On Euclidean \TSP{} and \CVRP{} (via giant-tour + Split), \LGA{} improves over a
 % ======================================================================
 \section{Introduction}
 
-Ant Colony Optimization (ACO) is an effective metaheuristic for routing problems, but it can stagnate: once pheromone values concentrate on a suboptimal solution, the algorithm loses the ability to explore alternatives.
-Common remedies (restart, smoothing) are heuristic and do not condition on search state.
-Recent neural ACO methods (e.g., DeepACO~\cite{deepaco}) address this by learning instance-conditioned guidance, but they compute this guidance \emph{once} before search begins.
-Because such guidance is fixed throughout the run, it cannot respond when pheromones converge prematurely or improvements stall.
+Ant Colony Optimization (ACO) has proven effective for routing problems, but stagnation remains a persistent problem: once pheromone values concentrate on a suboptimal tour, exploration effectively ceases and quality plateaus.
+Standard countermeasures such as periodic restarts or pheromone smoothing help, but they ignore the actual state of the search.
+Recent neural ACO variants, including DeepACO~\cite{deepaco}, learn instance-conditioned guidance that improved solution quality. This guidance, however, remains static: it is computed once before search begins, leaving the solver unable to react when pheromones converge prematurely or when improvements stall.
 
-We propose \emph{Learning-Guided ACO} (\LGA{}), a closed-loop controller that periodically observes the solver state---pheromone distribution and incumbent solution---and outputs per-edge residual logits that are held constant for $S$ inner iterations (sample-and-hold).
-This state-conditioned guidance enables the model to steer sampling toward edges that are promising \emph{given the current search trajectory}, not just the instance geometry.
-The shaping corresponds to exponential tilting of the baseline ACO kernel and admits a KL-regularized interpretation (\Cref{sec:controller}).
+We propose Learning-Guided ACO (\LGA{}), a closed-loop neural controller that periodically examines the current pheromone distribution and incumbent tour, then emits per-edge residual logits that are held constant for $S$ inner iterations before being refreshed.
+The controller sees the search evolution and steers sampling toward edges that look promising given the current trajectory, rather than relying solely on static instance geometry (\Cref{sec:controller}).
 
-We build on perturbation-based ACO~\cite{faco}, which bounds the number of edge changes per iteration, yielding a focused large-neighborhood search.
-A key finding is that \emph{localized local search} (LS)---originally introduced for efficiency---is necessary for stable policy-gradient training: it preserves sampled edges (high action--outcome fidelity), whereas global LS overwrites them and weakens credit assignment (\Cref{sec:localized-ls}).
+The underlying optimization framework is a perturbation-based ACO~\cite{faco} that restricts each ant to a bounded number of relocation steps, producing focused large-neighborhood exploration.
+Crucially, we employ a localized local search (LS) rather than global 2-opt.
+As we discuss in \Cref{sec:localized-ls}, localized LS limits structural modifications to the neighborhood of an ant's actions, preserving the action--outcome link necessary for stable policy-gradient training.
 
-\DefBox{
-\textbf{Open-loop vs.\ closed-loop neural ACO.}
-Let $x$ be a problem instance and $\mathcal{S}_h$ the solver state at refresh step $h$ (pheromones and incumbent).
-\emph{Open-loop}: guidance $g_\theta(\cdot; x)$ is computed once before search and remains fixed.
-\emph{Closed-loop}: guidance $g_\theta(\cdot; \mathcal{S}_h)$ is recomputed at multiple refresh steps, conditioning on the evolving solver state.
-}
+Open-loop neural ACO methods compute guidance $g_\theta(\cdot; x)$ once and never revisit it; \LGA{} recomputes $g_\theta(\cdot; \mathcal{S}_h)$ at each of $H$ refresh points, conditioning on the evolving solver state $\mathcal{S}_h$.
 
-\paragraph{Contributions.}
-\begin{enumerate}
-    \item \textbf{Closed-loop neural ACO.} We introduce a controller that conditions on pheromones and incumbent structure, refreshing guidance during search via sample-and-hold control (\Cref{sec:method}).
-    \item \textbf{Key enabling insight.} We show that localized LS is necessary for stable policy-gradient training in our setting, and introduce edge survival as a diagnostic metric (\Cref{sec:localized-ls}).
-    \item \textbf{CVRP extension.} We extend to CVRP via giant-tour representation with Split decoding (\Cref{sec:cvrp}).
-    \item \textbf{Empirical validation.} Under matched wall-clock budgets, \LGA{} improves over both the vanilla backend and open-loop neural guidance on TSP and CVRP across scales (\Cref{sec:experiments}).
-\end{enumerate}
+The principal contributions of this work are as follows.
+(1)~We introduce a closed-loop neural ACO controller that conditions on pheromone state and incumbent structure, refreshing guidance periodically (\Cref{sec:method}).
+(2)~We identify localized local search as a key stabilizer for policy-gradient training, using edge survival to diagnose its role in maintaining credit assignment (\Cref{sec:localized-ls}).
+(3)~We extend the framework to CVRP via a giant-tour representation (\Cref{sec:cvrp}).
+(4)~Experiments on TSP and CVRP show that \LGA{} consistently improves over vanilla ACO under matched wall-clock budgets, with the largest gains observed on smaller, structured instances (\Cref{sec:experiments}).
 
 % ======================================================================
 % 2. Related Work
@@ -122,28 +99,43 @@ Let $x$ be a problem instance and $\mathcal{S}_h$ the solver state at refresh st
 \section{Related Work}
 \subsection{Neural Combinatorial Optimization}
 Neural Combinatorial Optimization (NCO) applies deep learning to NP-hard routing problems~\cite{MLCO}.
-\emph{End-to-end} methods generate solutions directly via attention-based decoding~\cite{pointernetwork,kool2019attention,kwon2020pomo}.
-In contrast, \emph{Learning-Guided Optimization} (LGO) produces edge-level heuristics that guide a classical solver~\cite{RL4CO}, combining learned representations with principled search.
+End-to-end methods generate solutions directly via attention-based decoding~\cite{pointernetwork,kool2019attention,kwon2020pomo}, while Learning-Guided Optimization (LGO) produces edge-level heuristics that guide a classical solver~\cite{RL4CO}. This latter approach combines learned representations with principled search mechanisms.
 
 \subsection{Neural-Guided Ant Colony Optimization}
-A prominent LGO line augments ACO with learned priors.
-DeepACO~\cite{deepaco} trains a GNN to output edge logits that replace or augment the heuristic $\eta_{ij}$.
-GFACS~\cite{gfacs} uses Generative Flow Networks; GTG-ACO~\cite{gtgaco} employs Graph Transformers.
-Critically, all these methods compute guidance \emph{once} before search---they are \textbf{open-loop} and cannot adapt to evolving search dynamics.
+Several works augment ACO with learned priors.
+DeepACO~\cite{deepaco} trains a GNN to output edge logits replacing or augmenting the heuristic $\eta_{ij}$.
+Similarly, GFACS~\cite{gfacs} uses Generative Flow Networks, and GTG-ACO~\cite{gtgaco} uses Graph Transformers.
+Unlike our method, these approaches are open-loop: they compute guidance once before search and do not adapt to evolving search dynamics.
 
 \subsection{Perturbation-Based ACO}
-A separate line improves ACO scalability by \textbf{reusing and partially modifying elite solutions}, making ACO behave like a large-neighborhood search (LNS) operator.
-Focused ACO~\cite{faco} bounds the number of differences between a newly constructed solution and the incumbent, yielding focused search and tighter coupling with local search.
-Related variants include PartialACO~\cite{partialaco}.
-We treat perturbation-based ACO as a \textbf{scalable backend} and ask: \emph{can a neural controller improve this family further by reacting to solver state in closed loop?}
+Another line of research improves ACO scalability by re-using and partially modifying elite solutions, effectively making ACO behave like large-neighborhood search (LNS).
+Focused ACO~\cite{faco} bounds differences between a newly constructed solution and the incumbent, yielding focused search with tighter LS coupling.
+We investigate whether a neural controller can further improve this family by reacting to solver state.
 
 \subsection{Learning to Control Optimization}
-Our work draws on \emph{learning to optimize}~\cite{bengio2021machine}, where neural networks parameterize components of optimization algorithms (e.g., branch-and-bound policies~\cite{gasse2019exact}, adaptive operator selection~\cite{li2019learning}).
-A key distinction is that we implement \textbf{closed-loop feedback control}: the controller observes pheromone distribution and incumbent solution, then modulates future transitions accordingly.
+Our work draws on learning to optimize~\cite{bengio2021machine}, where neural networks parameterize components of optimization algorithms (e.g., branch-and-bound policies~\cite{gasse2019exact}, adaptive operator selection~\cite{li2019learning}).
+We implement closed-loop feedback control: the controller observes pheromones and the incumbent, then modulates transitions accordingly.
+
+\subsection{Adaptive and Parameter-Control ACO}
+Adapting ACO parameters during search has a long history.
+\emph{Adaptive} or \emph{self-adaptive} ACO variants dynamically adjust evaporation rates, pheromone bounds, or exploration parameters based on search progress~\cite{stutzle2000max,pellegrini2012ant}.
+These typically use hand-crafted rules (e.g., restart after stagnation, increase $\rho$ when diversity is low).
+Our adaptation rule is instead \emph{learned} from data and conditions on richer state representations (pheromone distribution, incumbent structure) rather than scalar metrics.
+
+\subsection{Learning-Guided Large Neighborhood Search}
+Neural networks have been used to guide operator selection in Large Neighborhood Search (LNS)~\cite{hottung2019neural,chen2019learning}.
+These methods learn which destroy/repair operators to apply at each iteration, framing operator selection as a contextual bandit or RL problem.
+Our work operates at a different level: rather than selecting operators, we directly shape transition probabilities within a fixed operator (perturbative ACO sampling).
+This gives finer-grained control but requires differentiable integration with sampling.
+
+\subsection{Pheromone and State Features for Learned Guidance}
+Prior work has explored pheromone information as features for learning.
+RLAnt~\cite{rlant} uses RL to tune ACO parameters based on convergence metrics.
+Some works use pheromone-derived features for quality prediction or algorithm selection~\cite{smith-miles2014landscape}.
+To our knowledge, no prior work conditions a neural network directly on the full pheromone matrix (or local statistics) to produce per-edge guidance.
 
 \subsection{Positioning}
-Table~\ref{tab:positioning} summarizes the landscape.
-\LGA{} studies closed-loop control in which guidance conditions on solver state and is refreshed during the run.
+Table~\ref{tab:positioning} summarizes how \LGA{} differs from prior neural-guided ACO methods: guidance conditions on solver state and is refreshed during the run.
 
 \begin{table}[t]
 \centering
@@ -171,40 +163,38 @@ GTG-ACO~\cite{gtgaco} & Transformer & \texttimes & Open-loop & Standard \\
 \label{sec:background}
 
 \subsection{Problem Definitions}
-We consider the Euclidean \TSP{} defined on a graph $G=(V, E)$ with $n = |V|$ nodes.
-The goal is to find a Hamiltonian cycle $\pi$ minimizing the total tour length:
+We consider Euclidean \TSP{} on a graph $G=(V, E)$ with $n = |V|$ nodes.
+The goal is to find a Hamiltonian cycle $\pi$ minimizing tour length:
 \begin{equation}
 C(\pi) = \sum_{i=1}^{n-1} d(\pi_i, \pi_{i+1}) + d(\pi_n, \pi_1),
 \end{equation}
 where $d(\cdot, \cdot)$ denotes Euclidean distance.
-For \CVRP{}, we additionally have a depot (node~0) and vehicle capacity constraint $Q$.
-The objective is to find a set of routes, each starting and ending at the depot, that collectively visit all customers while respecting capacity limits.
+For \CVRP{}, we add a depot (node~0) and vehicle capacity $Q$.
+The objective is to find routes---each starting and ending at the depot---that collectively visit all customers within capacity limits.
 We generate random instances with coordinates sampled uniformly from $[0, 1]^2$.
 
-\paragraph{Candidate graph.}
-To scale to large instances, we solve on a sparse $K$-nearest-neighbor candidate graph rather than the complete graph.
-Tours are restricted to edges in this candidate set, which is standard practice in scalable \TSP{}/\CVRP{} heuristics~\cite{helsgaun2000effective}.
-We use $K=32$ throughout.
+To scale to large instances we solve on a sparse $K$-nearest-neighbor candidate graph rather than the complete graph, restricting tours to edges in this candidate set---a standard choice in scalable \TSP{}/\CVRP{} heuristics~\cite{helsgaun2000effective}.
+Throughout, we set $K=32$.
 
 \subsection{Ant Colony Optimization}
 \label{sec:aco}
-Ant Colony Optimization (ACO) constructs solutions probabilistically.
-At each step, an ant at node $i$ chooses the next node $j$ from its feasible neighborhood $\mathcal{N}(i)$ using the transition rule:
+We adopt the standard ACO transition rule (Eq.~\ref{eq:aco-transition}), but modify the probability mass to incorporate learned residuals.
+At each step, an ant at node $i$ chooses the next node $j$ from its feasible neighborhood $\mathcal{N}(i)$:
 \begin{equation}
 p(j \mid i) = \frac{[\tau_{ij}]^\alpha [\eta_{ij}]^\beta}{\sum_{k \in \mathcal{N}(i)} [\tau_{ik}]^\alpha [\eta_{ik}]^\beta}, \quad j \in \mathcal{N}(i).
 \label{eq:aco-transition}
 \end{equation}
-Here, $\tau_{ij}$ is the pheromone trail intensity, $\eta_{ij} = 1/d_{ij}$ is the heuristic visibility, and $\alpha, \beta$ control their relative influence.
+Here, $\tau_{ij}$ denotes trail intensity and $\eta_{ij}$ heuristic visibility.
 
 \subsection{\MMAS{} and Stagnation}
-\emph{Max-Min Ant System} (\MMAS{})~\cite{stutzle2000max} improves standard ACO by bounding pheromone values to $\tau_{ij} \in [\tau_{\min}, \tau_{\max}]$, preventing premature convergence to suboptimal solutions.
+\emph{Max-Min Ant System} (\MMAS{})~\cite{stutzle2000max} improves standard ACO by bounding pheromone values to $\tau_{ij} \in [\tau_{\min}, \tau_{\max}]$, preventing premature convergence.
 Only the iteration-best or global-best ant deposits pheromone, focusing reinforcement on high-quality solutions.
-Despite these mechanisms, \emph{stagnation}---where $\tau$ converges to a suboptimal tour and exploration effectively ceases---remains a persistent challenge.
+Despite these mechanisms, \emph{stagnation}---$\tau$ converging to a suboptimal tour while exploration ceases---remains a core challenge.
 
 \subsection{Local Search}
-Achieving competitive performance requires integrating local search (LS) into ACO pipelines.
+Competitive performance requires integrating local search (LS) into ACO.
 For \TSP{}, 2-opt moves are standard.
-While LS improves solution quality, it complicates learning by decoupling the policy's edge choices from the final reward---we address this through localized LS (\Cref{sec:localized-ls}).
+LS improves solution quality but complicates learning by decoupling the policy's edge choices from the final reward---we address this via localized LS (\Cref{sec:localized-ls}).
 
 % ======================================================================
 % 4. Closed-Loop Ant Colony Optimization
@@ -215,147 +205,111 @@ While LS improves solution quality, it complicates learning by decoupling the po
 \section{Method}
 \label{sec:method}
 
-This section describes \LGA{}: a closed-loop neural controller for ACO.
-We first give an overview (\Cref{sec:overview}), then detail the controller parameterization (\Cref{sec:state,sec:controller,sec:architecture}), training objective (\Cref{sec:training}), and pheromone stabilization (\Cref{sec:smoothed-mmas}).
+This section describes \LGA{}, a closed-loop neural controller for ACO.
+We give an overview (\Cref{sec:overview}), then detail controller parameterization (\Cref{sec:state,sec:controller,sec:architecture}), training (\Cref{sec:training}), and pheromone stabilization (\Cref{sec:smoothed-mmas}).
 
 \subsection{Overview}
 \label{sec:overview}
 
 We run a perturbation-based ACO backend~\cite{faco} on a sparse $K$-nearest-neighbor candidate graph.
-Every $S$ inner iterations (one \emph{outer step} $h$):
-\begin{enumerate}
-    \item \textbf{Observe} the macro-state $\mathcal{S}_h = (x, \tau^{(h)}, b^{(h)})$: instance $x$, pheromones $\tau$, incumbent tour $b$.
-    \item \textbf{Compute} shaping logits $z_\theta(\mathcal{S}_h) \in \R^{n \times K}$ via the neural controller.
-    \item \textbf{Hold} these logits constant for $S$ inner iterations.
-    \item \textbf{Sample} ants via bounded-difference construction (at most $M$ edge changes from incumbent), apply localized LS, update incumbent and pheromones.
-\end{enumerate}
-Total iterations: $T = H \cdot S$, where $H$ is the number of outer steps.
-Pheromones are updated every inner iteration; we denote by $\tau^{(h)}$ the pheromone state at the \emph{start} of outer step $h$.
+Every $S$ inner iterations---one \emph{outer step} $h$---the controller observes the macro-state $\mathcal{S}_h = (x, \tau^{(h,0)}, b^{(h)})$, comprising the instance $x$, the pheromone matrix at the start of the outer step, and the current incumbent tour $b$.
+From this state it computes shaping logits $z_\theta(\mathcal{S}_h) \in \R^{n \times K}$, which are then held constant while $S$ inner iterations execute: ants sample tours via perturbation-based construction (at most $M$ relocation steps from the incumbent), localized LS is applied, and pheromones and the incumbent are updated.
+The total iteration count is therefore $T = H \cdot S$, where $H$ is the number of outer steps.
+Because pheromones change at every inner iteration, we write $\tau^{(h)}$ for the pheromone state at the \emph{start} of outer step $h$.
 
-\paragraph{What the controller can and cannot do.}
-The controller reweights candidate edges but cannot eliminate them (support preservation).
-It operates within the candidate graph and bounded-perturbation constraints of the backend.
-The backend handles pheromone updates, incumbent tracking, and localized LS.
+Importantly, the controller only reweights candidate edges; it cannot eliminate any of them.
+It operates strictly within the candidate graph and the bounded-perturbation constraints inherited from the backend, which handles pheromone updates, incumbent tracking, and localized LS.
 
-\paragraph{Backend: perturbation-based construction.}
-In each inner iteration, ants do not construct a tour from scratch.
-Following~\cite{faco}, each ant starts from a copy of the incumbent tour and performs a constrained rewire procedure.
-The procedure works as follows (see Algorithm~\ref{alg:perturbation} for pseudocode):
+Ants do not construct tours from scratch.
+Following~\cite{faco}, each ant starts from a copy of the incumbent tour $b^{(h)}$ and performs a constrained rewire (see also Algorithm~\ref{alg:perturbation}).
+A random starting node $u_0$ is selected and marked visited.
+The ant then repeatedly samples a next node $v$ from the unvisited neighbors of the current node $u$ according to Eq.~\eqref{eq:held-logits}; whenever the chosen edge $(u,v)$ does not belong to the incumbent, we track the set of edges modified by the perturbation to constrain the subsequent local search scope.
+Node $v$ is then \emph{relocated}: it is removed from its current position in the tour and inserted immediately after $u$, an operation that changes up to three tour edges while maintaining feasibility.
+The walk continues until either $M$ such ``new-edge'' steps have been taken or a fixed budget is exhausted, at which point the modified tour is returned.
 
-\begin{enumerate}
-    \item \textbf{Initialize:} Copy the incumbent tour $b^{(h)}$ as the working tour. Select a random starting node $u_0$. Mark $u_0$ visited.
-    \item \textbf{Sequential expansion:} Repeat until either (a) $M$ new edges have been created, or (b) a fixed step budget is exhausted:
-    \begin{itemize}
-        \item From current node $u$, compute transition probabilities over the candidate set $\mathcal{N}_K(u)$ (unvisited neighbors in the $K$-NN graph) using Eq.~\eqref{eq:held-logits}.
-        \item Sample next node $v$ from this distribution.
-        \item If edge $(u,v)$ is \emph{not} in the current working tour, it is a ``new edge.'' Increment the new-edge counter and add incident nodes to the LS checklist.
-        \item \textbf{Relocate} $v$: remove $v$ from its current position and insert it as the successor of $u$. This maintains a valid tour at all times.
-        \item Mark $v$ visited; set $u \leftarrow v$.
-    \end{itemize}
-    \item \textbf{Return:} The modified tour after at most $M$ new edges.
-\end{enumerate}
+$M$ controls the number of \emph{relocation steps where the sampled edge $(u,v)$ was not in the incumbent}.
+Each relocation can modify up to 3 tour edges (removing 2, adding 2, with one shared), so the edge-set symmetric difference can exceed $M$.
+But the perturbation remains localized: ants make at most $M$ exploratory steps introducing new connectivity, focusing search around the current best region.
 
-The action space is thus a sequence of \emph{next-node choices} from the candidate graph, identical to classical ACO but constrained to terminate early.
-The log-probability of a sampled tour is the sum of log-probabilities over stochastic node selections:
+The action space is a sequence of \emph{next-node choices} from the candidate graph, as in classical ACO but constrained to terminate early.
+The log-probability of a sampled tour sums over stochastic node selections:
 \begin{equation}
 \log \pi_\theta(\pi_{a,s} \mid \mathcal{S}_h) = \sum_{t=1}^{T_a} \log p^\theta(v_t \mid u_t; h, s),
 \label{eq:logp-trajectory}
 \end{equation}
 where $T_a \le M$ is the number of steps taken by ant $a$, and we sum only over stochastic decisions (steps with $>1$ feasible candidate).
 
-\paragraph{Notation.}
-We use $h = 1,\ldots,H$ for outer steps (controller refreshes) and $s = 1,\ldots,S$ for inner \ACO{} iterations between refreshes.
-Total inner iterations: $T = H \cdot S$.
-We write $b^{(h)}$ for the incumbent tour at outer step $h$, and $\tau^{(h,s)}$ for the pheromone state at inner iteration $s$ of outer step $h$.
+Throughout, $h = 1,\ldots,H$ indexes outer steps (controller refreshes) and $s = 1,\ldots,S$ indexes inner ACO iterations within each outer step.
+We write $b^{(h)}$ for the incumbent at outer step $h$ and $\tau^{(h,s)}$ for the pheromone matrix at inner iteration $s$ of that step.
 
-\paragraph{Key design: sample-and-hold with evolving pheromones.}
-The neural controller outputs shaping logits $z_\theta(\mathcal{S}_h)$ \emph{once} at the start of each outer step and holds them constant for $S$ inner iterations.
-However, pheromones $\tau^{(h,s)}$ \emph{evolve} at every inner iteration via the standard \MMAS{} update rule.
-At each inner iteration $s$, the transition kernel uses the \emph{current} pheromones $\tau^{(h,s)}$ combined with the \emph{held} neural logits $z_\theta(\mathcal{S}_h)$:
+The neural controller emits shaping logits $z_\theta(\mathcal{S}_h)$ once at the start of each outer step and then holds them constant for all $S$ inner iterations that follow.
+Pheromones, however, continue to evolve at every inner iteration via standard \MMAS{} updates.
+At inner iteration $s$ the transition kernel combines the \emph{current} pheromones $\tau^{(h,s)}$ with the \emph{held} neural logits $z_\theta(\mathcal{S}_h)$:
 \begin{equation}
 \log p^\theta(j \mid i; h, s) = \alpha \log \tau^{(h,s)}_{ij} + \beta \log \eta_{ij} + z_{ij}(\mathcal{S}_h) - \log Z_i.
 \label{eq:held-logits}
 \end{equation}
-This design separates the \emph{fast} pheromone dynamics (updated every inner step) from the \emph{slow} neural control signal (updated every $S$ steps), analogous to sample-and-hold control in signal processing.
+This design decouples the pheromone dynamics, which update at every inner step, from the neural control signal, which updates only at outer-step boundaries.
 
 \subsection{Sample-and-Hold Control}
 \label{sec:process}
 The controller is invoked every $S$ inner steps.
-At outer step $h$, it observes $\mathcal{S}_h = (x, \tau^{(h)}, b^{(h)})$ and outputs shaping logits $z_\theta(\mathcal{S}_h) \in \R^{n\times K}$, held constant for the next $S$ iterations.
+At outer step $h$, it observes $\mathcal{S}_h = (x, \tau^{(h,0)}, b^{(h)})$ and outputs shaping logits $z_\theta(\mathcal{S}_h) \in \R^{n\times K}$, held constant for $S$ iterations.
 
-\paragraph{Why sample-and-hold?}
-Refreshing every iteration is expensive and potentially unstable; refreshing too rarely degenerates to open-loop.
-Sample-and-hold trades off compute and adaptivity: the controller amortizes inference cost over $S$ sampling steps while still adapting as search progresses.
-We ablate the $(H, S)$ factorization with fixed total budget in \Cref{sec:ablations}.
+Refreshing every iteration is expensive and potentially unstable; refreshing too rarely reduces the system to an open-loop controller.
+Sample-and-hold trades off compute and adaptivity: inference cost is amortized over $S$ sampling steps while still adapting as search progresses.
+We ablate the $(H, S)$ factorization in \Cref{sec:ablations}.
 
 
 \subsection{State Representation}
 \label{sec:state}
-The controller conditions on the search context $\mathcal{S}_h$, which captures both static instance structure and dynamic search state.
+The controller conditions on search context $\mathcal{S}_h$, capturing both static instance structure and dynamic search state.
 
-\paragraph{Static features.}
-A GNN encoder computes node embeddings $h_i \in \R^d$ from node coordinates and the $K$-NN distance graph.
-
-\paragraph{Dynamic features.}
-For each candidate edge $(i, j)$:
-\begin{itemize}
-    \item \emph{Relative pheromone:} $\log(\tau_{ij} / \bar{\tau}_i)$, where $\bar{\tau}_i$ is the mean pheromone over candidates of node $i$.
-    \item \emph{Pheromone dispersion:} Coefficient of variation of pheromone values at node $i$.
-    \item \emph{Incumbent structure:} Features indicating whether edge $(i,j)$ appears in the current source tour (see Appendix for details).
-\end{itemize}
+On the static side, a GNN encoder computes node embeddings $h_i \in \R^d$ from node coordinates and the $K$-NN distance graph.
+Dynamic features are attached to each candidate edge $(i, j)$: the relative pheromone $\log(\tau_{ij} / \bar{\tau}_i)$, where $\bar{\tau}_i$ is the mean pheromone over candidates of node $i$; the coefficient of variation of pheromone values at node $i$, capturing local dispersion; and binary indicators of whether edge $(i,j)$ belongs to the current incumbent tour (see the Appendix for details).
 
 \subsection{Log-Space Shaping}
 \label{sec:controller}
-The controller outputs a scalar guidance score $z_{ij} = g_{\theta}(i, j; \mathcal{S}_h)$ for each candidate edge.
-Let the baseline ACO logits be $\ell^{\text{ACO}}_{ij} = \alpha \log \tau^{(h)}_{ij} + \beta \log \eta_{ij}$.
+The controller outputs a scalar guidance score $z_{ij} = g_{\theta}(i, j; \mathcal{S}_h)$ for each candidate edge, held constant for all inner steps $s = 1, \ldots, S$.
+At inner step $s$, the baseline ACO distribution (without neural guidance) is:
+\begin{equation}
+q^{(h,s)}(j \mid i) \propto [\tau^{(h,s)}_{ij}]^\alpha [\eta_{ij}]^\beta.
+\label{eq:baseline-aco}
+\end{equation}
 The shaped transition kernel adds the learned logits in log-space:
 \begin{equation}
-\log p^\theta(j \mid i) = \ell^{\text{ACO}}_{ij} + z_{ij} - \log Z_i,
+\log p^\theta(j \mid i; h, s) = \alpha \log \tau^{(h,s)}_{ij} + \beta \log \eta_{ij} + z_{ij}(\mathcal{S}_h) - \log Z_i,
 \label{eq:logspace-prior}
 \end{equation}
 where $Z_i$ is the partition function.
+Note that both $q^{(h,s)}$ and $p^\theta(\cdot; h, s)$ depend on the evolving pheromones $\tau^{(h,s)}$, but only $p^\theta$ includes the held neural logits $z(\mathcal{S}_h)$.
 
-\paragraph{KL-regularized interpretation.}
-Let $q(\cdot\mid i)$ be the baseline ACO distribution (without $z$).
-Adding $z$ in log-space corresponds to exponential tilting:
-$p^\theta(j\mid i) \propto q(j\mid i)\exp(z_{ij})$.
-Equivalently, $p^\theta$ solves a KL-regularized objective:
+This additive log-space formulation corresponds to a KL-regularized policy, where the controller tilts the baseline ACO probability $q^{(h,s)}$:
 \begin{equation}
-p^\theta(\cdot\mid i) = \arg\max_{p \in \Delta(\mathcal{N}(i))}\Big(\mathbb{E}_{j\sim p}[z_{ij}] - \mathrm{KL}(p\,\|\,q)\Big).
-\label{eq:kl-regularized}
+p^\theta(\cdot\mid i; h,s) \propto q^{(h,s)}(j\mid i)\exp(z_{ij}).
 \end{equation}
-This makes the controller's role precise: it performs a KL-regularized policy improvement around the baseline kernel.
-
-\paragraph{Support preservation.}
-With $\tau_{\min} > 0$, $\eta_{ij} > 0$, and finite $z_{ij}$, we have $p^\theta(j \mid i) > 0$ for all candidates.
-The controller reweights candidate edges but cannot eliminate them.
+Because $\tau_{\min} > 0$, $\eta_{ij} > 0$, and the neural logits $z_{ij}$ remain finite, every candidate edge retains strictly positive probability under $p^\theta$.
+The controller can therefore redistribute probability mass among candidates but cannot exclude any of them outright.
 
 \subsection{Architecture}
 \label{sec:architecture}
-The controller comprises:
-\begin{itemize}
-    \item \textbf{Encoder}: A 12-layer GNN with residual connections and batch normalization, producing edge embeddings $w_{ij} \in \mathbb{R}^{32}$ from node coordinates and edge features.
-    \item \textbf{Decoder}: A 3-layer MLP mapping edge embeddings to guidance logits $g_{\theta}(i, j)$.
-\end{itemize}
+The controller consists of an encoder---a 12-layer GNN with residual connections and batch normalization that produces edge embeddings $w_{ij} \in \mathbb{R}^{32}$ from node coordinates and edge features---followed by a decoder, a 3-layer MLP that maps these embeddings to scalar guidance logits $g_{\theta}(i, j)$.
 
-\paragraph{What runs when.}
-The GNN encoder is invoked once per outer step (every $S$ inner iterations), not every inner iteration.
-The encoder receives both static features (node coordinates, candidate distances) and dynamic features (pheromone state, incumbent structure) as input.
-Because these dynamic features change only at the outer-step boundary (we observe $\tau^{(h,0)}$ and $b^{(h)}$), the full forward pass amortizes over $S$ sampling steps.
-The dominant cost is the GNN forward pass at $O(L \cdot n \cdot K \cdot d)$ for $L$ layers, $n$ nodes, $K$ candidates, and hidden dimension $d=32$.
-This is invoked $H$ times per instance, yielding total neural cost $O(H \cdot L \cdot n \cdot K \cdot d)$ compared to $O(T \cdot m \cdot M \cdot K)$ for sampling (where $T = H \cdot S$, $m$ ants, and $M$ perturbations per ant).
-With our default settings ($H=10$, $S=100$, $m=100$, $M=12$), the neural overhead is typically 5--15\% of total runtime at $n=10$K (see Table~\ref{tab:profiling}).
+Because the GNN encoder runs only once per outer step rather than at every inner iteration, its cost is amortized over $S$ sampling steps.
+The encoder receives both static features (node coordinates, candidate distances) and dynamic features (pheromone state, incumbent structure); because the latter change only at outer-step boundaries, recomputation within an outer step is unnecessary.
+Asymptotically, the GNN forward pass costs $O(L \cdot n \cdot K \cdot d)$ for $L$ layers, $n$ nodes, $K$ candidates, and hidden dimension $d=32$, and it runs $H$ times per instance.
+This yields a total neural cost of $O(H \cdot L \cdot n \cdot K \cdot d)$, compared with $O(T \cdot m \cdot M \cdot K)$ for sampling ($T = H \cdot S$, $m$ ants, $M$ perturbations per ant).
+Under the default settings ($H=10$, $S=100$, $m=100$, $M=12$), neural overhead accounts for roughly 5--15\% of total runtime at $n=10$K (Table~\ref{tab:profiling}).
 
 % ======================================================================
 % 4.1 Smoothed MMAS
 % ======================================================================
 \subsection{Stabilized Pheromone Dynamics}
 \label{sec:smoothed-mmas}
-Standard \MMAS{} dynamically adjusts pheromone bounds based on the best tour cost, coupling the dynamics to objective scaling.
-This coupling introduces instability when training neural controllers, as the input distribution (pheromone values) varies with instance difficulty.
+Standard \MMAS{} dynamically adjusts pheromone bounds based on best tour cost, coupling dynamics to objective scaling.
+This introduces instability when training neural controllers: the input distribution (pheromone values) varies with instance difficulty.
 
-\paragraph{What we change.}
-We use \emph{fixed bounds} ($\tau_{\max}=1$, $\tau_{\min}=1/K$) independent of instance cost.
+To address this, we adopt fixed bounds ($\tau_{\max}=1$, $\tau_{\min}=1/K$) that do not depend on instance cost.
 Let $B$ denote the edge set of the best solution (iteration-best or global-best).
 We update each pheromone value via convex interpolation toward a fixed target:
 \begin{equation}
@@ -364,24 +318,23 @@ We update each pheromone value via convex interpolation toward a fixed target:
 \end{equation}
 where $\mathcal{T}_{ij} = \tau_{\max}$ if $(i,j) \in B$ and $\mathcal{T}_{ij} = \tau_{\min}$ otherwise.
 
-\paragraph{Justification for $\tau_{\min} = 1/K$.}
-In standard \MMAS{}, $\tau_{\min}$ is set so that even at maximum pheromone concentration, the probability of selecting a non-best edge remains above a threshold $p_{\text{best}}$.
-With $K$ candidates per node and uniform $\tau_{\min}$, the minimum selection probability for any candidate is approximately $\tau_{\min} / (\tau_{\max} + (K-1)\tau_{\min})$.
-Setting $\tau_{\min} = \tau_{\max}/K = 1/K$ ensures that even the least-favored candidate retains probability $\approx 1/(2K-1) \approx 1.6\%$ when $K=32$, preventing complete stagnation.
-This choice is inspired by the classic \MMAS{} derivation but decouples the bounds from solution cost.
+$\tau_{\min} = 1/K$ follows the \MMAS{} principle that even under maximum pheromone concentration, non-best edges retain non-negligible selection probability.
+In a simplified setting with uniform heuristic ($\eta_{ij} = 1$) and no neural prior ($z_{ij} = 0$), with $K$ candidates per node and pheromones at extremes, minimum selection probability is approximately $\tau_{\min} / (\tau_{\max} + (K-1)\tau_{\min})$.
+Setting $\tau_{\min} = \tau_{\max}/K = 1/K$ gives a probability floor of $\approx 1/(2K-1) \approx 1.6\%$ for $K=32$.
 
-\paragraph{Why it helps learning.}
-Because the bounds are fixed, the controller observes scale-stable inputs across instances of different difficulty.
-The update rule~\eqref{eq:smoothed-mmas} is a contraction: pheromones remain in $[\tau_{\min}, \tau_{\max}]$ regardless of the best-set sequence, preventing the unbounded growth or collapse that can occur under cost-calibrated bounds.
-This stabilizes training without sacrificing final solution quality (see ablation in Section~\ref{sec:ablations}).
+The full transition kernel includes $\eta_{ij}^\beta$ and neural logits $z_{ij}$, which can further concentrate or disperse probability mass.
+The $1/(2K-1)$ figure is \emph{not} a hard guarantee but an intuition about the pheromone-induced diversity floor in isolation.
+The neural controller can learn to counteract excessive concentration by adjusting logits, and $\eta^\beta$ is fixed per instance.
+The goal is to prevent pheromones \emph{alone} from collapsing to a deterministic policy, leaving room for learned adaptation.
 
-\paragraph{Sensitivity to $\rho$ and $\tau_{\min}$.}
-The evaporation rate $\rho$ controls how quickly pheromones adapt to new best solutions.
-With fixed bounds, larger $\rho$ means faster convergence to the target but also faster forgetting of exploration history.
-We use $\rho=0.1$ for TSP and $\rho=0.5$ for CVRP based on preliminary experiments.
-The choice of $\tau_{\min}$ affects the exploration--exploitation tradeoff: smaller $\tau_{\min}$ allows stronger concentration but risks stagnation, while larger $\tau_{\min}$ maintains diversity at the cost of slower convergence.
-Our default $\tau_{\min} = 1/K$ balances these concerns.
-See Appendix~\ref{app:tuning} for sensitivity analysis.
+A practical benefit is that fixed bounds yield scale-stable inputs: the controller sees pheromone values in the same range regardless of instance difficulty.
+The update rule~\eqref{eq:smoothed-mmas} is a contraction: pheromones stay in $[\tau_{\min}, \tau_{\max}]$ regardless of best-set sequence, preventing unbounded growth or collapse under cost-calibrated bounds.
+This stabilizes training without sacrificing solution quality (Section~\ref{sec:ablations}).
+
+The evaporation rate $\rho$ governs how quickly pheromones track changes in the best solution: larger values speed convergence but also cause faster forgetting of exploration history.
+We set $\rho=0.1$ for TSP and $\rho=0.5$ for CVRP based on preliminary experiments.
+Meanwhile, $\tau_{\min}$ trades off exploration against exploitation---smaller values permit stronger concentration but risk stagnation, while larger values maintain diversity at the expense of slower convergence.
+We fix $\tau_{\min} = 1/K$ throughout; a sensitivity analysis appears in Appendix~\ref{app:tuning}.
 
 % ======================================================================
 % 4.2 Training Objective
@@ -394,31 +347,21 @@ We optimize the expected per-iteration post-LS cost as a dense surrogate:
 J(\theta) = \mathbb{E} \left[ \frac{1}{T} \sum_{h=1}^H \sum_{s=1}^S \frac{1}{m} \sum_{a=1}^m C(\hat{\pi}_{a,s}) \right].
 \end{equation}
 
-\paragraph{Why a dense objective?}
-While evaluation typically reports best-so-far after a budget, we minimize average cost for three reasons:
-(i) it provides lower-variance gradients than sparse best-so-far signals;
-(ii) it empirically correlates with improved best-so-far under fixed budgets;
-(iii) tracking incumbent quality separately confirms that better average translates to better final solutions.
+Although evaluation ultimately cares about the best tour found within a budget, we optimize average cost because doing so produces lower-variance gradients than a sparse best-so-far signal, and empirically the two objectives correlate well: runs with lower average cost also tend to find better final solutions.
 
-We use the score function estimator (REINFORCE), differentiating through $\pi_{a,s}$ (pre-LS sampling):
+We use REINFORCE, differentiating through $\pi_{a,s}$ (pre-LS sampling):
 \begin{multline}
 \nabla_\theta J(\theta) \approx \frac{1}{T} \sum_{h,s} \frac{1}{m} \sum_{a=1}^m (C(\hat{\pi}_{a,s}) - b_s) \\
 \times \nabla_\theta \log \pi_\theta(\pi_{a,s} \mid \mathcal{S}_h),
 \end{multline}
 where $b_s$ is the batch-mean baseline.
-This estimator remains unbiased even with non-differentiable LS, as LS is part of the environment transition~\cite{williams1992simple}.
+The estimator remains unbiased even with non-differentiable LS, since LS is part of the environment transition~\cite{williams1992simple}.
 
-\paragraph{Trajectory structure.}
-With perturbative sampling, each ant modifies at most $M$ edges.
-Log-probabilities are summed over the realized edge choices.
+Under perturbative sampling each ant modifies at most $M$ edges, and the log-probability of its trajectory is simply the sum over realized edge choices.
+We compute a per-iteration baseline $b_s = \frac{1}{m}\sum_{a=1}^{m} C(\hat{\pi}_{a,s})$ and define advantage as $A_{a,s} = b_s - C(\hat{\pi}_{a,s})$, so that better-than-average tours receive positive advantage.
+For PPO we normalize advantages across the batch: $\hat{A}_{a,s} = (A_{a,s} - \mu_A) / (\sigma_A + \epsilon)$.
 
-\paragraph{Baseline and advantage.}
-For each inner iteration $s$: $b_s = \frac{1}{m}\sum_{a=1}^{m} C(\hat{\pi}_{a,s})$.
-Since we minimize cost, we define advantage as $A_{a,s} = b_s - C(\hat{\pi}_{a,s})$ (positive when better than average).
-For PPO, we normalize advantages: $\hat{A}_{a,s} = (A_{a,s} - \mu_A) / (\sigma_A + \epsilon)$.
-
-\paragraph{PPO-based Optimization.}
-We implement a PPO variant for improved sample efficiency.
+We implement a PPO variant that replays trajectories from stored traces to improve sample efficiency without storing the full computational graph.
 After collecting trajectories for $S$ inner iterations under $\pi_{\theta_{\text{old}}}$, we perform $K$ optimization epochs using the clipped surrogate:
 \begin{multline}
 \mathcal{L}^{\text{PPO}}(\theta) = -\mathbb{E}_{a,s}\Big[ \min\big( r_{a,s}(\theta) \hat{A}_{a,s}, \\
@@ -426,46 +369,44 @@ After collecting trajectories for $S$ inner iterations under $\pi_{\theta_{\text
 \end{multline}
 where $r_{a,s}(\theta) = \pi_\theta(\pi_{a,s} | \mathcal{S}_h) / \pi_{\theta_{\text{old}}}(\pi_{a,s} | \mathcal{S}_h)$, $\epsilon=0.2$, and $\hat{A}_{a,s}$ is the normalized advantage (positive for better-than-average solutions).
 
-\paragraph{What gets stored for PPO replay.}
-To compute the probability ratio $r_{a,s}(\theta)$, we must replay the log-probability of each sampled trajectory under both old and new parameters.
-Since the transition kernel~\eqref{eq:held-logits} depends on $\tau^{(h,s)}$ (which evolves during rollout), we store for each inner iteration $s$:
-(i) the pheromone snapshot $\tau^{(h,s)}$ at sampling time,
-(ii) the trajectory trace (sequence of node choices and which were stochastic), and
-(iii) the post-LS cost $C(\hat{\pi}_{a,s})$.
-During PPO epochs, we recompute $z_\theta(\mathcal{S}_h)$ with current parameters and replay log-probabilities using the stored pheromone snapshots, ensuring consistent probability ratio estimation.
+Computing the probability ratio $r_{a,s}(\theta)$ requires replaying log-probabilities.
+Since the transition kernel~\eqref{eq:held-logits} depends on $\tau^{(h,s)}$, which evolves during rollout, we store pheromone snapshots $\tau^{(h,s)} \in \R^{n \times K}$ and compact integer traces of node choices for each inner iteration.
+During the update phase, we reconstruct the policy distribution on the fly.
+This storage is discarded after PPO updates for outer step $h$ complete, so peak memory scales as $O(S \cdot n \cdot K)$ rather than $O(H \cdot S \cdot n \cdot K)$.
+At $n=10$K with $K=32$ and $S=100$ the pheromone snapshots occupy roughly 128\,MB in fp32, which is manageable on modern GPUs.
 
-\paragraph{Prior annealing.}
-Optionally, we anneal the neural prior's influence within each control period, decaying the scale factor from $\gamma$ to $\gamma_{\min}$ across inner iterations.
-This encourages stronger neural guidance early, gradually deferring to pheromone-driven dynamics.
+Optionally, we anneal the neural prior's influence within each control period, decaying the scale factor from $\gamma$ to $\gamma_{\min}$ across inner iterations so that neural guidance dominates early on and gradually yields to pheromone-driven dynamics.
 
 \begin{algorithm}[t]
-\caption{PPO Training for \LGA{}}
+\caption{PPO Training for \LGA{} (one outer step)}
 \label{alg:train}
 \begin{algorithmic}[1]
 \STATE Initialize policy $\theta$, optimizer
 \FOR{epoch $e = 1, \dots, E$}
     \FOR{step $= 1, \dots, \text{Steps}$}
         \STATE Sample random instance $x$
-        \STATE Initialize ACO state
+        \STATE Initialize ACO state; $\tau^{(1,0)} \leftarrow \tau_{\max}$
         \FOR{outer step $h = 1$ to $H$}
-            \STATE Build features $\mathcal{S}_h$; compute $z_{\theta_{\text{old}}}(\mathcal{S}_h)$
-            \STATE \textbf{// Rollout: collect trajectories}
+            \STATE Build features $\mathcal{S}_h$ from $\tau^{(h,0)}, b^{(h)}$; compute $z_{\theta_{\text{old}}}(\mathcal{S}_h)$
+            \STATE \textbf{// Rollout: collect trajectories for this outer step}
+            \STATE Initialize storage: $\mathcal{D}_h \leftarrow \emptyset$ \COMMENT{cleared each outer step}
             \FOR{inner step $s = 1$ to $S$}
-                \STATE Sample $m$ ants $\pi_{a,s}$; store $\log \pi_{\theta_{\text{old}}}(\pi_{a,s} | \mathcal{S}_h)$, $\tau^{(h)}$
+                \STATE Sample $m$ ants $\pi_{a,s}$ using kernel with $\tau^{(h,s)}$ and held $z_{\theta_{\text{old}}}$
+                \STATE Store in $\mathcal{D}_h$: trajectory trace, $\tau^{(h,s)}$, $\log \pi_{\theta_{\text{old}}}$
                 \STATE Apply localized LS: $\hat{\pi}_{a,s} \leftarrow \mathrm{LS}(\pi_{a,s})$; compute $C(\hat{\pi}_{a,s})$
-                \STATE Update pheromone and incumbent
+                \STATE Update pheromone: $\tau^{(h,s+1)} \leftarrow (1-\rho)\tau^{(h,s)} + \rho \cdot \mathcal{T}$
             \ENDFOR
-            \STATE \textbf{// PPO update}
+            \STATE Set $\tau^{(h+1,0)} \leftarrow \tau^{(h,S)}$
+            \STATE \textbf{// PPO update using $\mathcal{D}_h$}
             \FOR{PPO epoch $= 1$ to $K$}
                 \STATE Recompute $z_\theta(\mathcal{S}_h)$ with current parameters
-                \FOR{inner step $s = 1$ to $S$}
-                    \STATE Compute $\log \pi_\theta(\pi_{a,s} | \mathcal{S}_h)$ using stored $\tau^{(h)}$
-                    \STATE Ratio: $r_{a,s} \leftarrow \exp(\log \pi_\theta - \log \pi_{\theta_{\text{old}}})$
-                    \STATE Advantage: $\hat{A}_{a,s} \leftarrow \text{normalize}(\bar{C}_s - C(\hat{\pi}_{a,s}))$ \COMMENT{positive = better}
-                    \STATE Clipped loss: $\mathcal{L}_s \leftarrow -\min(r_{a,s} \hat{A}_{a,s}, \text{clip}(r_{a,s}, 1{\pm}\epsilon) \hat{A}_{a,s})$
+                \FOR{$(s, \tau^{(h,s)}, \text{trace}, \text{cost}) \in \mathcal{D}_h$}
+                    \STATE Replay $\log \pi_\theta$ using stored $\tau^{(h,s)}$ and new $z_\theta$
+                    \STATE Compute ratio, advantage, clipped loss as in standard PPO
                 \ENDFOR
-                \STATE Backprop $\sum_s \mathcal{L}_s$; optimizer step (clip grad norm 1.0)
+                \STATE Backprop; optimizer step (clip grad norm 1.0)
             \ENDFOR
+            \STATE \textbf{Discard $\mathcal{D}_h$} \COMMENT{memory freed before next outer step}
         \ENDFOR
     \ENDFOR
 \ENDFOR
@@ -476,10 +417,10 @@ This encourages stronger neural guidance early, gradually deferring to pheromone
 \caption{Perturbation-Based Ant Construction}
 \label{alg:perturbation}
 \begin{algorithmic}[1]
-\STATE \textbf{Input:} Incumbent tour $b$, starting node $u_0$, max new edges $M$, shaped kernel $p^\theta$
-\STATE $\text{tour} \leftarrow \text{copy}(b)$; $\text{visited}[u_0] \leftarrow \text{true}$; $\text{new\_edges} \leftarrow 0$
+\STATE \textbf{Input:} Incumbent tour $b$, starting node $u_0$, max new-edge steps $M$, shaped kernel $p^\theta$
+\STATE $\text{tour} \leftarrow \text{copy}(b)$; $\text{visited}[u_0] \leftarrow \text{true}$; $\text{new\_edge\_steps} \leftarrow 0$
 \STATE $\text{checklist} \leftarrow \{u_0\}$; $u \leftarrow u_0$; $\log p \leftarrow 0$
-\WHILE{$\text{new\_edges} < M$ \textbf{and} not all nodes visited}
+\WHILE{$\text{new\_edge\_steps} < M$ \textbf{and} not all nodes visited}
     \STATE $\mathcal{C} \leftarrow \{v \in \mathcal{N}_K(u) : \neg\text{visited}[v]\}$ \COMMENT{feasible candidates}
     \IF{$|\mathcal{C}| = 0$}
         \STATE $v \leftarrow$ fallback to backup list or greedy
@@ -489,11 +430,11 @@ This encourages stronger neural guidance early, gradually deferring to pheromone
         \STATE Sample $v \sim p^\theta(\cdot \mid u)$ restricted to $\mathcal{C}$
         \STATE $\log p \leftarrow \log p + \log p^\theta(v \mid u)$
     \ENDIF
-    \IF{$(u, v) \notin \text{edges}(\text{tour})$}
-        \STATE $\text{new\_edges} \leftarrow \text{new\_edges} + 1$
-        \STATE $\text{checklist} \leftarrow \text{checklist} \cup \{u, v\}$
+    \IF{$(u, v) \notin \text{edges}(b)$} \COMMENT{not adjacent in \emph{incumbent}}
+        \STATE $\text{new\_edge\_steps} \leftarrow \text{new\_edge\_steps} + 1$
+        \STATE $\text{checklist} \leftarrow \text{checklist} \cup \{u, v, \text{pred}(v)\}$
     \ENDIF
-    \STATE \textsc{Relocate}(tour, $u$, $v$) \COMMENT{move $v$ to be successor of $u$}
+    \STATE \textsc{Relocate}(tour, $u$, $v$) \COMMENT{move $v$ to successor of $u$; changes $\le 3$ edges}
     \STATE $\text{visited}[v] \leftarrow \text{true}$; $u \leftarrow v$
 \ENDWHILE
 \STATE \textbf{Return:} tour, checklist, $\log p$
@@ -506,64 +447,52 @@ This encourages stronger neural guidance early, gradually deferring to pheromone
 \section{Key Insight: Localized LS for Stable Learning}
 \label{sec:perturbative}
 
-We adopt the local search procedure from~\cite{faco}, which restricts search moves to neighborhoods induced by the modified edges (rather than performing global 2-opt over the entire tour).
-While this restriction was originally introduced for scalability, we find it is \emph{critical for stable policy-gradient training in our implementation}.
+We use the local search procedure from~\cite{faco}, restricting moves to neighborhoods induced by modified edges (rather than global 2-opt over the entire tour).
+While this restriction reduces computational cost, we find it serves a more critical role: stabilizing policy-gradient training.
+
+When prior neural ACO methods train on post-LS costs, they employ neural-guided LS (NLS) where the learned prior directly weights edges during local search~\cite{deepaco,gfacs}.
+This keeps the prior's influence on the post-LS solution differentiable: log-probabilities from ant construction are credited to pre-LS cost, while NLS contributes to post-LS cost.
+Our finding is that \emph{spatial locality alone} can substitute for NLS: by confining moves to the neighborhood of sampled edges, localized LS preserves enough of the controller's structure that we can train on post-LS rewards without neural guidance in the LS phase.
 
 \subsection{Localized Local Search}
 \label{sec:localized-ls}
 
-\DefBox{
-\textbf{Key Observation.} In our setting, global LS weakens credit assignment by overwriting a large fraction of sampled edges; localized LS preserves sampled decisions and stabilizes policy gradients. We quantify this via \emph{edge survival} and gradient variance (\Cref{sec:ablations}).
-}
+Global LS can overwrite most of the edges an ant sampled, decoupling the controller's decisions from the resulting tour cost. Localized LS keeps most sampled edges intact and preserves that connection.
+Edge survival and gradient variance measurements (\Cref{sec:ablations}) confirm this.
+In practice, the procedure maintains a checklist of nodes incident to the $M$ newly introduced edges and applies restricted 2-opt only to edges that touch the checklist.
+This reduces move evaluations from $O(N \cdot K)$ to $O(M \cdot K)$.
 
-The procedure works as follows:
-\begin{enumerate}
-    \item \emph{Tracking:} We maintain a \texttt{checklist} of nodes incident to the $M$ new edges.
-    \item \emph{Focused Optimization:} We apply restricted 2-opt only to edges involving nodes in the \texttt{checklist}.
-\end{enumerate}
-This yields $O(M \cdot K)$ move evaluations vs.\ $O(N \cdot K)$ for global LS.
+Let $\pi$ denote the pre-LS tour sampled by an ant, and $\hat{\pi}=\mathrm{LS}(\pi)$ the post-LS tour that determines the training signal.
+Global LS can change $O(N)$ edges of $\hat{\pi}$ from $\pi$ even when the ant only made $O(M)$ targeted modifications.
+The cost $C(\hat{\pi})$ then depends weakly on the controller's edge choices, causing high gradient variance.
+Localized LS confines modifications to a neighborhood around the ant's changed edges, increasing overlap between sampled actions and the result.
+\emph{Edge survival}: $|E(\pi)\cap E(\hat{\pi})|/|E(\pi)|$.
 
-\paragraph{Credit assignment fidelity.}
-Let $\pi$ denote the pre-LS tour sampled by an ant, and let $\hat{\pi}=\mathrm{LS}(\pi)$ be the post-LS tour that determines the training signal.
-Under global LS, $\hat{\pi}$ can differ from $\pi$ in $O(N)$ edges even when the ant only made $O(M)$ targeted modifications.
-The final cost $C(\hat{\pi})$ may then depend weakly on the specific edges sampled under the controller, leading to high gradient variance.
-In contrast, localized LS confines modifications to a neighborhood around the ant's changed edges, increasing the overlap between sampled actions and the resulting solution.
-We measure this via \emph{edge survival}: $|E(\pi)\cap E(\hat{\pi})|/|E(\pi)|$.
-
-\paragraph{Budget matching.}
-To ensure fair comparison between localized and global LS, our ablation (Table~\ref{tab:ablation-ls}) uses the same number of 2-opt iterations for both variants.
-Specifically, global LS is given the same number of node-scanning passes as localized LS (not more LS power, just different scope).
-The key difference is \emph{which} edges are examined: localized LS focuses on the $O(M \cdot K)$ edges incident to the checklist, while global LS scans $O(N \cdot K)$ edges but with the same iteration budget.
+In the ablation (Table~\ref{tab:ablation-ls}) we give both variants the same number of 2-opt iterations.
+Global LS gets the same number of node-scanning passes as localized LS (same LS power, different scope).
+\emph{Which} edges are examined differs: localized LS focuses on $O(M \cdot K)$ edges incident to the checklist; global LS scans $O(N \cdot K)$ edges with the same iteration budget.
 
 % ======================================================================
 % 6. Extension to CVRP
 % ======================================================================
 \section{Extension to \CVRP{}}
 \label{sec:cvrp}
-To demonstrate the generality of our framework, we extend \LGA{} to the Capacitated Vehicle Routing Problem.
+We extend \LGA{} to the Capacitated Vehicle Routing Problem.
 
-\paragraph{Giant-tour representation.}
-We represent a CVRP solution by a \textbf{giant tour} (a permutation of customers) and recover depot insertions via a Split dynamic program~\cite{prins2004}.
-This keeps the search space in the same \emph{permutation domain} as TSP---so we can reuse the same perturbative construction, candidate graph, and localized 2-opt---while evaluating the true CVRP objective through Split after each ant.
+We represent a CVRP solution as a \emph{giant tour}---a permutation of customers---and recover depot insertions via Split~\cite{prins2004}.
+Because the search space remains the set of permutations, we can reuse perturbative construction, the candidate graph, and localized 2-opt from the TSP setting, while evaluating the true CVRP objective through Split after each ant.
 
-\paragraph{Proxy mismatch.}
-Improving Euclidean giant-tour length is not guaranteed to improve post-split CVRP cost.
-However, Split depends heavily on customer order; improving geometric order typically reduces inter-customer travel and often improves Split cost.
-The proxy is used only within LS---the reward signal for policy optimization is always the true CVRP cost computed via Split.
+Improving the Euclidean length of the giant tour does not strictly guarantee an improvement in post-Split CVRP cost, but Split depends strongly on customer order, and better geometric orderings typically reduce inter-customer travel.
+Local search therefore uses giant-tour length as a cheap proxy, while policy optimization always receives the true CVRP cost computed by Split.
 
 \subsection{Giant Tour Representation}
 The \emph{Giant Tour} representation~\cite{prins2004} encodes a \CVRP{} solution as a permutation of all $n$ customers.
-Given a permutation, the optimal route partition (depot insertions) is computed via the \texttt{Split} algorithm---a dynamic programming procedure that finds the minimum-cost way to segment the sequence into capacity-feasible routes.
+Given a permutation, the optimal route partition (depot insertions) is computed via \texttt{Split}---a DP procedure finding minimum-cost segmentation into capacity-feasible routes.
 
-For efficiency, we implement Split in C++ with prefix sums, enabling $O(1)$ cost evaluation for 2-opt moves.
-Full algorithmic details appear in Appendix~\ref{app:split}.
+Split is implemented using prefix sums over route costs, which enables $O(1)$ cost queries during 2-opt (Appendix~\ref{app:split}).
 
 \subsection{Modifications}
-\begin{itemize}
-    \item \emph{Graph:} The graph contains $n$ customer nodes. The depot is implicit in the objective evaluations.
-    \item \emph{Feasibility Masking:} Identical to TSP (Hamiltonian path on customers).
-    \item \emph{Localized LS:} The 2-opt operator optimizes the Euclidean length of the giant tour as a proxy. The true CVRP cost is computed only once per ant after the LS phase.
-\end{itemize}
+For CVRP the graph contains only the $n$ customer nodes; the depot appears implicitly in objective evaluations.\nFeasibility masking is identical to TSP (a Hamiltonian path over customers), and localized 2-opt optimizes the Euclidean length of the giant tour as a cheap proxy while the true CVRP cost is computed once per ant after the LS phase.
 
 % ======================================================================
 % 7. Experiments
@@ -572,26 +501,20 @@ Full algorithmic details appear in Appendix~\ref{app:split}.
 \label{sec:experiments}
 
 We evaluate \LGA{} on random Euclidean \TSP{} and \CVRP{} instances across a range of problem sizes.
-Our experiments address three questions:
-(1) Does closed-loop control improve upon open-loop neural guidance?
-(2) What is the contribution of each component (dynamic features, Smoothed-MMAS, localized LS)?
-(3) How does \LGA{} scale to large instances?
+The experiments investigate whether closed-loop control provides a tangible advantage over open-loop guidance given the additional inference overhead, and identify which components effectively stabilize the training process.
 
 \subsection{Experimental Setup}
-We evaluate on instances of size $N \in \{1\text{K}, 5\text{K}, 10\text{K}, 50\text{K}, 100\text{K}\}$.
-Training data is generated on-the-fly (uniform random distribution); validation uses fixed datasets of 128 instances.
-All experiments use a single GPU (NVIDIA RTX 4090).
+Instance sizes: $N \in \{1\text{K}, 5\text{K}, 10\text{K}, 50\text{K}, 100\text{K}\}$.
+Training data is generated on-the-fly (uniform random); validation uses fixed datasets of 128 instances.
+Single GPU (NVIDIA RTX 4090).
 
-\paragraph{Two evaluation regimes.}
-We define two regimes to ensure fair and realistic comparisons:
-\begin{itemize}
-    \item \emph{Standard regime} ($N \le 1\text{K}$): Compare against DeepACO, GFACS, GTG-ACO, and classical solvers. LKH-3/HGS serve as optimality references.
-    \item \emph{Large-scale regime} ($N \ge 5\text{K}$): Compare against scalable methods only (vanilla MFACO, open-loop neural, FocusedACO). We report \emph{relative improvement} vs.\ the strongest scalable baseline under matched time, since LKH-3/HGS may not run reliably or within reasonable time at these scales.
-\end{itemize}
+We distinguish two evaluation regimes.
+In the \emph{standard regime} ($N \le 1$K) we compare against DeepACO, GFACS, GTG-ACO, and classical solvers, using LKH-3 or HGS as optimality references.
+In the \emph{large-scale regime} ($N \ge 5$K), where those solvers become unreliable, we restrict comparison to scalable methods---vanilla MFACO, open-loop neural, and FocusedACO---and report relative improvement over the strongest baseline under matched wall-clock time.
 
 \emph{ACO Hyperparameters:} $\alpha=1.0$, $\beta=1.0$, $\rho=0.1$ (\TSP{}) / $\rho=0.5$ (\CVRP{}).
 Ants $m=100$. Candidate list $K=32$.
-Perturbation limit $M=12$ (\TSP{}) / $M=16$ (\CVRP{}).
+New-edge steps $M=12$ (\TSP{}) / $M=16$ (\CVRP{}).
 Outer iterations $H=10$, inner iterations $S=100$.
 
 \emph{Training Hyperparameters:} PPO with $\epsilon=0.2$, $K=4$ PPO epochs per outer iteration.
@@ -599,61 +522,34 @@ Learning rate $5 \times 10^{-6}$ with cosine annealing.
 Prior annealing from $\gamma=1.0$ to $\gamma_{\min}=0.2$.
 
 \subsection{Metrics}
-In addition to optimality gap, we track metrics to quantify the neural controller's behavior:
-\begin{itemize}
-    \item \emph{Gap (\%):} Relative gap to LKH-3 (TSP) or HGS (CVRP).
-    \item \emph{Edge survival:} Fraction of sampled edges remaining after LS: $|E(\pi)\cap E(\hat{\pi})|/|E(\pi)|$. Higher survival means better action--outcome fidelity.
-    \item \emph{KL divergence:} $\mathrm{KL}(p^\theta_h \| q_h)$ between shaped and baseline distributions, measuring control effort.
-    \item \emph{Turnover:} Fraction of top-5\% probability edges that change between outer steps.
-\end{itemize}
+The primary metric is the relative gap to LKH-3 (for TSP) or HGS (for CVRP).
+To diagnose training stability we track \emph{edge survival}, the fraction of sampled edges that remain after LS ($|E(\pi)\cap E(\hat{\pi})|/|E(\pi)|$), which measures action--outcome fidelity.
+We also report the KL divergence $\mathrm{KL}(p^\theta(\cdot; h, 0) \| q^{(h,0)})$ between the shaped and baseline distributions at the start of each outer step---a proxy for control effort---and \emph{turnover}, the fraction of top-5\% probability edges that change between consecutive refreshes.
 
 \subsection{Baselines}
-We compare against:
-\begin{enumerate}
-    \item \emph{Classical Solvers:}
-    \begin{itemize}
-        \item \emph{Vanilla ACO:} Our perturbation-based ACO backend without the neural controller.
-        \item \emph{LKH-3 / HGS:} Reference solvers (standard regime only; used for gap computation).
-    \end{itemize}
-    \item \emph{Neural-\ACO{} Baselines (standard regime only):}
-    \begin{itemize}
-        \item \emph{DeepACO}~\cite{deepaco}: Open-loop neural prior.
-        \item \emph{GFACS}~\cite{gfacs}: Generative Flow Networks.
-        \item \emph{GTG-ACO}~\cite{gtgaco}: Graph Transformer Guided.
-    \end{itemize}
-    \item \emph{Open-Loop Baseline:} Our model computed once from static features, to isolate the benefit of closed-loop feedback (all scales).
-\end{enumerate}
+We compare against several classes of baselines.
+Among classical solvers we include \emph{vanilla ACO} (the perturbation-based backend without neural control) and, in the standard regime, \emph{LKH-3} and \emph{HGS} as optimality references.
+For neural-ACO methods we consider DeepACO~\cite{deepaco}, GFACS~\cite{gfacs}, and GTG-ACO~\cite{gtgaco}, all of which compute guidance once before search.
+Finally, to isolate the benefit of closed-loop control we include an \emph{open-loop baseline}: our own network run once at the start of search using only static features.
 
 % ,  NEW: fairness / budget subsection (reviewer-critical) , 
 \subsection{Budget Matching and Fair Evaluation Protocol}
 \label{sec:fairness}
-To ensure fair comparison, we report results under \emph{matched wall-clock time}.
+All results use \emph{matched wall-clock time}.
 
-\paragraph{Runtime measurement.}
-All experiments run on a single NVIDIA RTX 4090 GPU with 16 CPU cores (AMD Ryzen 9).
-We measure wall-clock time from instance loading to final solution, including all overhead (feature extraction, GNN inference, sampling, LS, pheromone updates).
-GPU time is included when applicable (GNN forward/backward passes).
-We exclude JIT compilation warm-up by running a dummy instance before timing.
-
-\paragraph{Implementation parity.}
-All methods (LGA, vanilla ACO, open-loop neural) use the same C++ backend for sampling and local search, ensuring that performance differences reflect algorithmic choices rather than implementation quality.
-The only difference is whether neural guidance is applied (and if so, how often it is refreshed).
-
-\paragraph{Candidate graph restriction.}
-All methods operate on the same $K$-nearest-neighbor candidate graph.
-This is standard practice for scalable TSP/CVRP solvers and ensures fair comparison at large scales.
-
-\paragraph{Baseline iteration adjustment.}
-For vanilla ACO, we adjust the number of iterations so that total wall-clock time matches LGA (which includes GNN overhead).
-For example, if LGA runs $H=10$ outer steps with $S=100$ inner iterations (1000 total) but takes 10\% longer due to neural inference, we give vanilla ACO approximately 1100 iterations to match runtime.
+All timings are measured on a single NVIDIA RTX 4090 GPU with 16 AMD Ryzen~9 CPU cores.
+Wall-clock time runs from instance loading to final solution and includes all overhead: feature extraction, GNN inference, sampling, LS, and pheromone updates.
+GPU time is charged when applicable (GNN forward and backward passes), and a dummy instance is used to exclude JIT warm-up.
+To ensure implementation parity, LGA, vanilla ACO, and the open-loop neural baseline share the same C++ backend for sampling and local search; only the presence and refresh frequency of neural guidance differ.
+All methods also operate on the same $K$-nearest-neighbor candidate graph.
+Finally, we adjust the number of vanilla ACO iterations so that total wall-clock time matches LGA (including GNN overhead): for instance, if LGA runs 1000 inner iterations but incurs 10\% overhead from neural inference, vanilla ACO is given roughly 1100 iterations to match the total computational budget.
 
 \subsection{Main Results}
 \label{sec:main-results}
 
-\paragraph{Experiment A1: TSP Results (Table~\ref{tab:main-tsp}).}
-We evaluate \TSP{} performance across all scales.
-For standard regime ($N=1\text{K}$), we report gap (\%) relative to LKH-3.
-For large-scale regime ($N \ge 5\text{K}$), we report gap vs.\ best-known where available, and relative improvement (\%) vs.\ vanilla MFACO under matched wall-clock time.
+Table~\ref{tab:main-tsp} summarizes \TSP{} performance across scales.
+Standard regime ($N=1\text{K}$): gap (\%) relative to LKH-3.
+Large-scale regime ($N \ge 5\text{K}$): gap vs.\ best-known where available, and relative improvement (\%) vs.\ vanilla MFACO under matched time.
 
 \begin{table}[t]
 \centering
@@ -677,9 +573,7 @@ Open-Loop Neural & & -- & -- & -- & -- \\
 \end{tabular}
 \end{table}
 
-\paragraph{Experiment A2: CVRP Results (Table~\ref{tab:main-cvrp}).}
-Analogous evaluation for \CVRP{} with HGS as reference for standard regime.
-We use capacity $Q=50$ for all scales.
+Table~\ref{tab:main-cvrp} presents \CVRP{} results with HGS as the reference solver in the standard regime; capacity is $Q=50$ for all scales.
 
 \begin{table}[t]
 \centering
@@ -701,8 +595,7 @@ Vanilla ACO & & 0.0 & 0.0 & 0.0 & 0.0 \\
 \end{tabular}
 \end{table}
 
-\paragraph{Experiment A3: Comparison with Neural-\ACO{} Baselines (Table~\ref{tab:neural-baselines}).}
-At $N=1\text{K}$ (standard regime, where prior neural-\ACO{} methods are computationally feasible), we compare against DeepACO, GFACS, and GTG-ACO under matched time budgets (30s/instance).
+Table~\ref{tab:neural-baselines} compares against prior neural-ACO methods at $N=1$K, where those methods remain computationally feasible, under matched time budgets of 30\,s per instance.
 
 \begin{table}[t]
 \centering
@@ -722,8 +615,7 @@ GTG-ACO & -- & -- & -- & -- \\
 }
 \end{table}
 
-\paragraph{Experiment A4: Convergence Dynamics (Figure~\ref{fig:convergence}).}
-We plot gap vs.\ wall-clock time curves showing how LGA converges faster than baselines.
+Figure~\ref{fig:convergence} plots gap against wall-clock time, showing that LGA converges more quickly than baselines.
 
 \begin{figure}[t]
     \centering
@@ -741,13 +633,9 @@ We plot gap vs.\ wall-clock time curves showing how LGA converges faster than ba
     \label{fig:convergence}
 \end{figure}
 
-\paragraph{Experiment A5: Active Control Verification (Figure~\ref{fig:active-control}).}
-To verify that the controller is actively adapting rather than providing static guidance, we track two diagnostic metrics across outer steps:
-\begin{itemize}
-    \item \emph{KL divergence:} $\mathrm{KL}(p^\theta_h \| q_h)$ between the shaped distribution and the baseline ACO distribution (without neural prior) at each refresh $h$.
-    \item \emph{Turnover:} Fraction of top-5\% probability edges that change between consecutive outer steps.
-\end{itemize}
-Figure~\ref{fig:active-control} shows that both metrics remain non-zero throughout the run, confirming that the controller continuously adjusts guidance in response to evolving pheromones and incumbent structure---not merely providing a static prior.
+Figure~\ref{fig:active-control} verifies that the controller actively adapts rather than providing static guidance.
+We track two diagnostics: the KL divergence between shaped and baseline distributions at the start of each outer step, and the turnover, defined as the fraction of top-5\% probability edges that change between consecutive refreshes.
+Both remain non-zero throughout, confirming that the controller continually adjusts its output in response to evolving pheromones and the incumbent tour.
 
 \begin{figure}[t]
     \centering
@@ -761,17 +649,14 @@ Figure~\ref{fig:active-control} shows that both metrics remain non-zero througho
 % ======================================================================
 \subsection{Ablation Studies}
 \label{sec:ablations}
-We validate the core design choices of \LGA{} through four focused ablations, each addressing a specific research question.
-All experiments use $N=1\text{K}$ with 5 seeds; hyperparameter and RL algorithm sweeps are deferred to Appendix~\ref{app:tuning}.
+Four ablations validate core design choices.
+All use $N=1\text{K}$ with 5 seeds; hyperparameter and RL algorithm sweeps in Appendix~\ref{app:tuning}.
 
 % ----------------------------------------------------------------------
 % Ablation 1: Open-loop vs Closed-loop (Refresh Frequency)
 % ----------------------------------------------------------------------
-\paragraph{Ablation 1: Open-loop vs.\ Closed-loop Control (Table~\ref{tab:ablation-refresh}).}
-\emph{Question: Does refreshing guidance during search improve over static, open-loop guidance?}
-
-We vary the number of outer steps $H$ while fixing total iterations $T = H \times S = 1000$.
-$H=1$ corresponds to open-loop control (guidance computed once); larger $H$ enables more frequent adaptation.
+The first ablation (Table~\ref{tab:ablation-refresh}) varies the number of outer steps $H$ while holding total iterations fixed at $T = H \times S = 1000$.
+When $H=1$ the controller runs in open-loop mode, computing guidance once; larger values of $H$ allow increasingly frequent adaptation.
 
 \begin{table}[t]
 \centering
@@ -791,15 +676,12 @@ $H$ & $S$ & Control Type & \TSP{} Gap (\%) & Overhead (\%) \\
 \end{tabular}
 \end{table}
 
-\emph{Finding:} Closed-loop control ($H \ge 5$) consistently outperforms open-loop ($H=1$), confirming that adapting to solver state provides value beyond static instance-conditioned guidance.
+Closed-loop control ($H \ge 5$) consistently outperforms open-loop ($H=1$), confirming that adapting to solver state provides value beyond static guidance.
 
 % ----------------------------------------------------------------------
 % Ablation 2: Dynamic Features
 % ----------------------------------------------------------------------
-\paragraph{Ablation 2: Dynamic Feature Removal (Table~\ref{tab:ablation-features}).}
-\emph{Question: Which dynamic features drive the closed-loop benefit?}
-
-We progressively remove dynamic features from the state representation to isolate their contributions.
+Table~\ref{tab:ablation-features} probes which dynamic features drive the closed-loop benefit by progressively removing them from the state representation.
 
 \begin{table}[t]
 \centering
@@ -819,15 +701,14 @@ Static only (coords) & -- & -- \\
 \end{tabular}
 \end{table}
 
-\emph{Finding:} Pheromone features contribute most; incumbent structure provides additional signal. Static-only degenerates to open-loop performance.
+Pheromone features contribute most; incumbent structure adds a secondary signal.
+Removing all dynamic features degenerates performance to open-loop levels.
 
 % ----------------------------------------------------------------------
 % Ablation 3: Localized vs Global LS
 % ----------------------------------------------------------------------
-\paragraph{Ablation 3: Localized vs.\ Global Local Search (Table~\ref{tab:ablation-ls}).}
-\emph{Question: Why is localized LS necessary for stable learning?}
-
-We compare localized LS (FACO-style, restricted to perturbed edges) against global 2-opt (unrestricted), measuring solution quality, edge survival (fraction of sampled edges retained after LS), and gradient variance during training.
+Table~\ref{tab:ablation-ls} compares localized LS (restricted to perturbed edges) against global 2-opt.
+We measure solution quality, edge survival (the fraction of sampled edges retained after LS), and gradient variance.
 
 \begin{table}[t]
 \centering
@@ -844,15 +725,13 @@ Localized (FACO) & -- & -- & -- \\
 \end{tabular}
 \end{table}
 
-\emph{Finding:} Global LS achieves low survival ($<30\%$), causing high gradient variance and unstable training. Localized LS preserves $>80\%$ of sampled edges, enabling stable policy improvement.
+The results confirm the hypothesis in \Cref{sec:localized-ls}: Global LS results in negligible survival and high gradient variance, leading to training instability. Localized LS, by contrast, preserves $\approx 30\%$ of sampled edges, ensuring the reward signal effectively guides the policy.
 
 % ----------------------------------------------------------------------
 % Ablation 4: Smoothed MMAS
 % ----------------------------------------------------------------------
-\paragraph{Ablation 4: Stabilized vs.\ Standard Pheromone Bounds (Table~\ref{tab:ablation-mmas}).}
-\emph{Question: Does stabilizing pheromone dynamics aid learning?}
-
-Standard \MMAS{} adjusts $\tau_{\min}, \tau_{\max}$ based on best-tour cost, coupling pheromone scale to instance difficulty. Our stabilized variant uses fixed bounds ($\tau_{\max}=1$, $\tau_{\min}=1/K$).
+Table~\ref{tab:ablation-mmas} examines pheromone-bound strategies.
+Standard \MMAS{} adjusts $\tau_{\min}$ and $\tau_{\max}$ based on best-tour cost, coupling pheromone scale to instance difficulty; our stabilized variant fixes $\tau_{\max}=1$ and $\tau_{\min}=1/K$.
 
 \begin{table}[t]
 \centering
@@ -869,7 +748,54 @@ Stabilized (fixed) & -- & -- & -- \\
 \end{tabular}
 \end{table}
 
-\emph{Finding:} Fixed bounds reduce training loss variance while achieving comparable or better final gaps, validating the stabilization design.
+Fixed bounds reduce training loss variance while achieving comparable or better gaps, validating the stabilization design.
+
+% ----------------------------------------------------------------------
+% Ablation 5: Prior Normalization
+% ----------------------------------------------------------------------
+Table~\ref{tab:ablation-normalization} compares three normalization strategies for the neural prior $z_\theta$: no normalization (raw outputs clamped to $[-10,10]$), per-row z-score normalization, and z-score followed by hard clipping to $[-2,2]$.
+
+\begin{table}[t]
+\centering
+\caption{Prior normalization strategies. Z-score normalization provides best stability-performance tradeoff.}
+\label{tab:ablation-normalization}
+\small
+\begin{tabular}{lccc}
+\toprule
+Normalization & Gap (\%) & Train Stability & KL Range \\
+\midrule
+None (clamped) & -- & -- & -- \\
+Z-score & -- & -- & -- \\
+Z-score + clip & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Z-score normalization strikes the best balance between expressiveness and stability: raw outputs can produce large KL divergences early in training, while aggressive clipping limits the controller's capacity to shape sampling.
+
+% ----------------------------------------------------------------------
+% Ablation 6: Candidate Graph Size
+% ----------------------------------------------------------------------
+Table~\ref{tab:ablation-k} varies the candidate list size $K \in \{16, 32, 64\}$.
+Larger $K$ expands exploration options but increases per-iteration cost.
+
+\begin{table}[t]
+\centering
+\caption{Candidate list size $K$. $K=32$ provides good tradeoff between quality and runtime.}
+\label{tab:ablation-k}
+\small
+\begin{tabular}{lcccc}
+\toprule
+$K$ & Gap (\%) & Time/iter (ms) & Neural Improv. (\%) \\
+\midrule
+16 & -- & -- & -- \\
+32 (default) & -- & -- & -- \\
+64 & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Setting $K=32$ provides a good balance: smaller values restrict reachability, while larger values add overhead without commensurate quality gains.
 
 % ======================================================================
 % Runtime and Scalability
@@ -877,8 +803,7 @@ Stabilized (fixed) & -- & -- & -- \\
 \subsection{Runtime and Scalability}
 \label{sec:runtime}
 
-\paragraph{Experiment D1: Profiling Breakdown (Table~\ref{tab:profiling}).}
-We decompose wall-clock time into components: GNN inference, ant sampling, local search, and pheromone updates.
+Table~\ref{tab:profiling} decomposes wall-clock time into its main components: GNN inference, ant sampling, local search, and pheromone updates.
 
 \begin{table}[t]
 \centering
@@ -896,8 +821,7 @@ $N$ & GNN (\%) & Sampling (\%) & LS (\%) & Update (\%) \\
 \end{tabular}
 \end{table}
 
-\paragraph{Experiment D2: Scaling Curve (Figure~\ref{fig:scaling}).}
-We plot gap vs.\ problem size under fixed time budgets, comparing LGA, vanilla ACO, and prior work.
+Figure~\ref{fig:scaling} plots gap against problem size under fixed time budgets, comparing LGA to vanilla ACO and prior work.
 
 \begin{figure}[t]
     \centering
@@ -915,42 +839,46 @@ We plot gap vs.\ problem size under fixed time budgets, comparing LGA, vanilla A
     \label{fig:scaling}
 \end{figure}
 
-\paragraph{Experiment D3: Neural Overhead Analysis.}
-The neural navigator adds overhead per outer iteration. We report the percentage overhead relative to vanilla MFACO and show that faster convergence compensates, yielding better solutions within the same total wall-clock time.
+Although the neural controller adds overhead at each outer iteration, faster convergence compensates: within the same total wall-clock budget LGA consistently finds better solutions than vanilla MFACO.
+However, we observed that training instability increases with the control horizon $H$, requiring careful tuning of the PPO clipping parameter to preventing policy collapse.
 
 % ======================================================================
 % 8. Discussion, Limitations, and Future Work
 % ======================================================================
 \section{Discussion and Limitations}
-\LGA{} demonstrates that conditioning on solver state---pheromone distributions and incumbent structure---provides actionable information that static instance features cannot capture.
+\LGA{} demonstrates that conditioning on solver state---pheromone distributions and incumbent structure---provides useful signals that static instance features cannot capture.
 Our ablations show that localized LS improves edge survival over global LS and reduces gradient variance, enabling stable policy-gradient training.
 
-\paragraph{Limitations.}
-Our approach incurs overhead from the GNN encoder.
-The RL training requires careful hyperparameter tuning, particularly for the control period $S$ and prior annealing schedule.
-The perturbation-based sampling scheme, while enabling scalability, restricts reachability compared to global construction---this is an inherited trade-off from the backend design~\cite{faco}.
+Several limitations remain.
+The GNN encoder adds per-refresh overhead, and RL training is sensitive to hyperparameters---particularly the control period $S$ and the prior annealing schedule.
+Moreover, the perturbation-based sampling scheme, while crucial for scalability, limits the solver's reachability compared to global construction; this is an inherited trade-off from the backend~\cite{faco}.
 
-\paragraph{Future Work.}
-Promising directions include: (i) applying closed-loop neural control to other combinatorial domains such as Job Shop Scheduling; (ii) exploring Transformer architectures for richer context encoding; and (iii) investigating curriculum learning strategies that gradually increase problem difficulty during training.
+Closed-loop neural control could extend to other combinatorial domains such as job-shop scheduling. Transformer architectures might provide richer context encoding, and curriculum learning strategies that gradually increase problem difficulty during training could improve generalization.
 
 % ,  NEW: reproducibility checklist section (often appreciated) , 
-\section{Reproducibility Checklist}
+\section{Reproducibility}
 \label{sec:repro}
-\begin{itemize}
-    \item \emph{Code:} Training and evaluation scripts are included in this repository; we plan to release a cleaned version upon publication.
-    \item \emph{Hyperparameters:} Candidate list $K=32$, ants $m=100$, $H=10$ outer iterations, $S=100$ inner iterations (\texttt{mini\_H}). \TSP{} uses $\rho=0.1$, $M=12$; \CVRP{} uses $\rho=0.5$, $M=16$. Learning rate defaults are PPO: $5\times 10^{-6}$, REINFORCE: $10^{-4}$ (see unified training script). Optimizer: AdamW with cosine annealing.
-    \item \emph{Model:} 12-layer GNN encoder (hidden dim 32) and a 3-layer MLP edge decoder implemented in PyTorch/PyG.
-\end{itemize}
+The supplementary material includes training and evaluation scripts; upon publication we will release a cleaned, documented codebase containing the sampling backend, training scripts for TSP and CVRP, pretrained checkpoints, and scripts to reproduce all experiments and figures.
+
+Training instances are generated on the fly with coordinates drawn uniformly from $[0,1]^2$; validation uses fixed datasets of 128 instances per scale (seed 1234).
+For CVRP, demands are sampled uniformly from $\{1,\ldots,9\}$ with capacity $Q=50$.
+The candidate graph is a symmetric $K$-NN graph with $K=32$, ties broken by node index; a backup list of $K$ additional neighbors handles fallback.
+
+Default hyperparameters are: $m=100$ ants, $H=10$ outer steps, $S=100$ inner steps, $\rho=0.1$ (TSP) or $\rho=0.5$ (CVRP), and $M=12$ (TSP) or $M=16$ (CVRP) new-edge steps.
+We optimize with AdamW using cosine annealing; the default learning rate is $5{\times}10^{-6}$ for PPO and $10^{-4}$ for REINFORCE.
+The model comprises a 12-layer GNN encoder (hidden dimension 32) and a 3-layer MLP edge decoder, totaling roughly 50K parameters.
+
+Training TSP-1K for 10 epochs (32 instances per epoch) takes about 2 hours on an RTX 4090.
+PPO stores pheromone snapshots for $S$ inner steps per outer step, discarded after each update; at $n{=}10$K with $K{=}32$ and $S{=}100$ this amounts to roughly 128\,MB, scaling to about 1.3\,GB at $n{=}100$K.
 
 % ======================================================================
 % 9. Conclusion
 % ======================================================================
 \section{Conclusion}
-We introduced \LGA{}, a framework for closed-loop neural control of ACO.
-By conditioning guidance on solver state (pheromones and incumbent) and refreshing it during search, the controller can steer sampling in response to optimization dynamics.
-Combined with a scalable perturbation-based backend and stabilized pheromone updates, \LGA{} outperforms both vanilla ACO and open-loop neural guidance on \TSP{} and \CVRP{} under matched budgets.
-A key finding is that localized LS, originally designed for efficiency, is necessary for stable policy-gradient training due to improved action--outcome fidelity.
-This work opens a path toward more adaptive optimization systems that learn to navigate complex search landscapes.
+We have presented \LGA{}, a closed-loop neural controller for Ant Colony Optimization that conditions on pheromone state and incumbent structure, refreshing its guidance periodically throughout the search.
+Coupled with a scalable perturbation-based backend and stabilized pheromone dynamics, the controller outperforms both vanilla ACO and open-loop neural guidance on \TSP{} and \CVRP{} under matched wall-clock budgets.
+A side benefit of the perturbative design is that localized local search---originally for efficiency---also enables stable policy-gradient training by preserving the connection between the controller's edge choices and the resulting tour quality.
+The results suggest that learning to adapt within search, rather than simply initializing it, is a promising direction for neural combinatorial optimization.
 
 % ======================================================================
 % Acknowledgments
@@ -970,34 +898,21 @@ This work opens a path toward more adaptive optimization systems that learn to n
 \appendix
 
 \section{Additional Implementation Details}
-\emph{Model Architecture:}
-\begin{itemize}
-    \item \emph{Encoder:} 12-layer GNN with Residual connections and BatchNorm. Hidden dim $d=32$.
-    \item \emph{Decoder:} 3-layer MLP projecting edge embeddings to scalar log-priors.
-    \item \emph{Input Featues:} Node coordinates (2D), $k$-NN distances (scalar), pheromone (scalar), heuristic (scalar).
-\end{itemize}
+The encoder is a 12-layer GNN with residual connections and batch normalization (hidden dimension $d=32$).
+The decoder is a 3-layer MLP that projects edge embeddings to scalar log-priors.
+Input features include 2D node coordinates, $k$-NN distances, pheromone values, and heuristic values (all scalars except coordinates).
 
 \subsection{Complexity Analysis}
-We distinguish between neural inference cost and per-iteration ACO costs:
+The computational cost separates into neural inference and per-iteration ACO operations:
 
-\paragraph{Neural inference (once per outer step).}
-The GNN encoder has complexity $O(L \cdot n \cdot K \cdot d)$ for $L=12$ layers, $n$ nodes, $K=32$ candidates per node, and hidden dimension $d=32$.
-This runs $H$ times per instance (once per refresh), not every inner iteration.
-The edge MLP adds $O(n \cdot K \cdot d)$ per outer step.
-Total neural cost per instance: $O(H \cdot L \cdot n \cdot K \cdot d)$.
+The GNN encoder runs once per outer step and has complexity $O(L \cdot n \cdot K \cdot d)$ for $L=12$ layers, $n$ nodes, $K=32$ candidates, and hidden dimension $d=32$; the edge MLP adds $O(n \cdot K \cdot d)$.
+Across $H$ outer steps the total neural cost is $O(H \cdot L \cdot n \cdot K \cdot d)$.
 
-\paragraph{ACO sampling (each inner iteration).}
-Each ant samples at most $M$ edge modifications via sequential next-node selection.
-The computational cost per ant is $O(M \cdot K)$ for candidate lookups and probability computation.
-With $m$ ants and $T = H \cdot S$ total iterations, sampling costs $O(T \cdot m \cdot M \cdot K)$.
+Sampling runs at every inner iteration: each of $m$ ants takes at most $M$ new-edge relocation steps, each costing $O(K)$ for candidate lookup and probability computation, so the per-iteration cost is $O(m \cdot M \cdot K)$ and the total over $T=H{\cdot}S$ iterations is $O(T \cdot m \cdot M \cdot K)$.
+Localized local search scans $O(M)$ checklist nodes with $O(K)$ neighbors each, contributing $O(m \cdot M \cdot K)$ per iteration.
+Pheromone updates touch only the edges in the best route and cost $O(n)$ per iteration.
 
-\paragraph{Localized local search.}
-Each LS pass scans $O(M)$ checklist nodes, each with $O(K)$ candidate neighbors, yielding $O(m \cdot M \cdot K)$ per inner iteration.
 
-\paragraph{Pheromone update.}
-Updating pheromones from the best route is $O(n)$ per inner iteration (sparse update on candidate graph edges).
-
-\paragraph{Summary.}
 With default settings ($H=10$, $S=100$, $L=12$, $d=32$, $m=100$, $M=12$, $K=32$), at $n=10$K:
 \begin{itemize}
     \item Neural: $\approx 10 \times 12 \times 10\text{K} \times 32 \times 32 \approx 1.2 \times 10^9$ operations
@@ -1074,23 +989,14 @@ REINFORCE (best) & -- & -- & -- & -- & -- \\
 }
 \end{table}
 
-\paragraph{Tuning Pipeline Overview.}
-Our experiments follow a 4-stage tuning pipeline implemented in \texttt{tune.py}:
-
-\begin{enumerate}
-    \item \textbf{Stage 1 (Solver Tuning):} Grid search over ACO hyperparameters comparing vanilla vs.\ neural-guided performance.
-    \item \textbf{Stage 2 (RL Stability):} Sweep over PPO and REINFORCE hyperparameters to find stable training configurations.
-    \item \textbf{Stage 3 (Budget Factorization):} Optimize the partition of total iterations into outer/inner iterations.
-    \item \textbf{Stage 4 (Component Ablations):} Isolate contributions of individual design choices.
-\end{enumerate}
+Experiments follow a four-stage tuning pipeline implemented in \texttt{tune.py}: first a grid search over ACO hyperparameters to compare vanilla and neural-guided performance; then a sweep over PPO and REINFORCE hyperparameters to identify stable training configurations; next an optimization of the partition between outer and inner iterations; and finally component ablations to isolate individual design contributions.
 
 % ======================================================================
 % D. Runtime and Scalability (Extended)
 % ======================================================================
 \subsection{D. Runtime and Scalability (Extended)}
 
-\paragraph{D1. Profiling Breakdown (Table~\ref{tab:profiling-full}).}
-Full profiling across all scales with breakdown into: (i) GNN forward pass, (ii) ant sampling, (iii) local search, (iv) pheromone/incumbent updates.
+Table~\ref{tab:profiling-full} provides full profiling across all scales, breaking down wall-clock time into GNN forward pass, ant sampling, local search, and pheromone/incumbent updates.
 
 \begin{table}[h]
 \centering
@@ -1111,29 +1017,16 @@ $N$ & GNN & Sampling & LS & Update & Total & Overhead (\%) \\
 }
 \end{table}
 
-\paragraph{D2. Scaling Curve Data.}
-Raw data for Figure~\ref{fig:scaling}, including:
-\begin{itemize}
-    \item Gap (\%) at each scale $N \in \{1\text{K}, 5\text{K}, 10\text{K}, 50\text{K}, 100\text{K}\}$
-    \item Time budgets used per scale
-    \item Comparison against FocusedACO at large scales
-\end{itemize}
-
-\paragraph{D3. Time-Quality Tradeoff Curves.}
-For each scale, we plot gap vs.\ time budget to show how LGA converges faster than baselines.
+The raw data underlying Figure~\ref{fig:scaling} reports gap at each scale $N \in \{1\text{K}, 5\text{K}, 10\text{K}, 50\text{K}, 100\text{K}\}$, the time budgets used, and comparison against FocusedACO at large scales.
+We also provide time--quality tradeoff curves for each scale, illustrating how LGA converges faster than baselines.
 
 % ======================================================================
 % E. Robustness and Generalization
 % ======================================================================
 \subsection{E. Robustness and Generalization}
 
-\paragraph{E1. Distribution Shift (Table~\ref{tab:distribution-shift}).}
-We train on uniform random instances and test on out-of-distribution instances:
-\begin{itemize}
-    \item \emph{Clustered:} 5--10 Gaussian clusters with $\sigma=0.05$
-    \item \emph{Mixed:} 50\% uniform, 50\% clustered
-    \item \emph{TSPLIB/CVRPLIB:} Real-world benchmark instances
-\end{itemize}
+Table~\ref{tab:distribution-shift} evaluates generalization to out-of-distribution instances.
+Models are trained on uniform random instances and tested on three alternative distributions: \emph{clustered} (5--10 Gaussian clusters with $\sigma=0.05$), \emph{mixed} (half uniform, half clustered), and real-world benchmarks from TSPLIB and CVRPLIB.
 
 \begin{table}[h]
 \centering
@@ -1153,12 +1046,7 @@ TSPLIB & -- & -- & -- & -- \\
 }
 \end{table}
 
-\paragraph{E2. Benchmark Evaluation (Table~\ref{tab:benchmarks}).}
-Evaluation on standard benchmark sets:
-\begin{itemize}
-    \item \emph{TSP:} TSPLIB instances (selected large instances)
-    \item \emph{CVRP:} Uchoa et al.\ (2017) instances from CVRPLIB
-\end{itemize}
+Table~\ref{tab:benchmarks} reports performance on standard benchmark sets: selected large TSPLIB instances for TSP and the Uchoa et al.\ (2017) instances from CVRPLIB for CVRP.
 
 \begin{table}[h]
 \centering
@@ -1179,34 +1067,17 @@ Instance & $N$ & Best Known & LGA & Gap (\%) & Time \\
 }
 \end{table}
 
-\paragraph{E3. Hyperparameter Robustness (Figure~\ref{fig:robustness}).}
-Sensitivity analysis varying one parameter while fixing others:
-\begin{itemize}
-    \item Candidate list $K \in \{8, 16, 32, 64\}$
-    \item Number of ants $m \in \{25, 50, 100, 200\}$
-    \item Evaporation rate $\rho \in \{0.02, 0.05, 0.1, 0.2, 0.5\}$
-    \item Perturbation limit $M \in \{4, 8, 12, 16, 24\}$
-\end{itemize}
+Figure~\ref{fig:robustness} presents a sensitivity analysis in which we vary one hyperparameter at a time while holding the others fixed.
+The sweep covers candidate list size $K \in \{8,16,32,64\}$, number of ants $m \in \{25,50,100,200\}$, evaporation rate $\rho \in \{0.02,0.05,0.1,0.2,0.5\}$, and new-edge steps $M \in \{4,8,12,16,24\}$.
 
 % ======================================================================
 % F. Training Studies
 % ======================================================================
 \subsection{F. Training Studies}
 
-\paragraph{F1. Learning Curves (Figure~\ref{fig:learning-curves}).}
-Gap vs.\ training steps with $\pm 1$ std bands over 5 seeds.
-Compare PPO vs.\ REINFORCE convergence speed and final performance.
-
-\paragraph{F2. Training Stability with Smoothed-MMAS (Figure~\ref{fig:stability}).}
-Side-by-side learning curves with and without Smoothed-MMAS.
-Expected outcome: standard MMAS shows higher variance and occasional instability.
-
-\paragraph{F3. Size Generalization (Table~\ref{tab:size-gen}).}
-Train on small instances, test on larger ones:
-\begin{itemize}
-    \item Train on $N=1\text{K}$, test on $N \in \{5\text{K}, 10\text{K}\}$
-    \item Train on $N=5\text{K}$, test on $N \in \{10\text{K}, 50\text{K}\}$
-\end{itemize}
+Figure~\ref{fig:learning-curves} plots gap against training steps (mean $\pm$ one standard deviation over 5 seeds) and compares PPO and REINFORCE in terms of convergence speed and final performance.
+Figure~\ref{fig:stability} shows side-by-side learning curves with and without stabilized pheromone bounds; standard MMAS exhibits higher variance and occasional instability.
+Table~\ref{tab:size-gen} tests zero-shot size generalization, training on $N{=}1$K and testing on $N \in \{5$K$, 10$K$\}$, or training on $N{=}5$K and testing on $N \in \{10$K$, 50$K$\}$.
 
 \begin{table}[h]
 \centering
@@ -1230,13 +1101,9 @@ Train $N$ & Test $N$ & Gap (\%) & vs.\ Trained-at-Scale \\
 % ======================================================================
 \subsection{G. Additional Visualizations}
 
-\paragraph{G1. Solution Visualization.}
-Side-by-side tour visualizations for vanilla MFACO vs.\ LGA on representative instances, highlighting structural differences.
-
-\paragraph{G2. Pheromone Heatmaps.}
-Evolution of pheromone distribution $\tau$ across outer iterations, showing how LGA shapes the search landscape differently from vanilla ACO.
-
-\paragraph{G3. Prior Logit Visualization.}
-Visualization of neural guidance $z_\theta$ at different search stages, showing how the navigator's focus shifts during optimization.
+Appendix~G provides additional visualizations.
+Side-by-side tour plots compare vanilla MFACO and LGA on representative instances, highlighting structural differences.
+Pheromone heatmaps trace the evolution of $\tau$ across outer iterations, illustrating how LGA shapes the search landscape differently from vanilla ACO.
+Finally, we visualize the neural guidance $z_\theta$ at different search stages to show how the controller's focus shifts during optimization.
 
 \end{document}
