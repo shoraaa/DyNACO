@@ -3,7 +3,5 @@ __pycache__/
 uv.lock
 wandb
 uv.lock
-LKH-3.0.13
-gpucore.218289
 tuning_results
 visualizations
