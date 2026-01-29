@@ -223,3 +223,110 @@ def save_val_dataset(dataset, n, problem='tsp'):
         torch.save(dataset, path)
     print(f"Saved generated dataset to {path}")
 
+
+# ----------------- Metric Helper Functions -----------------
+
+EPS = 1e-10
+
+def row_softmax(P: torch.Tensor) -> torch.Tensor:
+    """Apply softmax normalization per row."""
+    return torch.softmax(P.float(), dim=1)
+
+def mean_row_kl(P_prev: torch.Tensor, P_cur: torch.Tensor) -> float:
+    """Compute mean KL divergence between consecutive prior distributions (row-wise)."""
+    p = row_softmax(P_prev)
+    q = row_softmax(P_cur)
+    kl_row = (p * ((p + EPS).log() - (q + EPS).log())).sum(dim=1)
+    return float(kl_row.mean())
+
+def rel_l2_drift(P_prev: torch.Tensor, P_cur: torch.Tensor) -> float:
+    """Compute relative L2 drift between consecutive priors."""
+    a = P_prev.float()
+    b = P_cur.float()
+    return float((b - a).norm() / (a.norm() + EPS))
+
+def top_set(P: torch.Tensor, frac: float = 0.05) -> set:
+    """Extract indices of top-k elements (k = frac * total elements)."""
+    v = P.flatten()
+    m = v.numel()
+    k = max(1, int(m * frac))
+    idx = torch.topk(v, k).indices
+    return set(idx.cpu().tolist())
+
+def top_turnover(P_prev: torch.Tensor, P_cur: torch.Tensor, frac: float = 0.05) -> float:
+    """Compute turnover rate of top-k elements using Jaccard distance."""
+    if P_prev is None or P_cur is None: 
+        return 0.0
+    A = top_set(P_prev, frac)
+    B = top_set(P_cur, frac)
+    jacc = len(A & B) / max(1, len(A | B))
+    return float(1.0 - jacc)
+
+def top1_flip_rate(P_prev: torch.Tensor, P_cur: torch.Tensor) -> float:
+    """Compute rate at which argmax changes per row."""
+    if P_prev is None or P_cur is None: 
+        return 0.0
+    a = P_prev.argmax(dim=1)
+    b = P_cur.argmax(dim=1)
+    return float((a != b).float().mean())
+
+def safe_corr(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-12) -> float:
+    """Compute robust correlation between two tensors (GPU-optimized)."""
+    if a is None or b is None: 
+        return 0.0
+    
+    # Keep on original device, convert to float32
+    device = a.device
+    a = a.detach().reshape(-1).to(dtype=torch.float32)
+    b = b.detach().reshape(-1).to(device=device, dtype=torch.float32)
+    
+    # Filter out non-finite values
+    mask = torch.isfinite(a) & torch.isfinite(b)
+    if mask.sum() < 2: 
+        return float("nan")
+    
+    a = a[mask]
+    b = b[mask]
+    
+    # Check for zero variance
+    a_std = a.std()
+    b_std = b.std()
+    if float(a_std) < eps or float(b_std) < eps: 
+        return float("nan")
+    
+    # Compute correlation on GPU
+    a = a - a.mean()
+    b = b - b.mean()
+    denom = (a.norm() * b.norm()).clamp_min(eps)
+    return float((a @ b) / denom)
+
+def top_overlap_frac(a: torch.Tensor, b: torch.Tensor, frac: float = 0.05) -> float:
+    """Compute fraction of overlap in top-k elements between two tensors (GPU-optimized)."""
+    if a is None or b is None: 
+        return 0.0
+    
+    a_flat = a.flatten()
+    b_flat = b.flatten()
+    m = a_flat.numel()
+    k = max(1, int(m * frac))
+    
+    # Compute topk on GPU
+    ai = torch.topk(a_flat, k).indices
+    bi = torch.topk(b_flat, k).indices
+    
+    # Use GPU for intersection calculation
+    # Create boolean masks and compute intersection
+    ai_set = torch.zeros(m, dtype=torch.bool, device=a.device)
+    bi_set = torch.zeros(m, dtype=torch.bool, device=b.device)
+    ai_set[ai] = True
+    bi_set[bi] = True
+    
+    inter = (ai_set & bi_set).sum()
+    return float(inter) / k
+
+def row_top1_match_rate(a: torch.Tensor, b: torch.Tensor) -> float:
+    """Compute rate at which argmax matches per row between two tensors."""
+    if a is None or b is None: 
+        return 0.0
+    return float((a.argmax(dim=1) == b.argmax(dim=1)).float().mean())
+

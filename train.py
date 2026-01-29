@@ -25,6 +25,12 @@ import baselines
 from net import Net
 from baselines import get_baseline
 
+# Import metric helpers from utils
+from utils import (
+    row_softmax, mean_row_kl, rel_l2_drift, top_set, top_turnover,
+    top1_flip_rate, safe_corr, top_overlap_frac, row_top1_match_rate, EPS
+)
+
 def _popcount_i64(x: torch.Tensor) -> torch.Tensor:
     if x.dtype != torch.int64:
         raise TypeError(f"_popcount_i64 expects torch.int64, got {x.dtype}")
@@ -81,8 +87,6 @@ def replay_logp_from_cpp_batch_trace(traces, prob_sparse: torch.Tensor):
         logp.scatter_add_(0, ant_idx_all[idx], lp)
 
     return logp, ndec
-
-EPS = 1e-12
 
 def prob_sparse_from_tau_eta_prior(tau_nk, eta_nk, prior_nk, alpha=1.0, beta=1.0, eps=1e-12):
     tau = tau_nk.clamp_min(eps)
@@ -163,7 +167,9 @@ def train_instance_ppo(model, optimizer, instance_data, args):
     metrics = {
         "ndec": [], "loss": [], 
         "entropy": [], "prior_mean": [], "prior_std": [],
-        "approx_kl": [], "clip_frac": [], "new_edges": [], "survival": []
+        "approx_kl": [], "clip_frac": [], "new_edges": [], "survival": [],
+        "prior_l2_drift": [], "prior_kl": [], "prior_turnover": [], "prior_flip": [],
+        "prior_eta_corr": [], "grad_var": []
     }
 
     t_neural_total = 0.0
@@ -172,7 +178,8 @@ def train_instance_ppo(model, optimizer, instance_data, args):
     t_aco_update = 0.0
     t_aco_total = 0.0
     
-    prior_prev_outer = None 
+    prior_prev_outer = None
+    priors_history = [] 
     
     for outer in tqdm(range(args.H), desc="Outer", leave=False):
         t0 = time.time()
@@ -184,6 +191,19 @@ def train_instance_ppo(model, optimizer, instance_data, args):
             
             metrics["prior_mean"].append(prior_old.mean().item())
             metrics["prior_std"].append(prior_old.std().item())
+            
+            # Track prior drift metrics
+            if prior_prev_outer is not None:
+                metrics["prior_l2_drift"].append(rel_l2_drift(prior_prev_outer, prior_old))
+                metrics["prior_kl"].append(mean_row_kl(prior_prev_outer, prior_old))
+                metrics["prior_turnover"].append(top_turnover(prior_prev_outer, prior_old))
+                metrics["prior_flip"].append(top1_flip_rate(prior_prev_outer, prior_old))
+            
+            # Track prior-eta correlation
+            metrics["prior_eta_corr"].append(safe_corr(prior_old, eta_nk))
+            
+            prior_prev_outer = prior_old.detach().clone()
+            priors_history.append(prior_old.detach().clone())
 
         traces_list = []
         costs_list = []
@@ -320,6 +340,14 @@ def train_instance_ppo(model, optimizer, instance_data, args):
             
             total_loss = torch.stack(all_losses).mean()
             total_loss.backward()
+            
+            # Compute gradient variance
+            grad_norms = []
+            for p in model.parameters():
+                if p.grad is not None:
+                    grad_norms.append(p.grad.norm().item())
+            if grad_norms:
+                metrics["grad_var"].append(np.var(grad_norms))
             
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()

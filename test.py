@@ -21,71 +21,11 @@ import baselines
 from net import Net
 from baselines import get_baseline
 
-# Helpers
-EPS = 1e-10
-
-def row_softmax(P: torch.Tensor) -> torch.Tensor:
-    return torch.softmax(P.float(), dim=1)
-
-def mean_row_kl(P_prev: torch.Tensor, P_cur: torch.Tensor) -> float:
-    p = row_softmax(P_prev)
-    q = row_softmax(P_cur)
-    kl_row = (p * ((p + EPS).log() - (q + EPS).log())).sum(dim=1)
-    return float(kl_row.mean())
-
-def rel_l2_drift(P_prev: torch.Tensor, P_cur: torch.Tensor) -> float:
-    a = P_prev.float()
-    b = P_cur.float()
-    return float((b - a).norm() / (a.norm() + EPS))
-
-def top_set(P: torch.Tensor, frac: float = 0.05) -> set:
-    v = P.flatten()
-    m = v.numel()
-    k = max(1, int(m * frac))
-    idx = torch.topk(v, k).indices
-    return set(idx.detach().cpu().tolist())
-
-def top_turnover(P_prev: torch.Tensor, P_cur: torch.Tensor, frac: float = 0.05) -> float:
-    if P_prev is None or P_cur is None: return 0.0
-    A = top_set(P_prev, frac)
-    B = top_set(P_cur, frac)
-    jacc = len(A & B) / max(1, len(A | B))
-    return float(1.0 - jacc)
-
-def top1_flip_rate(P_prev: torch.Tensor, P_cur: torch.Tensor) -> float:
-    if P_prev is None or P_cur is None: return 0.0
-    a = P_prev.argmax(dim=1)
-    b = P_cur.argmax(dim=1)
-    return float((a != b).float().mean())
-
-def safe_corr(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-12) -> float:
-    if a is None or b is None: return 0.0
-    a = a.detach().reshape(-1).to(device="cpu", dtype=torch.float32)
-    b = b.detach().reshape(-1).to(device="cpu", dtype=torch.float32)
-    mask = torch.isfinite(a) & torch.isfinite(b)
-    if mask.sum() < 2: return float("nan")
-    a = a[mask]
-    b = b[mask]
-    if float(a.std()) < eps or float(b.std()) < eps: return float("nan")
-    a = a - a.mean()
-    b = b - b.mean()
-    denom = (a.norm() * b.norm()).clamp_min(eps)
-    return float((a @ b) / denom)
-
-def top_overlap_frac(a: torch.Tensor, b: torch.Tensor, frac: float = 0.05) -> float:
-    if a is None or b is None: return 0.0
-    a = a.flatten()
-    b = b.flatten()
-    m = a.numel()
-    k = max(1, int(m * frac))
-    ai = torch.topk(a, k).indices
-    bi = torch.topk(b, k).indices
-    inter = len(set(ai.cpu().tolist()).intersection(set(bi.cpu().tolist())))
-    return inter / k
-
-def row_top1_match_rate(a: torch.Tensor, b: torch.Tensor) -> float:
-    if a is None or b is None: return 0.0
-    return float((a.cpu().argmax(dim=1) == b.cpu().argmax(dim=1)).float().mean())
+# Import metric helpers from utils
+from utils import (
+    row_softmax, mean_row_kl, rel_l2_drift, top_set, top_turnover,
+    top1_flip_rate, safe_corr, top_overlap_frac, row_top1_match_rate, EPS
+)
 
 
 def verify_solution_cvrp(coords, demand, capacity, cost, route0):
