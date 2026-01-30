@@ -462,7 +462,7 @@ def main():
     parser.add_argument('--n_node', type=int, default=1000, help='Number of nodes (fixed at 100 for search)')
     
     # Search settings
-    parser.add_argument('--epochs', type=int, default=5, help='Epochs per experiment')
+    parser.add_argument('--epochs', type=int, default=8, help='Epochs per experiment')
     parser.add_argument('--steps_per_epoch', type=int, default=32, help='Steps per epoch')
     parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--seed', type=int, default=1234)

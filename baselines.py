@@ -186,8 +186,8 @@ def get_baseline(dataset, problem='tsp', n_node=100, device="cpu", **kwargs):
     costs = []
     
     runs = kwargs.get("runs", 1)
-    time_limit = kwargs.get("time_limit", None) # None for TSP default?
-    if problem == 'cvrp' and time_limit is None: time_limit = 2.0
+    time_limit = kwargs.get("time_limit", 300) # None for TSP default?
+    if problem == 'cvrp' and time_limit is None: time_limit = 300
     
     # Iterate
     length = len(dataset)

@@ -191,6 +191,42 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
 # ----------------- Shared/Dataset -----------------
 
 def load_val_dataset(n, problem='tsp', device='cpu'):
+    # Priority 1: Check for text datasets in data/{PROBLEM}/data/test_set/
+    # e.g., tsp100 in test_tsp100_concorde_n10000.txt
+    test_set_dir = DATA_DIR / problem.upper() / "data" / "test_set"
+    
+    if test_set_dir.exists():
+        # Find file matching pattern
+        candidates = list(test_set_dir.glob("*.txt"))
+        target_file = None
+        
+        # Simple heuristic: filename contains "{problem}{n}" (e.g. tsp100)
+        # We search specifically for the number to avoid partial matches (like tsp10 matching tsp100)
+        # But given standard names (tsp100, tsp1000), "tsp{n}" usually distinct enough if n is distinct.
+        # Let's try to match `{problem}{n}_` or `{problem}{n}` inside name
+        pattern = f"{problem.lower()}{n}"
+        
+        for f in candidates:
+             if pattern in f.name.lower():
+                 # Avoid matching tsp100 inside tsp1000 by checking next char is not digit?
+                 # e.g. "tsp100_" vs "tsp1000_"
+                 # Find where pattern starts
+                 name = f.name.lower()
+                 idx = name.find(pattern)
+                 if idx != -1:
+                     after = name[idx+len(pattern):]
+                     if not after or not after[0].isdigit():
+                         target_file = f
+                         break
+        
+        if target_file:
+            print(f"Auto-detected validation set: {target_file}")
+            if problem == 'tsp':
+                return load_tsp_txt_dataset(str(target_file))
+            else:
+                return load_cvrp_txt_dataset(str(target_file))
+
+    # Priority 2: Fallback to .pt file
     path = f'{DATA_DIR}/{problem}/valDataset-{n}.pt'
     if not Path(path).exists():
         return None
@@ -203,6 +239,256 @@ def load_val_dataset(n, problem='tsp', device='cpu'):
     except Exception as e:
         print(f"Failed to load dataset: {e}")
         return None
+
+
+def calc_tour_length(coords, tour):
+    """
+    Calculate the length of a tour.
+    coords: (N, 2) tensor or numpy array
+    tour: (N,) or (N+1,) list/tensor/array of indices. 
+    """
+    if isinstance(coords, torch.Tensor):
+        coords_np = coords.cpu().numpy()
+    else:
+        coords_np = coords
+    
+    if isinstance(tour, torch.Tensor):
+        tour_np = tour.cpu().numpy()
+    else:
+        tour_np = np.array(tour)
+    
+    # Ensure tour is complete loop
+    if tour_np[0] != tour_np[-1] and len(tour_np) == len(coords_np):
+        tour_np = np.concatenate([tour_np, [tour_np[0]]])
+    
+    dist = 0.0
+    for i in range(len(tour_np) - 1):
+        u, v = tour_np[i], tour_np[i+1]
+        diff = coords_np[u] - coords_np[v]
+        dist += np.sqrt(np.sum(diff**2))
+    return dist
+
+
+def load_tsp_txt_dataset(path):
+    """
+    Load TSP dataset from text file. Supports MCTS format and TSPlib format.
+    Returns a list of (coords, cost, tour) tuples.
+    coords: torch.Tensor (N, 2)
+    cost: float
+    tour: list of int (0-based indices)
+    """
+    data_list = []
+    print(f"Parsing TSP text data from {path}...")
+    
+    with open(path, 'r') as f:
+        lines = f.readlines()
+    
+    for line_idx, line in enumerate(lines):
+        line = line.strip()
+        if not line: continue
+        
+        try:
+            # Check format type
+            if "output" in line:
+                # MCTS Format: float... output int...
+                parts = line.split(" ")
+                output_idx = parts.index("output")
+                
+                # Parse Coords
+                coords_flat = [float(x) for x in parts[:output_idx]]
+                num_nodes = len(coords_flat) // 2
+                coords = torch.tensor(coords_flat).view(num_nodes, 2)
+                
+                # Parse Tour
+                # Tour indices are 1-based in file, convert to 0-based.
+                # Sometimes line ends with potential empty strings if split by space naively, but parts usually cleans up ok?
+                # Actually earlier log showed: ... output 1 949 709 ... 
+                # Let's filter empty strings just in case
+                tour_parts = [x for x in parts[output_idx+1:] if x]
+                tour = [int(x) - 1 for x in tour_parts]
+                
+                # Cost
+                cost = calc_tour_length(coords, tour)
+                
+                data_list.append((coords, cost, tour))
+                
+            elif line.startswith("['"):
+                # TSPlib Format: ['name', 'cost', flattened_coords...]
+                # We can use ast.literal_eval or string manipulation. 
+                # Given the format is simple string repr of list, manual parsing might be faster/safer if standard.
+                # implementation in sil_test.py used string replace. Let's do similar for robustness.
+                
+                # Clean up list syntax
+                content = line.replace('[', '').replace(']', '').replace("'", "")
+                parts = content.split(',')
+                parts = [p.strip() for p in parts]
+                
+                # name = parts[0]
+                cost = float(parts[1])
+                coords_flat = [float(x) for x in parts[2:]]
+                
+                num_nodes = len(coords_flat) // 2
+                coords = torch.tensor(coords_flat).view(num_nodes, 2)
+                
+                # Tour is not explicitly in this line, usually.
+                # If we need tour verification, we can't do it comfortably without generating it.
+                # But we have the optimal cost provided.
+                tour = None 
+                
+                data_list.append((coords, cost, tour))
+                
+            else:
+                # Unknown format or header
+                # Try simple coords only if lines are just numbers? 
+                # For now skip.
+                continue
+                
+        except Exception as e:
+            print(f"Error parsing line {line_idx+1}: {e}")
+            continue
+            
+    print(f"Loaded {len(data_list)} instances.")
+    return data_list
+
+
+def load_cvrp_txt_dataset(path):
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Dataset file not found: {path}")
+
+    print(f"Loading CVRP txt dataset from {path}")
+    with open(path, 'r') as f:
+        lines = f.readlines()
+
+    data_list = []
+    
+    for line_idx, line in enumerate(lines):
+        line = line.strip()
+        if not line: continue
+        
+        try:
+            # Check for Format 2 (Python list style) first
+            if line.startswith("['") or line.startswith('["'):
+                # Format 2: ['name', ..., 'depot', ..., 'customer', ..., 'demand', ..., 'capacity', ..., 'cost', ..., 'end']
+                content = line.replace('[', '').replace(']', '').replace("'", "").replace('"', "")
+                parts = [p.strip() for p in content.split(',')]
+                
+                try:
+                    depot_idx = parts.index('depot')
+                    cust_idx = parts.index('customer')
+                    cap_idx = parts.index('capacity')
+                    if 'cost' in parts:
+                        cost_idx = parts.index('cost')
+                    else:
+                        cost_idx = -1
+                    if 'demand' in parts:
+                        dem_idx = parts.index('demand')
+                    else:
+                        dem_idx = -1
+                except ValueError:
+                    continue 
+                
+                # Depot
+                depot_coords = [float(parts[depot_idx+1]), float(parts[depot_idx+2])]
+                
+                # Customer Coords
+                keywords = [depot_idx, cust_idx, cap_idx, cost_idx, dem_idx]
+                keywords = [k for k in keywords if k > cust_idx]
+                cust_end_idx = min(keywords) if keywords else len(parts)
+                
+                cust_coords_flat = [float(x) for x in parts[cust_idx+1 : cust_end_idx]]
+                num_cust = len(cust_coords_flat) // 2
+                
+                # Combine depot + customers
+                all_coords_flat = depot_coords + cust_coords_flat
+                coords = torch.tensor(all_coords_flat).view(num_cust+1, 2)
+                
+                # Demand
+                if dem_idx != -1:
+                   keywords = [depot_idx, cust_idx, cap_idx, cost_idx, dem_idx]
+                   keywords = [k for k in keywords if k > dem_idx]
+                   dem_end_idx = min(keywords) if keywords else len(parts)
+                   dem_raw = [float(x) for x in parts[dem_idx+1 : dem_end_idx]]
+                   demand = torch.tensor(dem_raw)
+                else:
+                   demand = None
+                
+                # Capacity
+                capacity = float(parts[cap_idx+1])
+                
+                # Cost
+                cost = float(parts[cost_idx+1]) if cost_idx != -1 else 0.0
+                
+                tour = None # Format 2 usually doesn't have tour
+                
+                data_list.append((coords, demand, capacity, cost, tour))
+
+            # Format 1 (Comma separated with keywords)
+            elif "depot" in line and "customer" in line:
+                parts = [p.strip() for p in line.split(',')]
+                
+                try:
+                    depot_idx = parts.index('depot')
+                    cust_idx = parts.index('customer')
+                    cap_idx = parts.index('capacity')
+                except ValueError:
+                    continue
+
+                dem_idx = parts.index('demand') if 'demand' in parts else -1
+                cost_idx = parts.index('cost') if 'cost' in parts else -1
+                tour_idx = parts.index('node_flag') if 'node_flag' in parts else -1
+                
+                # Depot
+                depot_coords = [float(parts[depot_idx+1]), float(parts[depot_idx+2])]
+                
+                # Customer Coords
+                keywords = [depot_idx, cust_idx, cap_idx, dem_idx, cost_idx, tour_idx]
+                keywords = [k for k in keywords if k > cust_idx]
+                cust_end_idx = min(keywords) if keywords else len(parts)
+                
+                cust_coords_flat = [float(x) for x in parts[cust_idx+1 : cust_end_idx]]
+                num_cust = len(cust_coords_flat) // 2
+                
+                all_coords_flat = depot_coords + cust_coords_flat
+                coords = torch.tensor(all_coords_flat).view(num_cust+1, 2)
+                
+                # Capacity
+                capacity = float(parts[cap_idx+1])
+                
+                # Demand
+                if dem_idx != -1:
+                    keywords = [depot_idx, cust_idx, cap_idx, dem_idx, cost_idx, tour_idx]
+                    keywords = [k for k in keywords if k > dem_idx]
+                    dem_end_idx = min(keywords) if keywords else len(parts)
+                    dem_raw = [float(x) for x in parts[dem_idx+1 : dem_end_idx]]
+                    demand = torch.tensor(dem_raw)
+                else:
+                    demand = None
+                
+                # Cost
+                cost = float(parts[cost_idx+1]) if cost_idx != -1 else 0.0
+                
+                # Tour / node_flag
+                tour = None
+                if tour_idx != -1:
+                     keywords = [depot_idx, cust_idx, cap_idx, dem_idx, cost_idx, tour_idx]
+                     keywords = [k for k in keywords if k > tour_idx]
+                     tour_end = min(keywords) if keywords else len(parts)
+                     tour_parts = parts[tour_idx+1 : tour_end]
+                     if tour_parts:
+                        try:
+                            tour = [int(float(x)) for x in tour_parts]
+                        except ValueError:
+                             pass
+                
+                data_list.append((coords, demand, capacity, cost, tour))
+
+        except Exception as e:
+            print(f"Error parsing CVRP line {line_idx+1}: {e}")
+            continue
+
+    print(f"Loaded {len(data_list)} CVRP instances.")
+    return data_list
 
 
 def save_val_dataset(dataset, n, problem='tsp'):

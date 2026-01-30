@@ -5,3 +5,9 @@ wandb
 uv.lock
 tuning_results
 visualizations
+test_data
+paper.tex
+data_old
+pretrained_old
+search_results
+pretrained

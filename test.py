@@ -11,6 +11,7 @@ from pathlib import Path
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import json
+import math
 
 # Unified imports
 import net
@@ -61,7 +62,7 @@ def verify_solution_cvrp(coords, demand, capacity, cost, route0):
 
 
 
-def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=True):
+def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=True, inject_step=None):
     if model is not None:
         model.eval()
 
@@ -117,6 +118,7 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
     avg_last = None
     priors, pher_before = [], []
     metrics_log = {k: [] for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match", "survival"]}
+    metrics_log["snapshots"] = []
     
     with torch.no_grad():
         for t in range(args.H):
@@ -127,17 +129,23 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                 pher_before.append(aco.pheromone_sparse.detach().cpu().clone())
 
             if model is not None and not use_heuristic_only:
-                if problem == 'tsp':
-                    pyg_data = build_fn(aco, coords, args.device, dynamic=dynamic)
-                else:
-                    pyg_data = build_fn(aco, coords, demand, args.device, dynamic=dynamic)
-                    
-                heu_vec = model(pyg_data).view(-1)
-                prior_mat = heu_vec.view(aco.n, aco.k)
-                if problem == 'cvrp': prior_mat += EPS
+                # If inject_step is set, only use model if t >= inject_step
+                use_model = True
+                if inject_step is not None and t < inject_step:
+                    use_model = False
                 
-                if do_metrics:
-                    priors.append(prior_mat.detach().cpu().clone())
+                if use_model:
+                    if problem == 'tsp':
+                        pyg_data = build_fn(aco, coords, args.device, dynamic=dynamic)
+                    else:
+                        pyg_data = build_fn(aco, coords, demand, args.device, dynamic=dynamic)
+                        
+                    heu_vec = model(pyg_data).view(-1)
+                    prior_mat = heu_vec.view(aco.n, aco.k)
+                    # if problem == 'cvrp': prior_mat += EPS
+                    
+                    if do_metrics:
+                        priors.append(prior_mat.detach().cpu().clone())
 
             for mini_t in range(args.mini_H):
                 # Annealing
@@ -153,14 +161,16 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                 # Sample
                 return_decoded = getattr(args, 'verify', False) and (problem == 'cvrp')
                 
+                prior_arg = current_prior.cpu().numpy() if (current_prior is not None and torch.is_tensor(current_prior)) else current_prior
+
                 if problem == 'tsp':
-                    costs_t, flats, _, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=current_prior)
+                    costs_t, flats, _, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg)
                 else:
-                    costs_t, perms, decoded, _, traces, _, survival = aco.sample(require_prob=do_metrics, prior=current_prior, return_decoded=return_decoded)
+                    costs_t, perms, decoded, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg, return_decoded=return_decoded)
                     flats = perms
 
                 if do_metrics:
-                    metrics_log["survival"].append(survival.mean())
+                    metrics_log["survival"].append(survival.mean().item())
 
                 if return_decoded and problem == 'cvrp':
                      best_idx_t = int(costs_t.argmin().item())
@@ -201,6 +211,23 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                     metrics_log["row_match"].append(row_top1_match_rate(tau, pr))
                 else:
                     for k in ["corr", "ov", "row_match"]: metrics_log[k].append(0.0)
+            
+            # Capture snapshots at H/2
+            if collect_metrics and t == (args.H // 2):
+                 # Pheromone
+                 pher = aco.pheromone_sparse.detach().cpu()
+                 
+                 # Neural Prior (Model Output)
+                 neural_prior = None
+                 if 'prior_mat' in locals() and prior_mat is not None:
+                      neural_prior = prior_mat.detach().cpu()
+
+                 metrics_log["snapshots"].append({
+                     "t": t,
+                     "pheromone": pher,
+                     "neural_prior": neural_prior
+                 })
+
 
     timings = None
     if hasattr(aco, 'get_timings') and args.timed:
@@ -225,8 +252,8 @@ def main():
     parser.add_argument("--no_local_search", action="store_true")
     parser.add_argument("--no_smooth_mmas", action="store_true")
     parser.add_argument("--no_extend_ls", action="store_true")
-    parser.add_argument("--rho", type=float, default=0.5)
-    parser.add_argument("--min_new_edges", type=int, default=12)
+    parser.add_argument("--rho", type=float, default=0.1)
+    parser.add_argument("--min_new_edges", type=int, default=8)
     parser.add_argument("--no_normalized_heuristic", action="store_true")
     parser.add_argument("--no_logit_net", action="store_true")
     parser.add_argument("--no_dynamic_feats", action="store_true")
@@ -246,6 +273,9 @@ def main():
     parser.add_argument("--L", type=int, default=0)
     parser.add_argument("--threads", type=int, default=None)
 
+    parser.add_argument("--test_mix", action="store_true")
+    parser.add_argument("--inject_ratio", type=float, default=0.5)
+
     args = parser.parse_args()
 
     # Args setup
@@ -253,15 +283,39 @@ def main():
     if args.checkpoint != "none":
         print(f"Loading {args.checkpoint}...")
         ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
+        print("Checkpoint Metadata:")
+        for k, v in ckpt.items():
+            if k not in ["model_state_dict", "optimizer_state_dict", "config"]:
+                 print(f"  {k}: {v}")
+        if "config" in ckpt:
+             print(f"  config: {ckpt['config']}")
         config = ckpt.get("config", {})
         
-        if args.problem is None:
-            args.problem = config.get("problem", None)
-        if args.n_node is None:
-            args.n_node = config.get("n_node", None)
-
+        # Override args from config if not present in sys.argv
+        # Checkpoint/Device/Data args should NOT be overwritten usually
+        ignore_args = {
+            "checkpoint", "device", "dataset", "visualize", "visualize_output", 
+            "timed", "verify", "baseline", "baseline_runs", "baseline_time_limit", 
+            "threads", "seed", "save_dir", "wandb_project", "wandb_entity", "no_wandb", "test_mix"
+        }
+        
+        print("Restoring config from checkpoint (unless overridden):")
+        for k, v in config.items():
+            if k in ignore_args: continue
+            if not hasattr(args, k): continue
+            
+            # Simple check: if flag is in sys.argv, user overrode it
+            flag_underscore = "--" + k
+            flag_hyphen = "--" + k.replace("_", "-")
+            
+            if (flag_underscore not in sys.argv) and (flag_hyphen not in sys.argv):
+                 current_val = getattr(args, k)
+                 if current_val != v:
+                     print(f"  Override {k}: {current_val} -> {v}")
+                     setattr(args, k, v)
+        
     if args.problem is None:
-         raise ValueError("Problem must be specified.")
+         raise ValueError("Problem must be specified (in args or checkpoint).")
          
     if args.n_node is None:
          args.n_node = 100
@@ -293,12 +347,17 @@ def main():
     # Dataset
     if args.dataset:
         print(f"Loading {args.dataset}...")
-        data = torch.load(args.dataset, map_location="cpu", weights_only=False)
-        if isinstance(data, dict):
-            if "coords" in data: val_list = data["coords"]
-            else: val_list = data
+        if args.dataset.endswith(".txt") and args.problem == 'tsp':
+             val_list = utils.load_tsp_txt_dataset(args.dataset)
+        elif args.dataset.endswith(".txt") and args.problem == 'cvrp':
+             val_list = utils.load_cvrp_txt_dataset(args.dataset)
         else:
-            val_list = data
+            data = torch.load(args.dataset, map_location="cpu", weights_only=False)
+            if isinstance(data, dict):
+                if "coords" in data: val_list = data["coords"]
+                else: val_list = data
+            else:
+                val_list = data
     else:
         print("Loading validation dataset...")
         val_list = utils.load_val_dataset(args.n_node, problem=args.problem, device='cpu')
@@ -319,18 +378,64 @@ def main():
 
     # Baseline
     baseline_values = None
-    if args.baseline != 'none':
+    
+    # Check if dataset has embedded baseline costs (e.g. from file)
+    if isinstance(val_list, list) and len(val_list) > 0:
+        if args.problem == 'tsp' and isinstance(val_list[0], tuple) and len(val_list[0]) >= 2:
+            try:
+                costs = [x[1] for x in val_list]
+                # Allow python float/int and numpy scalars. Check strictly positive.
+                if all((isinstance(c, (int, float)) or np.issubdtype(type(c), np.number)) and c > 1e-6 for c in costs):
+                    print("Using baseline costs from dataset.")
+                    baseline_values = np.array(costs)
+            except Exception: pass
+            
+        # CVRP Tuple: (coords, demand, capacity, cost, tour)
+        elif args.problem == 'cvrp' and isinstance(val_list[0], tuple) and len(val_list[0]) == 5:
+             try:
+                 costs = [x[3] for x in val_list]
+                 if all((isinstance(c, (int, float)) or np.issubdtype(type(c), np.number)) and c > 1e-6 for c in costs):
+                     print("Using baseline costs from dataset.")
+                     baseline_values = np.array(costs)
+             except Exception: pass
+
+    if args.baseline != 'none' and baseline_values is None:
         print("Computing baseline...")
         # Use TensorDataset wrapper for CVRP get_baseline compatibility
+        if args.problem == 'cvrp' and isinstance(val_list, list) and len(val_list) > 0 and not isinstance(val_list[0], tuple):
+             # Only if not tuples (i.e. if already tensors)
+             pass
+        
+        # If tuple dataset (text), we need to extract coords/demands for baseline?
+        # get_baseline for CVRP expects dataset wrapper.
+        # But if we have optimal cost, maybe we don't need baseline?
+        # User prompt didn't strictly say so, but usually yes.
+        # Let's handle generic case.
+        
         if args.problem == 'cvrp' and isinstance(val_list, list) and not hasattr(val_list, 'tensors'):
-            # Convert list of tuples to TensorDataset
-            cs = torch.stack([x[0] for x in val_list])
-            ds = torch.stack([x[1] for x in val_list])
-            caps = torch.stack([torch.tensor(x[2]) for x in val_list])
-            ds_wrapper = torch.utils.data.TensorDataset(cs, ds, caps)
-            baseline_values = get_baseline(ds_wrapper, problem='cvrp', n_node=args.n_node, time_limit=args.baseline_time_limit)
+            if len(val_list)>0 and isinstance(val_list[0], tuple) and len(val_list[0]) == 5:
+                 # Text dataset tuple: (coords, demand, capacity, cost, tour)
+                 cs = torch.stack([x[0] for x in val_list])
+                 ds = torch.stack([x[1] for x in val_list])
+                 caps = torch.stack([torch.tensor(x[2]) for x in val_list]) # Capacity is float
+                 # opt_costs = [x[3] for x in val_list]
+                 ds_wrapper = torch.utils.data.TensorDataset(cs, ds, caps)
+                 baseline_values = get_baseline(ds_wrapper, problem='cvrp', n_node=args.n_node, time_limit=args.baseline_time_limit)
+            elif len(val_list)>0 and isinstance(val_list[0], tuple) and len(val_list[0]) == 3:
+                 # Generated: (c, d, cap)
+                 cs = torch.stack([x[0] for x in val_list])
+                 ds = torch.stack([x[1] for x in val_list])
+                 caps = torch.stack([torch.tensor(x[2]) for x in val_list])
+                 ds_wrapper = torch.utils.data.TensorDataset(cs, ds, caps)
+                 baseline_values = get_baseline(ds_wrapper, problem='cvrp', n_node=args.n_node, time_limit=args.baseline_time_limit)
         else:
-            baseline_values = get_baseline(val_list, problem=args.problem, n_node=args.n_node, runs=args.baseline_runs, time_limit=args.baseline_time_limit)
+            # Handle potential tuple items in TSP (coords, cost, tour) for baselines
+            # Just extract coords for baseline computation if needed
+            if args.problem == 'tsp' and isinstance(val_list, list) and len(val_list) > 0 and isinstance(val_list[0], tuple):
+                val_list_coords = [x[0] if isinstance(x, tuple) else x for x in val_list]
+                baseline_values = get_baseline(val_list_coords, problem=args.problem, n_node=args.n_node, runs=args.baseline_runs, time_limit=args.baseline_time_limit)
+            else:
+                baseline_values = get_baseline(val_list, problem=args.problem, n_node=args.n_node, runs=args.baseline_runs, time_limit=args.baseline_time_limit)
         
         if baseline_values is not None:
              baseline_values = baseline_values.cpu().numpy()
@@ -352,9 +457,10 @@ def main():
 
     # Eval
     results = {
-        "base_cost": [], "model_cost": [],
-        "base_time": [], "model_time": [],
-        "base_metrics": {}, "model_metrics": {} 
+        "base_cost": [], "model_cost": [], "mix_cost": [],
+        "base_time": [], "model_time": [], "mix_time": [],
+        "base_metrics": {}, "model_metrics": {}, "mix_metrics": {},
+        "opt_cost": [], "base_gap": [], "model_gap": [], "mix_gap": []
     }
     
     iterable = val_list
@@ -363,9 +469,31 @@ def main():
     
     print(f"Evaluating {len(val_list)} instances...")
     
+    sample_snapshots = {}
+
     for i, item in enumerate(tqdm(iterable)):
+        opt_cost = None
+        
+        # Unpack TSP tuple if present
+        if args.problem == 'tsp' and isinstance(item, tuple):
+             # (coords, cost, tour)
+             coords = item[0]
+             if len(item) > 1: opt_cost = item[1]
+             item = coords
+        
         if args.problem == 'cvrp':
             if isinstance(item, list) and len(item)==1: item = item[0] # DataLoader batch=1
+            
+            # Unpack CVRP Text Tuple (coords, demand, capacity, cost, tour)
+            if isinstance(item, tuple) and len(item) == 5:
+                # (coords, demand, capacity, cost, tour)
+                coords, demand, capacity, cost, tour = item
+                if cost is not None and isinstance(cost, (float, int)) and cost > 0:
+                    opt_cost = cost
+                
+                # Reduce to (coords, demand, capacity) for solver
+                item = (coords, demand, capacity)
+
             # item is [coords, demand, cap] tensors if from DataLoader
             # or (coords, demand, cap) tuple if from list
             if isinstance(item, (list, tuple)):
@@ -392,6 +520,11 @@ def main():
         results["base_cost"].append(base_best)
         results["base_time"].append(tb1 - tb0)
         
+        if opt_cost is not None:
+             gap = (base_best - opt_cost) / opt_cost
+             results["base_gap"].append(gap)
+             results["opt_cost"].append(opt_cost)
+
         # Model
         if model:
              tm0 = time.time()
@@ -401,38 +534,111 @@ def main():
              else: _, model_best, _ = mod_ret
              results["model_cost"].append(model_best)
              results["model_time"].append(tm1 - tm0)
+             
+             if opt_cost is not None:
+                 gap = (model_best - opt_cost) / opt_cost
+                 results["model_gap"].append(gap)
+             
+             if args.test_mix:
+                 tmi0 = time.time()
+                 inject_step = int(args.H * args.inject_ratio)
+                 mix_ret = infer_instance(args.problem, MFACO, build_fn, model, item, args.k_sparse, args.n_ants, not args.no_dynamic_feats, args, use_heuristic_only=False, collect_metrics=args.visualize, metrics_every_step=args.visualize, inject_step=inject_step)
+                 tmi1 = time.time()
+                 if len(mix_ret) == 4: _, mix_best, _, mix_m = mix_ret
+                 else: _, mix_best, _ = mix_ret
+                 results["mix_cost"].append(mix_best)
+                 results["mix_time"].append(tmi1 - tmi0)
+                 
+                 if opt_cost is not None:
+                     gap = (mix_best - opt_cost) / opt_cost
+                     results["mix_gap"].append(gap)
         
         if args.visualize:
             if i == 0:
-                 results["base_metrics"] = {k: np.zeros(args.H) for k in (base_m.keys() if base_m else [])}
-                 if model and model_m: results["model_metrics"] = {k: np.zeros(args.H) for k in model_m.keys()}
+                 # Initialize with length from first instance
+                 if base_m: 
+                     results["base_metrics"] = {k: np.zeros(len(v)) for k,v in base_m.items()}
+                 
+                 if model and model_m: 
+                     results["model_metrics"] = {k: np.zeros(len(v)) for k,v in model_m.items()}
+                 
+                 if model and args.test_mix and mix_m: 
+                     results["mix_metrics"] = {k: np.zeros(len(v)) for k,v in mix_m.items()}
             
             if base_m:
                  for k,v in base_m.items():
-                    if k in results["base_metrics"] and len(v)==args.H: results["base_metrics"][k] += np.array(v)
+                    if k == "snapshots": continue
+                    if k in results["base_metrics"]:
+                         if len(v) == len(results["base_metrics"][k]):
+                             results["base_metrics"][k] += np.array(v)
+                         else:
+                             # Length mismatch fallback (e.g. truncated run?)
+                             L = min(len(v), len(results["base_metrics"][k]))
+                             results["base_metrics"][k][:L] += np.array(v[:L])
+                             
             if model and model_m:
                  for k,v in model_m.items():
-                    if k in results["model_metrics"] and len(v)==args.H: results["model_metrics"][k] += np.array(v)
+                    if k == "snapshots": continue
+                    if k in results["model_metrics"]:
+                        if len(v) == len(results["model_metrics"][k]):
+                            results["model_metrics"][k] += np.array(v)
+                        else:
+                             L = min(len(v), len(results["model_metrics"][k]))
+                             results["model_metrics"][k][:L] += np.array(v[:L])
 
-    # Summary
-    base_costs = np.array(results["base_cost"])
-    avg_base = base_costs.mean()
-    print(f"Base Avg: {avg_base}")
-    print(f"Base Total Time: {np.sum(results['base_time']):.2f}s")
+            if model and args.test_mix and mix_m:
+                 for k,v in mix_m.items():
+                    if k == "snapshots": continue
+                    if k in results["mix_metrics"]:
+                        if len(v) == len(results["mix_metrics"][k]):
+                            results["mix_metrics"][k] += np.array(v)
+                        else:
+                             L = min(len(v), len(results["mix_metrics"][k]))
+                             results["mix_metrics"][k][:L] += np.array(v[:L])
+
+            if args.visualize and i == 0:
+                 # Capture snapshots from i=0
+                 if base_m and "snapshots" in base_m: sample_snapshots["base"] = base_m["snapshots"]
+                 if model and model_m and "snapshots" in model_m: sample_snapshots["model"] = model_m["snapshots"]
+                 if model and args.test_mix and mix_m and "snapshots" in mix_m: sample_snapshots["mix"] = mix_m["snapshots"]
+
+    print("\n--- Results ---")
     
-    if baseline_values is not None:
-        gap = (base_costs - baseline_values) / baseline_values * 100
-        print(f"Base Gap: {gap.mean():.4f}%")
+    # Base
+    base_cost_mean = np.mean(results["base_cost"])
+    base_time_mean = np.mean(results["base_time"])
+    print(f"Base Cost: {base_cost_mean:.4f}, Time: {base_time_mean:.4f}s")
+    if results["base_gap"]:
+        print(f"Base Gap: {np.mean(results['base_gap']) * 100:.4f}%")
         
+    # Model
     if model:
-        mod_costs = np.array(results["model_cost"])
-        avg_mod = mod_costs.mean()
-        print(f"Model Avg: {avg_mod}")
-        print(f"Model Total Time: {np.sum(results['model_time']):.2f}s")
-        if baseline_values is not None:
-             gap_m = (mod_costs - baseline_values) / baseline_values * 100
-             print(f"Model Gap: {gap_m.mean():.4f}%")
-    
+        model_cost_mean = np.mean(results["model_cost"])
+        model_time_mean = np.mean(results["model_time"])
+        print(f"Model Cost: {model_cost_mean:.4f}, Time: {model_time_mean:.4f}s")
+        if results["model_gap"]:
+            print(f"Model Gap: {np.mean(results['model_gap']) * 100:.4f}%")
+            
+        if args.test_mix:
+             mix_cost_mean = np.mean(results["mix_cost"])
+             mix_time_mean = np.mean(results["mix_time"])
+             print(f"Mix Cost: {mix_cost_mean:.4f}, Time: {mix_time_mean:.4f}s")
+             if results["mix_gap"]:
+                print(f"Mix Gap: {np.mean(results['mix_gap']) * 100:.4f}%")
+
+    if baseline_values is not None:
+         # Gap to baseline
+         base_gap_bl = (np.mean(results["base_cost"]) - baseline_values.mean()) / baseline_values.mean()
+         print(f"Base Gap to Baseline: {base_gap_bl * 100:.4f}%")
+         
+         if model:
+             mod_gap_bl = (np.mean(results["model_cost"]) - baseline_values.mean()) / baseline_values.mean()
+             print(f"Model Gap to Baseline: {mod_gap_bl * 100:.4f}%")
+             
+             if args.test_mix:
+                  mix_gap_bl = (np.mean(results["mix_cost"]) - baseline_values.mean()) / baseline_values.mean()
+                  print(f"Mix Gap to Baseline: {mix_gap_bl * 100:.4f}%")
+
     if args.visualize:
         out = Path(args.visualize_output)
         out.mkdir(parents=True, exist_ok=True)
@@ -446,6 +652,9 @@ def main():
              if model and results["model_metrics"]:
                  mod_avg = {k: v/N for k,v in results["model_metrics"].items()}
                  plt.plot(mod_avg["cost"], label="Model")
+             if model and args.test_mix and results["mix_metrics"]:
+                 mix_avg = {k: v/N for k,v in results["mix_metrics"].items()}
+                 plt.plot(mix_avg["cost"], label="Mix")
              plt.legend()
              plt.savefig(out / "cost.pdf")
              plt.close()
@@ -457,6 +666,57 @@ def main():
                  plt.legend()
                  plt.savefig(out / "prior_changes.pdf")
                  plt.close()
+
+        if sample_snapshots:
+            print("Plotting matrix snapshots...")
+            for mode, snaps in sample_snapshots.items():
+                for snap in snaps:
+                    t = snap["t"]
+                    pher = snap.get("pheromone")
+                    neural_prior = snap.get("neural_prior")
+                    
+                    # Columns: Pheromone, [Neural Prior]
+                    ncols = 1
+                    if neural_prior is not None: ncols += 1
+                    
+                    fig, axes = plt.subplots(1, ncols, figsize=(6 * ncols, 6))
+                    if ncols == 1: axes = [axes]
+                    
+                    MAX_ROWS = 100
+                    
+                    # Helper for safe plotting
+                    def safe_plot_heatmap(ax, tensor, title, cmap):
+                        # Truncate to MAX_ROWS
+                        if tensor.shape[0] > MAX_ROWS:
+                            tensor = tensor[:MAX_ROWS]
+                            title += f" (first {MAX_ROWS} rows)"
+                            
+                        arr = tensor.numpy()
+                        # Handle NaNs/Infs
+                        if not np.isfinite(arr).all():
+                            arr = np.nan_to_num(arr, nan=0.0, posinf=np.nanmax(arr[np.isfinite(arr)]), neginf=np.nanmin(arr[np.isfinite(arr)]))
+                        
+                        # Handle constant values to avoid norm errors
+                        vmin, vmax = arr.min(), arr.max()
+                        if math.isclose(vmin, vmax):
+                            vmax = vmin + 1e-6
+
+                        im = ax.imshow(arr, aspect='auto', cmap=cmap, interpolation='nearest', vmin=vmin, vmax=vmax)
+                        ax.set_title(title)
+                        ax.set_xlabel("Neighbor Rank")
+                        ax.set_ylabel("Node Index")
+                        fig.colorbar(im, ax=ax)
+
+                    # 1. Pheromone
+                    safe_plot_heatmap(axes[0], pher, f"{mode} t={t}: Pheromone (tau)", 'viridis')
+                    
+                    # 2. Neural Prior
+                    if neural_prior is not None:
+                        safe_plot_heatmap(axes[1], neural_prior, f"{mode} t={t}: Neural Prior (p)", 'inferno')
+                    
+                    plt.tight_layout()
+                    plt.savefig(out / f"matrix_{mode}_t{t}.pdf", dpi=300)
+                    plt.close()
 
 if __name__ == "__main__":
     main()

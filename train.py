@@ -580,11 +580,22 @@ def validation(net, val_dataset, args, baseline_values=None):
     
     for item in tqdm(iterable, desc="Validating", leave=False):
         if args.problem == 'cvrp':
+             # If item is tuple (coords, demand, capacity, cost, tour) or just (c, d, cap)
+            if isinstance(item, tuple) or isinstance(item, list):
+                # Standard items are (coords, demand, capacity, ...)
+                # Unpack first 3
+                item = [item[0], item[1], item[2]]
+                
             item = [x[0] if torch.is_tensor(x) else x for x in item]
             if torch.is_tensor(item[0]): item[0] = item[0].numpy()
             if torch.is_tensor(item[1]): item[1] = item[1].numpy()
             if torch.is_tensor(item[2]): item[2] = float(item[2])
             
+        elif args.problem == 'tsp':
+            # If item is tuple (coords, cost, tour), extract coords
+            if isinstance(item, tuple) or isinstance(item, list):
+                item = item[0]
+
         dynamic = not args.no_dynamic_feats
         res = infer_instance(net, item, args.k_sparse, args.n_ants, dynamic, args, collect_metrics=True)
         
@@ -619,7 +630,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--problem", type=str, required=True, choices=['tsp', 'cvrp'])
     parser.add_argument("--n_node", type=int, default=1000)
-    parser.add_argument("--k_sparse", type=int, default=16)
+    parser.add_argument("--k_sparse", type=int, default=32)
     parser.add_argument("--algo", choices=["reinforce", "ppo"], default="ppo")
     
     # PPO
@@ -632,16 +643,16 @@ def main():
     # Training
     parser.add_argument("--n_ants", type=int, default=100)
     parser.add_argument("--steps_per_epoch", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=None)
-    parser.add_argument("--ppo_lr", type=float, default=5e-6)
+    parser.add_argument("--ppo_lr", type=float, default=1e-6)
     parser.add_argument("--reinforce_lr", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--device", type=str, default="cuda:0")
     
     # ACO
     parser.add_argument("--rho", type=float, default=0.1) 
-    parser.add_argument("--min_new_edges", type=int, default=8)
+    parser.add_argument("--min_new_edges", type=int, default=12)
     parser.add_argument("--H", type=int, default=10)
     parser.add_argument("--mini_H", type=int, default=100)
     parser.add_argument("--disable_heuristic", action="store_true")
@@ -666,6 +677,7 @@ def main():
     parser.add_argument("--baseline", type=str, default='default') 
     parser.add_argument("--baseline_runs", type=int, default=1)
     parser.add_argument("--baseline_time_limit", type=float, default=300.0)
+    parser.add_argument("--val_dataset", type=str, default=None, help="Path to validation dataset (optional)")
     parser.add_argument("--anneal_prior", action="store_true")
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--min_gamma", type=float, default=0.2)
@@ -722,8 +734,46 @@ def main():
     Path(args.save_dir).mkdir(parents=True, exist_ok=True)
     
     # Load Validation Data & Baselines
-    val_dataset = utils.load_val_dataset(args.n_node, problem=args.problem, device='cpu')
+    # Load Validation Data & Baselines
+    val_dataset = None
+    
+    if args.val_dataset:
+        print(f"Loading validation dataset from {args.val_dataset}...")
+        if args.val_dataset.endswith(".txt") and args.problem == 'tsp':
+             val_dataset = utils.load_tsp_txt_dataset(args.val_dataset)
+        elif args.val_dataset.endswith(".txt") and args.problem == 'cvrp':
+             val_dataset = utils.load_cvrp_txt_dataset(args.val_dataset)
+        else:
+            data = torch.load(args.val_dataset, map_location="cpu", weights_only=False)
+            if isinstance(data, dict):
+                if "coords" in data: val_dataset = data["coords"]
+                else: val_dataset = data
+            else:
+                val_dataset = data
+    else:
+        val_dataset = utils.load_val_dataset(args.n_node, problem=args.problem, device='cpu')
+
     baseline_values = None
+    
+    # Check if dataset has embedded baseline costs (e.g. from file)
+    if isinstance(val_dataset, list) and len(val_dataset) > 0:
+        if args.problem == 'tsp' and isinstance(val_dataset[0], tuple) and len(val_dataset[0]) >= 2:
+            try:
+                costs = [x[1] for x in val_dataset]
+                # Allow python float/int and numpy scalars. Check strictly positive.
+                if all((isinstance(c, (int, float)) or np.issubdtype(type(c), np.number)) and c > 1e-6 for c in costs):
+                    print("Using baseline costs from dataset.")
+                    baseline_values = np.array(costs)
+            except Exception: pass
+            
+        # CVRP Tuple: (coords, demand, capacity, cost, tour)
+        elif args.problem == 'cvrp' and isinstance(val_dataset[0], tuple) and len(val_dataset[0]) == 5:
+             try:
+                 costs = [x[3] for x in val_dataset]
+                 if all((isinstance(c, (int, float)) or np.issubdtype(type(c), np.number)) and c > 1e-6 for c in costs):
+                     print("Using baseline costs from dataset.")
+                     baseline_values = np.array(costs)
+             except Exception: pass
     
     if val_dataset is None:
         print("Validation dataset not found. Generating 16 instances on fly...")
@@ -737,9 +787,16 @@ def main():
                  val_dataset.append((c.cpu(), d.cpu(), cap))
         
         # Save it for future reuse
-        utils.save_val_dataset(val_dataset, args.n_node, problem=args.problem)
+        if not args.val_dataset:
+            utils.save_val_dataset(val_dataset, args.n_node, problem=args.problem)
     
-    baseline_values = get_baseline(val_dataset, problem=args.problem, n_node=args.n_node, runs=args.baseline_runs, time_limit=args.baseline_time_limit)
+    if baseline_values is None:
+        # If val_dataset contains tuples (coords, cost, tour) for TSP, we extract coords
+        if args.problem == 'tsp' and isinstance(val_dataset, list) and len(val_dataset) > 0 and isinstance(val_dataset[0], tuple):
+             val_dataset_coords = [x[0] for x in val_dataset]
+             baseline_values = get_baseline(val_dataset_coords, problem=args.problem, n_node=args.n_node, runs=args.baseline_runs, time_limit=args.baseline_time_limit)
+        else:
+             baseline_values = get_baseline(val_dataset, problem=args.problem, n_node=args.n_node, runs=args.baseline_runs, time_limit=args.baseline_time_limit)
 
     global_step = 0
     best_val_cost = float('inf')
