@@ -5,6 +5,7 @@ import os
 import sys
 import time
 import re
+import json
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -41,6 +42,8 @@ CVRP_CONFIG = {
     "min_new_edges": 12,
 }
 
+PROGRESS_FILE = "experiment_progress.json"
+
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -72,6 +75,25 @@ def run_command(cmd: List[str], log_file: Path = None, dry_run: bool = False):
             print(f"[ERROR] Command failed with code {result.returncode}")
             print(result.stderr)
         return result.returncode, result.stdout, cmd_str
+
+def load_progress() -> Dict[str, Any]:
+    """Loads experiment progress from JSON file."""
+    if os.path.exists(PROGRESS_FILE):
+        try:
+            with open(PROGRESS_FILE, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            print(f"[WARNING] Could not decode {PROGRESS_FILE}. Starting fresh.")
+            return {}
+    return {}
+
+def save_progress(key: str, data: Any):
+    """Saves a single experiment result to the progress file."""
+    progress = load_progress()
+    progress[key] = data
+    with open(PROGRESS_FILE, "w") as f:
+        json.dump(progress, f, indent=4)
+    print(f"[PROGRESS] Saved result for '{key}'")
 
 def parse_metrics(output: str):
     """Parses output from test.py to find Cost, Time, Gap."""
@@ -106,7 +128,7 @@ def get_model_path(config: Dict[str, Any], suffix: str = "_best.pt") -> Path:
     save_dir = Path(config.get("save_dir", "experiments_checkpoints")) / config["problem"]
     return save_dir / (name + suffix)
 
-def train_model(config: Dict[str, Any], dry_run: bool = False, force: bool = False):
+def train_model(config: Dict[str, Any], dry_run: bool = False, force: bool = False, wandb_project: str = "lga"):
     """Runs training if checkpoint doesn't exist."""
     model_path = get_model_path(config)
     if model_path.exists() and not force:
@@ -114,6 +136,7 @@ def train_model(config: Dict[str, Any], dry_run: bool = False, force: bool = Fal
         return model_path
 
     cmd = ["python3", "train.py"]
+    cmd.extend(["--wandb_project", wandb_project])
     
     # Flags mapping
     # Boolean flags need action
@@ -169,9 +192,14 @@ def test_model(model_path: Path, config: Dict[str, Any], dry_run: bool = False):
 
 def run_tsp_experiments(sizes=[1000, 5000, 10000], dry_run=False):
     print("\n=== Running TSP Experiments (Table 2) ===")
-    results = {}
+    results = load_progress()
     
     for n in sizes:
+        key = f"tsp_n{n}"
+        if key in results:
+            print(f"[SKIP] {key} already completed: {results[key]}")
+            continue
+
         print(f"\n--- TSP N={n} ---")
         cfg = DEFAULT_CONFIG.copy()
         cfg.update(TSP_CONFIG)
@@ -180,26 +208,37 @@ def run_tsp_experiments(sizes=[1000, 5000, 10000], dry_run=False):
         if n > 1000 and not dry_run:
              print(f"Warning: Training on N={n} might be slow. Consider using N=1000 model for zero-shot if supported.")
         
-        model_path = train_model(cfg, dry_run)
+        model_path = train_model(cfg, dry_run, wandb_project="lga_tsp")
         gap, t_val = test_model(model_path, cfg, dry_run)
-        results[n] = {"gap": gap, "time": t_val}
+        
+        result_data = {"gap": gap, "time": t_val}
+        save_progress(key, result_data)
+        results[key] = result_data # Update local dict mostly for return if needed
         print(f"TSP N={n}: Gap={gap}%, Time={t_val}s")
         
     return results
 
 def run_cvrp_experiments(sizes=[1000, 5000], dry_run=False):
     print("\n=== Running CVRP Experiments (Table 3) ===")
-    results = {}
+    results = load_progress()
     
     for n in sizes:
+        key = f"cvrp_n{n}"
+        if key in results:
+            print(f"[SKIP] {key} already completed: {results[key]}")
+            continue
+
         print(f"\n--- CVRP N={n} ---")
         cfg = DEFAULT_CONFIG.copy()
         cfg.update(CVRP_CONFIG)
         cfg["n_node"] = n
         
-        model_path = train_model(cfg, dry_run)
+        model_path = train_model(cfg, dry_run, wandb_project="lga_cvrp")
         gap, t_val = test_model(model_path, cfg, dry_run)
-        results[n] = {"gap": gap, "time": t_val}
+        
+        result_data = {"gap": gap, "time": t_val}
+        save_progress(key, result_data)
+        results[key] = result_data
         print(f"CVRP N={n}: Gap={gap}%, Time={t_val}s")
         
     return results
@@ -215,17 +254,25 @@ def run_ablation_refresh(dry_run=False):
     # H values to test. Fixed T = H*S = 1000
     h_s_pairs = [(1, 1000), (5, 200), (10, 100), (20, 50), (50, 20)]
     
-    results = {}
+    results = load_progress()
     
     for H, S in h_s_pairs:
+        key = f"ablation_refresh_H{H}_S{S}"
+        if key in results:
+             print(f"[SKIP] {key} already completed: {results[key]}")
+             continue
+
         print(f"\n--- Ablation H={H}, S={S} ---")
         cfg = base_cfg.copy()
         cfg["H"] = H
         cfg["mini_H"] = S
         
-        model_path = train_model(cfg, dry_run)
+        model_path = train_model(cfg, dry_run, wandb_project="lga_ablation_refresh")
         gap, t_val = test_model(model_path, cfg, dry_run)
-        results[H] = {"gap": gap, "time": t_val}
+        
+        result_data = {"gap": gap, "time": t_val}
+        save_progress(key, result_data)
+        results[key] = result_data
         print(f"H={H}: Gap={gap}%, Time={t_val}s")
         
     return results
@@ -241,21 +288,37 @@ def run_ablation_features(dry_run=False):
     # 1. Full (Default)
     # 2. No Dynamic Feats (Static Only) -> --no_dynamic_feats
     
-    results = {}
+    results = load_progress()
     
     # Full
-    print("\n--- Full Features ---")
-    model_path = train_model(base_cfg, dry_run)
-    gap, _ = test_model(model_path, base_cfg, dry_run)
-    results["Full"] = gap
+    key_full = "ablation_features_full"
+    if key_full in results:
+        print(f"[SKIP] {key_full} already completed: {results[key_full]}")
+        results["Full"] = results[key_full]["gap"] # Adapt to previous structure if needed, but saving consistent dict is better.
+    else:
+        print("\n--- Full Features ---")
+        model_path = train_model(base_cfg, dry_run, wandb_project="lga_ablation_features")
+        gap, t_val = test_model(model_path, base_cfg, dry_run) # Capture time too
+        
+        result_data = {"gap": gap, "time": t_val}
+        save_progress(key_full, result_data)
+        results["Full"] = gap # Keep original return structure locally if needed
     
     # Static Only
-    print("\n--- Static Only ---")
-    cfg_static = base_cfg.copy()
-    cfg_static["no_dynamic_feats"] = True
-    model_path = train_model(cfg_static, dry_run)
-    gap, _ = test_model(model_path, cfg_static, dry_run)
-    results["Static"] = gap
+    key_static = "ablation_features_static"
+    if key_static in results:
+        print(f"[SKIP] {key_static} already completed: {results[key_static]}")
+        results["Static"] = results[key_static]["gap"]
+    else:
+        print("\n--- Static Only ---")
+        cfg_static = base_cfg.copy()
+        cfg_static["no_dynamic_feats"] = True
+        model_path = train_model(cfg_static, dry_run, wandb_project="lga_ablation_features")
+        gap, t_val = test_model(model_path, cfg_static, dry_run)
+        
+        result_data = {"gap": gap, "time": t_val}
+        save_progress(key_static, result_data)
+        results["Static"] = gap
     
     return results
 

@@ -191,13 +191,13 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
 # ----------------- Shared/Dataset -----------------
 
 def load_val_dataset(n, problem='tsp', device='cpu'):
-    # Priority 1: Check for text datasets in data/{PROBLEM}/data/test_set/
-    # e.g., tsp100 in test_tsp100_concorde_n10000.txt
-    test_set_dir = DATA_DIR / problem.upper() / "data" / "test_set"
+    # Priority 1: Check for text datasets in data/{PROBLEM}/data/validation_set/
+    # e.g., tsp100 in val_tsp100_concorde(n10000?).txt
+    val_set_dir = DATA_DIR / problem.upper() / "data" / "validation_set"
     
-    if test_set_dir.exists():
+    if val_set_dir.exists():
         # Find file matching pattern
-        candidates = list(test_set_dir.glob("*.txt"))
+        candidates = list(val_set_dir.glob("*.txt"))
         target_file = None
         
         # Simple heuristic: filename contains "{problem}{n}" (e.g. tsp100)
