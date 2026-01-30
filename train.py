@@ -207,36 +207,52 @@ def train_instance_ppo(model, optimizer, instance_data, args):
     prior_prev_outer = None
     priors_history = [] 
     
+    # Warmup
+    warmup_steps = 0
+    if getattr(args, 'train_warmup', False):
+        warmup_steps = int(args.H * getattr(args, 'warmup_ratio', 0.5))
+
     for outer in tqdm(range(args.H), desc="Outer", leave=False):
         t0 = time.time()
         pyg_data = build_fn(aco, *pyg_args, dynamic=not args.no_dynamic_feats)
         
-        with torch.no_grad():
-            prior_old = model(pyg_data).view(-1).view(aco.n, aco.k)
-            t_neural_total += time.time() - t0
-            
-            metrics["prior_mean"].append(prior_old.mean().item())
-            metrics["prior_std"].append(prior_old.std().item())
-            
-            # Track prior drift metrics
-            if prior_prev_outer is not None:
-                metrics["prior_l2_drift"].append(rel_l2_drift(prior_prev_outer, prior_old))
-                metrics["prior_kl"].append(mean_row_kl(prior_prev_outer, prior_old))
-                metrics["prior_turnover"].append(top_turnover(prior_prev_outer, prior_old))
-                metrics["prior_flip"].append(top1_flip_rate(prior_prev_outer, prior_old))
-            
-            # Track prior-eta correlation
-            metrics["prior_eta_corr"].append(safe_corr(prior_old, eta_nk))
-            
-            prior_prev_outer = prior_old.detach().clone()
-            priors_history.append(prior_old.detach().clone())
+        prior_old = None
+        # Only query model if past warmup
+        if outer >= warmup_steps:
+            with torch.no_grad():
+                prior_old = model(pyg_data).view(-1).view(aco.n, aco.k)
+                t_neural_total += time.time() - t0
+                
+                metrics["prior_mean"].append(prior_old.mean().item())
+                metrics["prior_std"].append(prior_old.std().item())
+                
+                # Track prior drift metrics
+                if prior_prev_outer is not None:
+                    metrics["prior_l2_drift"].append(rel_l2_drift(prior_prev_outer, prior_old))
+                    metrics["prior_kl"].append(mean_row_kl(prior_prev_outer, prior_old))
+                    metrics["prior_turnover"].append(top_turnover(prior_prev_outer, prior_old))
+                    metrics["prior_flip"].append(top1_flip_rate(prior_prev_outer, prior_old))
+                
+                # Track prior-eta correlation
+                metrics["prior_eta_corr"].append(safe_corr(prior_old, eta_nk))
+                
+                prior_prev_outer = prior_old.detach().clone()
+                priors_history.append(prior_old.detach().clone())
+        else:
+             # Just to keep metrics consistent in length? Actually users usually expect metrics only for model steps?
+             # Or append 0? Let's skip appending to keep metric lists cleaner, or append 0 if length mismatch issues arise.
+             # agg function at end takes mean.
+             pass
 
         traces_list = []
         costs_list = []
         logp_old_list = []
         ndec_list = []
         tau_list = []
-
+        
+        # ... (rest of sampling loop) ...
+        # Need to ensure current_prior handles None, which my previous change to sampling loop likely didn't cover for *this* function (train_instance_ppo)
+        
         if hasattr(aco, "reset_timings"):
             aco.reset_timings()
 
@@ -244,7 +260,8 @@ def train_instance_ppo(model, optimizer, instance_data, args):
 
         for inner in range(args.mini_H):
             current_prior = prior_old
-            if args.anneal_prior:
+            # Annealing only if we have a model prior
+            if prior_old is not None and args.anneal_prior:
                 if args.mini_H > 1:
                     ratio = inner / (args.mini_H - 1)
                     factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
@@ -252,20 +269,21 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                     factor = args.gamma
                 current_prior = prior_old * factor
 
+            prior_numpy = current_prior.cpu().numpy() if current_prior is not None else None
+
             if args.problem == 'tsp':
                 if args.nls:
                     # New signature with NLS (9 outputs)
                     costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges, survival = aco.sample(
-                        require_prob=True, prior=current_prior
+                        require_prob=True, prior=prior_numpy
                     )
                 else:
                     costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges, survival = aco.sample(
-                        require_prob=True, prior=current_prior
+                        require_prob=True, prior=prior_numpy
                     )
             else: # cvrp
-                # CVRP bindings updated to return 9 items too
                 costs, flats, _, logps, traces, costs_raw, flats_raw, new_edges, survival = aco.sample(
-                    require_prob=True, prior=current_prior
+                    require_prob=True, prior=prior_numpy
                 )
             
             # Record survival
@@ -320,6 +338,10 @@ def train_instance_ppo(model, optimizer, instance_data, args):
              if "time_ls" in timings: t_aco_ls += timings["time_ls"] / 1000.0
              if "time_update" in timings: t_aco_update += timings["time_update"] / 1000.0
 
+        # PPO Update - Skip if warmup
+        if outer < warmup_steps:
+             continue
+
         for _ in range(args.ppo_epochs):
             optimizer.zero_grad(set_to_none=True)
             
@@ -355,6 +377,7 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 ndec_f = ndec_new.to(torch.float32).clamp_min(1.0)
                 logp_new = logp_new / ndec_f
                 
+                # logp_old handles None prior (treated as 0 in log_prob_sparse...)
                 ratio = torch.exp(logp_new - logp_old)
                 
                 log_ratio = logp_new - logp_old
@@ -377,7 +400,7 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                     baseline = costs_t.mean()
                     adv = (baseline - costs_t).detach()
                 
-                if args.adv_norm:
+                if not args.no_adv_norm:
                     adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
                 
                 surr1 = ratio * adv
@@ -497,14 +520,22 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
     timer_ls = 0
     timer_update = 0
     
+    # Warmup logic
+    warmup_steps = 0
+    if getattr(args, 'warmup', False):
+        warmup_steps = int(args.H * getattr(args, 'warmup_ratio', 0.5))
+
     for outer in range(args.H):
         pyg_data = build_fn(aco, *pyg_args, dynamic=dynamic)
         
-        with torch.no_grad():
-            heuristics = net(pyg_data).view(-1).view(aco.n, aco.k)
+        heuristics = None
+        # Only query model if past warmup
+        if outer >= warmup_steps:
+            with torch.no_grad():
+                heuristics = net(pyg_data).view(-1).view(aco.n, aco.k)
         
-        # Track prior metrics
-        if collect_metrics:
+        # Track prior metrics (only if model used)
+        if collect_metrics and heuristics is not None:
             metrics_log['prior_mean'].append(heuristics.mean().item())
             metrics_log['prior_std'].append(heuristics.std().item())
             
@@ -524,18 +555,20 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
         for inner in range(args.mini_H):
             # Annealing
             current_prior = heuristics
-            if args.anneal_prior:
+            if heuristics is not None and args.anneal_prior:
                 if args.mini_H > 1:
                     ratio = inner / (args.mini_H - 1)
                     factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
                 else:
                     factor = args.gamma
                 current_prior = heuristics * factor
+            
+            prior_numpy = current_prior.cpu().numpy() if current_prior is not None else None
 
             if args.problem == 'tsp':
-                costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=current_prior.cpu().numpy(), require_prob=False)
+                costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=prior_numpy, require_prob=False)
             else:
-                costs, flats, _, _, _, new_edges, survival = aco.sample(prior=current_prior.cpu().numpy(), require_prob=False)
+                costs, flats, _, _, _, new_edges, survival = aco.sample(prior=prior_numpy, require_prob=False)
             
             if collect_metrics:
                 metrics_log['new_edges'].append(new_edges.astype(np.float32).mean())
@@ -636,7 +669,7 @@ def main():
     # PPO
     parser.add_argument("--ppo_epochs", type=int, default=4)
     parser.add_argument("--ppo_clip", type=float, default=0.1)
-    parser.add_argument("--adv_norm", action="store_true")
+    parser.add_argument("--no_adv_norm", action="store_true")
     parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--beta", type=float, default=1.0)
     
@@ -678,6 +711,9 @@ def main():
     parser.add_argument("--baseline_runs", type=int, default=1)
     parser.add_argument("--baseline_time_limit", type=float, default=300.0)
     parser.add_argument("--val_dataset", type=str, default=None, help="Path to validation dataset (optional)")
+    parser.add_argument("--warmup", action="store_true", default=True, help="Use warmup (mixed) strategy in validation")
+    parser.add_argument("--train_warmup", action="store_true", help="Use warmup strategy in training (skip model for first H*ratio steps)")
+    parser.add_argument("--warmup_ratio", type=float, default=0.5, help="Warmup ratio H/2")
     parser.add_argument("--anneal_prior", action="store_true")
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--min_gamma", type=float, default=0.2)
@@ -686,7 +722,6 @@ def main():
     parser.add_argument("--threads", type=int, default=None)
     
     args = parser.parse_args()
-    args.adv_norm = True
 
     # Defaults setup
     if args.lr is None:
@@ -713,7 +748,7 @@ def main():
     optimizer = torch.optim.AdamW(net_model.parameters(), lr=args.lr)
 
     # Generate descriptive filename based on key parameters
-    model_name = f"{args.problem}_n{args.n_node}_k{args.k_sparse}_ants{args.n_ants}_H{args.H}_miniH{args.mini_H}_rho{args.rho}_mne{args.min_new_edges}_{args.algo}"
+    model_name = f"{args.problem}_n{args.n_node}_k{args.k_sparse}_ants{args.n_ants}_H{args.H}_miniH{args.mini_H}_rho{args.rho}_mne{args.min_new_edges}_{args.algo}_lr{args.lr}"
     if args.anneal_prior:
         model_name += f"_anneal_g{args.gamma}_mg{args.min_gamma}"
     if args.L > 0:
@@ -732,6 +767,12 @@ def main():
     
     # Checkpoints
     Path(args.save_dir).mkdir(parents=True, exist_ok=True)
+    
+    # ... (dataset loading omitted) ...
+    
+    # Create problem-specific save directory (grouped by size)
+    save_dir = Path(args.save_dir) / args.problem / f"n{args.n_node}"
+    save_dir.mkdir(parents=True, exist_ok=True)
     
     # Load Validation Data & Baselines
     # Load Validation Data & Baselines
@@ -802,9 +843,7 @@ def main():
     best_val_cost = float('inf')
     best_model_state = None
     
-    # Create problem-specific save directory
-    save_dir = Path(args.save_dir) / args.problem
-    save_dir.mkdir(parents=True, exist_ok=True)
+
     
     for epoch in range(args.epochs):
         # Train

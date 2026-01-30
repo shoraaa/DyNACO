@@ -273,8 +273,8 @@ def main():
     parser.add_argument("--L", type=int, default=0)
     parser.add_argument("--threads", type=int, default=None)
 
-    parser.add_argument("--test_mix", action="store_true")
-    parser.add_argument("--inject_ratio", type=float, default=0.5)
+    parser.add_argument("--warmup", action="store_true", default=True)
+    parser.add_argument("--warmup_ratio", type=float, default=0.5)
 
     args = parser.parse_args()
 
@@ -296,7 +296,7 @@ def main():
         ignore_args = {
             "checkpoint", "device", "dataset", "visualize", "visualize_output", 
             "timed", "verify", "baseline", "baseline_runs", "baseline_time_limit", 
-            "threads", "seed", "save_dir", "wandb_project", "wandb_entity", "no_wandb", "test_mix"
+            "threads", "seed", "save_dir", "wandb_project", "wandb_entity", "no_wandb", "warmup"
         }
         
         print("Restoring config from checkpoint (unless overridden):")
@@ -539,9 +539,9 @@ def main():
                  gap = (model_best - opt_cost) / opt_cost
                  results["model_gap"].append(gap)
              
-             if args.test_mix:
+             if args.warmup:
                  tmi0 = time.time()
-                 inject_step = int(args.H * args.inject_ratio)
+                 inject_step = int(args.H * args.warmup_ratio)
                  mix_ret = infer_instance(args.problem, MFACO, build_fn, model, item, args.k_sparse, args.n_ants, not args.no_dynamic_feats, args, use_heuristic_only=False, collect_metrics=args.visualize, metrics_every_step=args.visualize, inject_step=inject_step)
                  tmi1 = time.time()
                  if len(mix_ret) == 4: _, mix_best, _, mix_m = mix_ret
@@ -562,7 +562,7 @@ def main():
                  if model and model_m: 
                      results["model_metrics"] = {k: np.zeros(len(v)) for k,v in model_m.items()}
                  
-                 if model and args.test_mix and mix_m: 
+                 if model and args.warmup and mix_m: 
                      results["mix_metrics"] = {k: np.zeros(len(v)) for k,v in mix_m.items()}
             
             if base_m:
@@ -586,7 +586,7 @@ def main():
                              L = min(len(v), len(results["model_metrics"][k]))
                              results["model_metrics"][k][:L] += np.array(v[:L])
 
-            if model and args.test_mix and mix_m:
+            if model and args.warmup and mix_m:
                  for k,v in mix_m.items():
                     if k == "snapshots": continue
                     if k in results["mix_metrics"]:
@@ -600,7 +600,7 @@ def main():
                  # Capture snapshots from i=0
                  if base_m and "snapshots" in base_m: sample_snapshots["base"] = base_m["snapshots"]
                  if model and model_m and "snapshots" in model_m: sample_snapshots["model"] = model_m["snapshots"]
-                 if model and args.test_mix and mix_m and "snapshots" in mix_m: sample_snapshots["mix"] = mix_m["snapshots"]
+                 if model and args.warmup and mix_m and "snapshots" in mix_m: sample_snapshots["mix"] = mix_m["snapshots"]
 
     print("\n--- Results ---")
     
@@ -619,7 +619,7 @@ def main():
         if results["model_gap"]:
             print(f"Model Gap: {np.mean(results['model_gap']) * 100:.4f}%")
             
-        if args.test_mix:
+        if args.warmup:
              mix_cost_mean = np.mean(results["mix_cost"])
              mix_time_mean = np.mean(results["mix_time"])
              print(f"Mix Cost: {mix_cost_mean:.4f}, Time: {mix_time_mean:.4f}s")
@@ -635,7 +635,7 @@ def main():
              mod_gap_bl = (np.mean(results["model_cost"]) - baseline_values.mean()) / baseline_values.mean()
              print(f"Model Gap to Baseline: {mod_gap_bl * 100:.4f}%")
              
-             if args.test_mix:
+             if args.warmup:
                   mix_gap_bl = (np.mean(results["mix_cost"]) - baseline_values.mean()) / baseline_values.mean()
                   print(f"Mix Gap to Baseline: {mix_gap_bl * 100:.4f}%")
 
@@ -652,7 +652,7 @@ def main():
              if model and results["model_metrics"]:
                  mod_avg = {k: v/N for k,v in results["model_metrics"].items()}
                  plt.plot(mod_avg["cost"], label="Model")
-             if model and args.test_mix and results["mix_metrics"]:
+             if model and args.warmup and results["mix_metrics"]:
                  mix_avg = {k: v/N for k,v in results["mix_metrics"].items()}
                  plt.plot(mix_avg["cost"], label="Mix")
              plt.legend()
