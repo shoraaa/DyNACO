@@ -132,8 +132,9 @@ public:
       int32_t backup_list_size = 32, int32_t min_new_edges = 8,
       float decay = 0.9f, float alpha = 1.0f, float p_best = 0.05f,
       bool use_local_search = true, bool disable_heuristic = false,
-      bool extend_ls = false, bool smooth_mmas = false,
-      int32_t fixed_steps = 0) {
+
+      bool extend_ls = false, bool smooth_mmas = false, int32_t fixed_steps = 0,
+      bool nls = false, int32_t T_nls = 10) {
     auto buf = coords.request();
     if (buf.ndim != 2 || buf.shape[1] != 2) {
       throw std::runtime_error("coords must have shape (n, 2)");
@@ -144,7 +145,7 @@ public:
     solver = std::make_unique<MFACO_TSP>(
         coords_ptr, n, n_ants, cand_list_size, backup_list_size, min_new_edges,
         decay, alpha, p_best, use_local_search, disable_heuristic, extend_ls,
-        smooth_mmas, fixed_steps);
+        smooth_mmas, fixed_steps, nls, T_nls);
   }
 
   // Properties
@@ -183,11 +184,7 @@ public:
   py::array_t<int32_t> get_best_route() {
     return make_1d_view(solver->best_route_data(), solver->n);
   }
-  py::array_t<int32_t> get_nn_pos() {
-    if (solver->nn_pos.empty())
-      return make_2d_view<int32_t>(nullptr, 0, 0);
-    return make_2d_view(solver->nn_pos_data(), solver->n, solver->n);
-  }
+  // py::array_t<int32_t> get_nn_pos() { ... } REMOVED
   py::array_t<int32_t> get_source_positions() {
     return make_1d_view(solver->source_positions.data(), solver->n);
   }
@@ -364,8 +361,9 @@ public:
                int32_t backup_list_size = 32, int32_t min_new_edges = 8,
                float decay = 0.9f, float alpha = 1.0f, float p_best = 0.05f,
                bool use_local_search = true, bool disable_heuristic = false,
+
                bool extend_ls = false, bool smooth_mmas = false,
-               int32_t fixed_steps = 0) {
+               int32_t fixed_steps = 0, bool nls = false, int32_t T_nls = 10) {
     auto cbuf = coords.request();
     if (cbuf.ndim != 2 || cbuf.shape[1] != 2) {
       throw std::runtime_error("coords must be shape (n,2)");
@@ -381,7 +379,7 @@ public:
         (const float *)cbuf.ptr, (const float *)dbuf.ptr, n, capacity, n_ants,
         cand_list_size, backup_list_size, min_new_edges, decay, alpha, p_best,
         use_local_search, disable_heuristic, extend_ls, smooth_mmas,
-        fixed_steps);
+        fixed_steps, nls, T_nls);
   }
 
   // properties
@@ -407,11 +405,7 @@ public:
   py::array_t<float> get_heuristic_sparse_np() {
     return make_2d_view(solver->heuristic_data(), solver->n, solver->k);
   }
-  py::array_t<int32_t> get_nn_pos() {
-    if (solver->nn_pos.empty())
-      return make_2d_view<int32_t>(nullptr, 0, 0);
-    return make_2d_view(solver->nn_pos_data(), solver->n, solver->n);
-  }
+  // py::array_t<int32_t> get_nn_pos() { ... } REMOVED
 
   py::array_t<int32_t> get_source_perm() {
     return make_1d_view(solver->source_perm_data(), solver->m);
@@ -482,6 +476,29 @@ public:
       traces_obj = py::cast(std::move(t));
     }
 
+    py::array_t<float> costs_raw(solver->n_ants);
+    if (!result.costs_raw.empty()) {
+      auto cb = costs_raw.mutable_unchecked<1>();
+      for (int32_t a = 0; a < solver->n_ants; ++a)
+        cb(a) = result.costs_raw[a];
+    }
+
+    py::list perms_raw;
+    if (!result.routes_raw.empty()) {
+      for (int32_t a = 0; a < solver->n_ants; ++a) {
+        if (!result.routes_raw[a].empty()) {
+          py::array_t<int32_t> perm(solver->m + 1);
+          auto pb = perm.mutable_unchecked<1>();
+          for (int32_t i = 0; i < solver->m; ++i)
+            pb(i) = result.routes_raw[a][i];
+          pb(solver->m) = result.routes_raw[a][0];
+          perms_raw.append(perm);
+        } else {
+          perms_raw.append(py::none());
+        }
+      }
+    }
+
     py::array_t<float> logps_arr(solver->n_ants);
     if (!result.logps.empty()) {
       auto logps_buf = logps_arr.mutable_unchecked<1>();
@@ -512,7 +529,7 @@ public:
     }
 
     return py::make_tuple(costs, perms, decoded_obj, logps_arr, traces_obj,
-                          new_edges_arr, survival_arr);
+                          costs_raw, perms_raw, new_edges_arr, survival_arr);
   }
 
   void update_pheromone_from_perm(
@@ -583,13 +600,14 @@ PYBIND11_MODULE(faco_opt, m) {
       .def(py::init<
                py::array_t<float, py::array::c_style | py::array::forcecast>,
                int32_t, int32_t, int32_t, int32_t, float, float, float, bool,
-               bool, bool, bool, int32_t>(),
+               bool, bool, bool, int32_t, bool, int32_t>(),
            py::arg("coords"), py::arg("n_ants"), py::arg("cand_list_size") = 32,
            py::arg("backup_list_size") = 32, py::arg("min_new_edges") = 8,
            py::arg("decay") = 0.9f, py::arg("alpha") = 1.0f,
            py::arg("p_best") = 0.05f, py::arg("use_local_search") = true,
            py::arg("disable_heuristic") = false, py::arg("extend_ls") = false,
-           py::arg("smooth_mmas") = false, py::arg("fixed_steps") = 0)
+           py::arg("smooth_mmas") = false, py::arg("fixed_steps") = 0,
+           py::arg("nls") = false, py::arg("T_nls") = 10)
       .def_property_readonly("n", &PyMFACO_TSP::get_n)
       .def_property_readonly("n_ants", &PyMFACO_TSP::get_n_ants)
       .def_property_readonly("k", &PyMFACO_TSP::get_k)
@@ -615,7 +633,8 @@ PYBIND11_MODULE(faco_opt, m) {
                              &PyMFACO_TSP::get_heuristic_sparse_np)
       .def_property_readonly("source_route", &PyMFACO_TSP::get_source_route)
       .def_property_readonly("best_route", &PyMFACO_TSP::get_best_route)
-      .def_property_readonly("nn_pos", &PyMFACO_TSP::get_nn_pos)
+      .def_property_readonly("best_route", &PyMFACO_TSP::get_best_route)
+      // .def_property_readonly("nn_pos", &PyMFACO_TSP::get_nn_pos)
       .def_property_readonly("source_positions",
                              &PyMFACO_TSP::get_source_positions)
       .def("seed_rng", &PyMFACO_TSP::seed_rng, py::arg("seed"))
@@ -634,14 +653,15 @@ PYBIND11_MODULE(faco_opt, m) {
                py::array_t<float, py::array::c_style | py::array::forcecast>,
                py::array_t<float, py::array::c_style | py::array::forcecast>,
                float, int32_t, int32_t, int32_t, int32_t, float, float, float,
-               bool, bool, bool, bool, int32_t>(),
+               bool, bool, bool, bool, int32_t, bool, int32_t>(),
            py::arg("coords"), py::arg("demand"), py::arg("capacity"),
            py::arg("n_ants"), py::arg("cand_list_size") = 32,
            py::arg("backup_list_size") = 32, py::arg("min_new_edges") = 8,
            py::arg("decay") = 0.9f, py::arg("alpha") = 1.0f,
            py::arg("p_best") = 0.05f, py::arg("use_local_search") = true,
            py::arg("disable_heuristic") = false, py::arg("extend_ls") = false,
-           py::arg("smooth_mmas") = false, py::arg("fixed_steps") = 0)
+           py::arg("smooth_mmas") = false, py::arg("fixed_steps") = 0,
+           py::arg("nls") = false, py::arg("T_nls") = 10)
       .def_property_readonly("n", &PyMFACO_CVRP::get_n)
       .def_property_readonly("m", &PyMFACO_CVRP::get_m)
       .def_property_readonly("n_ants", &PyMFACO_CVRP::get_n_ants)
@@ -657,7 +677,9 @@ PYBIND11_MODULE(faco_opt, m) {
       .def_property_readonly("backup_list", &PyMFACO_CVRP::get_backup_list)
       .def_property_readonly("heuristic_sparse_np",
                              &PyMFACO_CVRP::get_heuristic_sparse_np)
-      .def_property_readonly("nn_pos", &PyMFACO_CVRP::get_nn_pos)
+      .def_property_readonly("heuristic_sparse_np",
+                             &PyMFACO_CVRP::get_heuristic_sparse_np)
+      // .def_property_readonly("nn_pos", &PyMFACO_CVRP::get_nn_pos)
       .def_property_readonly("source_perm", &PyMFACO_CVRP::get_source_perm)
       .def_property_readonly("best_perm", &PyMFACO_CVRP::get_best_perm)
       .def("seed_rng", &PyMFACO_CVRP::seed_rng)

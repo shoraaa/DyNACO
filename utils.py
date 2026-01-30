@@ -196,7 +196,7 @@ def load_val_dataset(n, problem='tsp', device='cpu'):
         return None
     try:
         if problem == 'tsp':
-            pack = torch.load(path, map_location=device)
+            pack = torch.load(path, map_location=device, weights_only=False)
             return pack["coords"]
         else:
             return torch.load(path, map_location=device, weights_only=False)
@@ -286,7 +286,7 @@ def safe_corr(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-12) -> float:
         return float("nan")
     
     a = a[mask]
-    b = b[mask]zf
+    b = b[mask]
     
     # Check for zero variance
     a_std = a.std()

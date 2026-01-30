@@ -8,6 +8,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <numeric>
@@ -26,13 +27,14 @@ MFACO_TSP::MFACO_TSP(const float *coords_ptr, int32_t n_, int32_t n_ants_,
                      int32_t min_new_edges_, float decay, float alpha_,
                      float p_best_, bool use_local_search_,
                      bool disable_heuristic_, bool extend_ls_,
-                     bool smooth_mmas_, int32_t fixed_steps_)
+                     bool smooth_mmas_, int32_t fixed_steps_, bool nls_,
+                     int32_t T_nls_)
     : n(n_), n_ants(n_ants_), k(std::min(cand_list_size, n_ - 1)),
       bl(std::min(backup_list_size, std::max(0, n_ - 1 - k))),
       min_new_edges(min_new_edges_), rho(decay), alpha(alpha_), p_best(p_best_),
       smooth_mmas(smooth_mmas_), use_local_search(use_local_search_),
       extend_ls(extend_ls_), disable_heuristic(disable_heuristic_),
-      fixed_steps(fixed_steps_) {
+      fixed_steps(fixed_steps_), nls(nls_), T_nls(T_nls_) {
   if (coords_ptr == nullptr) {
     throw std::runtime_error("coords_ptr must not be null");
   }
@@ -44,8 +46,8 @@ MFACO_TSP::MFACO_TSP(const float *coords_ptr, int32_t n_, int32_t n_ants_,
 
   // Build nearest neighbor lists
   build_nn_lists();
-  if (!smooth_mmas)
-    build_nn_pos();
+  // if (!smooth_mmas || nls)
+  //   build_nn_pos();
   build_heuristic();
 
   // Initialize source/best solutions
@@ -131,7 +133,7 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
         float cost = sample_ant_traced(probmat.data(), start_nodes[a],
                                        result.routes[a], result.routes_raw[a],
                                        result.costs_raw[a], mne_out, checklist,
-                                       trace, rng_, logp_sum, surv_out);
+                                       trace, rng_, logp_sum, surv_out, prior);
         result.new_edges_count[a] = mne_out;
         result.edge_survival[a] = surv_out;
 
@@ -176,7 +178,8 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
           result.costs[a] = sample_ant_traced(
               probmat.data(), start_nodes[a], result.routes[a],
               result.routes_raw[a], result.costs_raw[a], mne_out, checklist,
-              trace, rng_local, logp_sum, surv_out);
+              trace, rng_local, logp_sum, surv_out, prior);
+
           result.new_edges_count[a] = mne_out;
           result.edge_survival[a] = surv_out;
           result.logps[a] = logp_sum;
@@ -234,9 +237,9 @@ void MFACO_TSP::sample(bool require_prob, const float *prior,
         result.routes[a].resize(n);
         Xoshiro128Plus rng_local;
         rng_local.seed(ant_seeds[static_cast<size_t>(a)]);
-        result.costs[a] =
-            sample_ant_fast(probmat.data(), start_nodes[a], result.routes[a],
-                            result.new_edges_count[a], checklist, rng_local);
+        result.costs[a] = sample_ant_fast(
+            probmat.data(), start_nodes[a], result.routes[a],
+            result.new_edges_count[a], checklist, rng_local, prior);
       }
     }
   }
@@ -272,14 +275,14 @@ void MFACO_TSP::update_pheromone(const int32_t *best_flat,
       int32_t cur = best_flat[i];
 
       // Forward edge (prev -> cur)
-      int32_t j = nn_pos[prev * n + cur];
+      int32_t j = find_neighbor_index(prev, cur);
       if (j >= 0) {
         pheromone_sparse[prev * k + j] =
             std::min(pheromone_sparse[prev * k + j] + deposit, tau_max);
       }
 
       // Symmetric: reverse edge (cur -> prev)
-      int32_t jr = nn_pos[cur * n + prev];
+      int32_t jr = find_neighbor_index(cur, prev);
       if (jr >= 0) {
         pheromone_sparse[cur * k + jr] =
             std::min(pheromone_sparse[cur * k + jr] + deposit, tau_max);
@@ -350,8 +353,8 @@ void MFACO_TSP::load_snapshot(const float *pheromone_ptr,
   }
 
   // Rebuild nn_pos from nn_list if needed
-  if (!smooth_mmas)
-    build_nn_pos();
+  // if (!smooth_mmas)
+  //   build_nn_pos();
 
   // Rebuild heuristic (in case nn_list changed)
   build_heuristic();
@@ -420,15 +423,7 @@ void MFACO_TSP::build_nn_lists() {
   }
 }
 
-void MFACO_TSP::build_nn_pos() {
-  nn_pos.assign(n * n, -1);
-  for (int32_t u = 0; u < n; ++u) {
-    for (int32_t j = 0; j < k; ++j) {
-      int32_t v = nn_list[u * k + j];
-      nn_pos[u * n + v] = j;
-    }
-  }
-}
+// void MFACO_TSP::build_nn_pos() { ... } REMOVED
 
 void MFACO_TSP::build_heuristic() {
   heuristic_sparse.resize(n * k);
@@ -612,7 +607,7 @@ float MFACO_TSP::sample_ant_fast(const float *probmat, int32_t start_node,
                                  std::vector<int32_t> &route_out,
                                  int32_t &new_edges_out,
                                  std::vector<int32_t> &checklist,
-                                 Xoshiro128Plus &rng) {
+                                 Xoshiro128Plus &rng, const float *prior) {
   // Initialize route as copy of source
   std::vector<int32_t> route = source_route;
   std::vector<int32_t> positions(n);
@@ -678,7 +673,26 @@ float MFACO_TSP::sample_ant_fast(const float *probmat, int32_t start_node,
 
   // Apply local search if enabled
   if (use_local_search && !checklist.empty()) {
-    two_opt_nn(route, positions, checklist);
+    if (nls && prior) {
+      two_opt_nn(route, positions, checklist);
+
+      float best_cost = get_route_cost(route);
+      std::vector<int32_t> best_route = route;
+
+      for (int t = 0; t < T_nls; ++t) {
+        two_opt_nn_prior(route, positions, checklist, prior);
+        two_opt_nn(route, positions, checklist);
+
+        float current_cost = get_route_cost(route);
+        if (current_cost < best_cost) {
+          best_cost = current_cost;
+          best_route = route;
+        }
+      }
+      route = best_route;
+    } else {
+      two_opt_nn(route, positions, checklist);
+    }
   }
 
   // Copy result
@@ -692,7 +706,8 @@ float MFACO_TSP::sample_ant_traced(const float *probmat, int32_t start_node,
                                    float &cost_raw_out, int32_t &new_edges_out,
                                    std::vector<int32_t> &checklist,
                                    MFACOTrace &trace, Xoshiro128Plus &rng,
-                                   float &logp_sum, float &survival_out) {
+                                   float &logp_sum, float &survival_out,
+                                   const float *prior) {
   trace.clear();
   trace.start_node = start_node;
   trace.reserve(min_new_edges * 2);
@@ -778,9 +793,27 @@ float MFACO_TSP::sample_ant_traced(const float *probmat, int32_t start_node,
   route_raw_out = route;
   cost_raw_out = get_route_cost(route);
 
+  float best_cost = cost_raw_out;
+  std::vector<int32_t> best_route = route;
+
   // Apply local search if enabled
   if (use_local_search && !checklist.empty()) {
-    two_opt_nn(route, positions, checklist);
+    if (nls && prior) {
+      two_opt_nn(route, positions, checklist);
+      for (int t = 0; t < T_nls; ++t) {
+        two_opt_nn_prior(route, positions, checklist, prior);
+        two_opt_nn(route, positions, checklist);
+
+        float current_cost = get_route_cost(route);
+        if (current_cost < best_cost) {
+          best_cost = current_cost;
+          best_route = route;
+        }
+      }
+      route = best_route;
+    } else {
+      two_opt_nn(route, positions, checklist);
+    }
   }
 
   // Compute survival
@@ -1053,6 +1086,119 @@ float MFACO_TSP::two_opt_nn(std::vector<int32_t> &route,
   return total_change;
 }
 
+float MFACO_TSP::two_opt_nn_prior(std::vector<int32_t> &route,
+                                  std::vector<int32_t> &positions,
+                                  std::vector<int32_t> &checklist,
+                                  const float *prior_ptr) {
+  int32_t changes_count = 0;
+  float total_gain = 0.0f;
+  size_t checklist_pos = 0;
+
+  auto get_prior = [&](int32_t u, int32_t v) -> float {
+    int32_t idx = find_neighbor_index(u, v);
+    if (idx >= 0) {
+      return prior_ptr[u * k + idx];
+    }
+    return -1e9f; // Missing edge -> very low score
+  };
+
+  while (checklist_pos < checklist.size()) {
+    int32_t a = checklist[checklist_pos++];
+    if (a < 0 || a >= n)
+      continue;
+
+    int32_t a_next = get_succ(a, route, positions);
+    int32_t a_prev = get_pred(a, route, positions);
+
+    float prior_a_next = get_prior(a, a_next);
+    float prior_a_prev = get_prior(a_prev, a);
+
+    float max_gain = 0.0f;
+    int32_t best_move[4] = {-1, -1, -1, -1};
+
+    // Check moves with a -> a_next edge
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t b = nn_list[a * k + j];
+      if (b < 0 || b >= n)
+        break;
+
+      // Swap a->a_next and b->b_next with a->b and a_next->b_next
+      // Gain = (new_prior) - (old_prior)
+      // New: (a, b) + (a_next, b_next)
+      // Old: (a, a_next) + (b, b_next)
+
+      float prior_ab = get_prior(a, b);
+
+      // We are maximizing sum of priors.
+      // Current sum (partial): prior(a, a_next)
+      // New sum (partial): prior(a, b)
+      // Check if candidate edge (a,b) is even worth looking at?
+      // Typically we blindly check all neighbors.
+
+      int32_t b_next = get_succ(b, route, positions);
+      float prior_b_bnext = get_prior(b, b_next);
+      float prior_anext_bnext = get_prior(a_next, b_next);
+
+      float current_score = prior_a_next + prior_b_bnext;
+      float new_score = prior_ab + prior_anext_bnext;
+
+      float gain = new_score - current_score;
+
+      if (gain > max_gain) {
+        best_move[0] = a_next;
+        best_move[1] = b_next;
+        best_move[2] = a;
+        best_move[3] = b;
+        max_gain = gain;
+      }
+    }
+
+    // Check moves with a_prev -> a edge
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t b = nn_list[a * k + j];
+      if (b < 0 || b >= n)
+        break;
+
+      float prior_ab = get_prior(a, b);
+      int32_t b_prev = get_pred(b, route, positions);
+      float prior_bprev_b = get_prior(b_prev, b);
+      float prior_aprev_bprev = get_prior(a_prev, b_prev);
+
+      float current_score = prior_a_prev + prior_bprev_b;
+      float new_score = prior_ab + prior_aprev_bprev;
+
+      float gain = new_score - current_score;
+
+      if (gain > max_gain) {
+        best_move[0] = a;
+        best_move[1] = b;
+        best_move[2] = a_prev;
+        best_move[3] = b_prev;
+        max_gain = gain;
+      }
+    }
+
+    if (max_gain > 0) {
+      flip_route_section(best_move[0], best_move[1], route, positions);
+      ++changes_count;
+      total_gain += max_gain;
+
+      // if extend_ls, then add endpoints to checklist
+      if (extend_ls) {
+        for (int32_t i = 0; i < 4; ++i) {
+          int32_t node = best_move[i];
+          if (std::find(checklist.begin(), checklist.end(), node) ==
+              checklist.end()) {
+            checklist.push_back(node);
+          }
+        }
+      }
+    }
+  }
+
+  return total_gain;
+}
+
 float MFACO_TSP::get_route_cost(const std::vector<int32_t> &route) const {
   float cost = 0.0f;
   for (int32_t i = 0; i < n - 1; ++i) {
@@ -1143,14 +1289,16 @@ MFACO_CVRP::MFACO_CVRP(const float *coords_ptr, const float *demand_ptr,
                        int32_t min_new_edges_, float decay, float alpha_,
                        float p_best_, bool use_local_search_,
                        bool disable_heuristic_, bool extend_ls_,
-                       bool smooth_mmas_, int32_t fixed_steps_)
+                       bool smooth_mmas_, int32_t fixed_steps_, bool nls_,
+                       int32_t T_nls_)
     : n(n_), m(n_ - 1), n_ants(n_ants_), k(std::min(cand_list_size, n_ - 1)),
       bl(std::min(backup_list_size, std::max(0, n_ - 1 - k))),
-      min_new_edges(min_new_edges_), rho(decay), alpha(alpha_), p_best(p_best_),
-      use_local_search(use_local_search_),
+      min_new_edges(min_new_edges_), fixed_steps(fixed_steps_), rho(decay),
+      alpha(alpha_), p_best(p_best_), use_local_search(use_local_search_),
       disable_heuristic(disable_heuristic_), extend_ls(extend_ls_),
       smooth_mmas(smooth_mmas_), capacity(capacity_),
-      fixed_steps(fixed_steps_) {
+      capacity_int(static_cast<int64_t>(std::round(capacity_ * DEMAND_SCALE))),
+      nls(nls_), T_nls(T_nls_) {
   if (!coords_ptr || !demand_ptr) {
     throw std::runtime_error("coords_ptr and demand_ptr must not be null");
   }
@@ -1175,8 +1323,8 @@ MFACO_CVRP::MFACO_CVRP(const float *coords_ptr, const float *demand_ptr,
   }
 
   build_nn_lists();
-  if (!smooth_mmas)
-    build_nn_pos();
+  // if (!smooth_mmas || nls)
+  //   build_nn_pos();
   build_heuristic();
   build_d0();
 
@@ -1253,15 +1401,7 @@ void MFACO_CVRP::build_nn_lists() {
   }
 }
 
-void MFACO_CVRP::build_nn_pos() {
-  nn_pos.assign(n * n, -1);
-  for (int32_t u = 0; u < n; ++u) {
-    for (int32_t j = 0; j < k; ++j) {
-      int32_t v = nn_list[u * k + j];
-      nn_pos[u * n + v] = j;
-    }
-  }
-}
+// void MFACO_CVRP::build_nn_pos() { ... } REMOVED
 
 void MFACO_CVRP::build_heuristic() {
   heuristic_sparse.resize(n * k);
@@ -1965,7 +2105,7 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
                                   std::vector<int32_t> &perm_out,
                                   int32_t &new_edges_out,
                                   std::vector<int32_t> &checklist,
-                                  Xoshiro128Plus &rng) {
+                                  Xoshiro128Plus &rng, const float *prior) {
   // Initialize perm as copy of source
   std::vector<int32_t> perm = source_perm;
   std::vector<int32_t> positions = source_positions; // copy
@@ -2001,8 +2141,6 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
         curr, &probmat[curr * k], visited.data(), rng, pick_j, valid_mask);
 
     if (chosen <= 0) {
-      // Should essentially never happen if k is large enough or fallback logic
-      // is robust
       break;
     }
 
@@ -2034,7 +2172,26 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
   // Local Search
   if (use_local_search && !checklist.empty()) {
     auto start_ls = std::chrono::steady_clock::now();
-    two_opt_nn(perm, positions, checklist);
+    if (nls && prior) {
+      two_opt_nn(perm, positions, checklist);
+
+      float best_cost = split_cost_fast(perm);
+      std::vector<int32_t> best_perm = perm;
+
+      for (int t = 0; t < T_nls; ++t) {
+        two_opt_nn_prior(perm, positions, checklist, prior);
+        two_opt_nn(perm, positions, checklist);
+
+        float current_cost = split_cost_fast(perm);
+        if (current_cost < best_cost) {
+          best_cost = current_cost;
+          best_perm = perm;
+        }
+      }
+      perm = best_perm;
+    } else {
+      two_opt_nn(perm, positions, checklist);
+    }
     auto end_ls = std::chrono::steady_clock::now();
     time_ls += std::chrono::duration<double>(end_ls - start_ls).count();
   }
@@ -2051,10 +2208,12 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
 
 float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
                                     std::vector<int32_t> &perm_out,
-                                    int32_t &new_edges_out,
+                                    std::vector<int32_t> &perm_raw_out,
+                                    float &cost_raw_out, int32_t &new_edges_out,
                                     std::vector<int32_t> &checklist,
                                     MFACOTrace &trace, Xoshiro128Plus &rng,
-                                    float &logp_sum, float &survival_out) {
+                                    float &logp_sum, float &survival_out,
+                                    const float *prior) {
   trace.clear();
   trace.start_node = start_node;
   trace.reserve(min_new_edges * 2);
@@ -2129,10 +2288,33 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
 
   new_edges_out = new_edges;
 
+  // Capture raw
+  perm_raw_out = perm;
+  cost_raw_out = split_cost_fast(perm);
+
   // Local Search
   if (use_local_search && !checklist.empty()) {
     auto start_ls = std::chrono::steady_clock::now();
-    two_opt_nn(perm, positions, checklist);
+    if (nls && prior) {
+      two_opt_nn(perm, positions, checklist);
+
+      float best_cost = split_cost_fast(perm);
+      std::vector<int32_t> best_perm = perm;
+
+      for (int t = 0; t < T_nls; ++t) {
+        two_opt_nn_prior(perm, positions, checklist, prior);
+        two_opt_nn(perm, positions, checklist);
+
+        float current_cost = split_cost_fast(perm);
+        if (current_cost < best_cost) {
+          best_cost = current_cost;
+          best_perm = perm;
+        }
+      }
+      perm = best_perm;
+    } else {
+      two_opt_nn(perm, positions, checklist);
+    }
     auto end_ls = std::chrono::steady_clock::now();
     time_ls += std::chrono::duration<double>(end_ls - start_ls).count();
   }
@@ -2143,7 +2325,6 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
   auto end_split = std::chrono::steady_clock::now();
   time_split += std::chrono::duration<double>(end_split - start_split).count();
 
-  perm_out = perm;
   perm_out = perm;
 
   // Compute survival
@@ -2180,8 +2361,13 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
   result.clear();
   result.costs.resize(n_ants);
   result.routes.resize(n_ants); // each is perm length m
-  result.costs.resize(n_ants);
-  result.routes.resize(n_ants); // each is perm length m
+
+  if (require_prob) {
+    result.costs_raw.resize(n_ants);
+    result.routes_raw.resize(n_ants);
+    result.logps.resize(n_ants);
+  }
+
   result.new_edges_count.resize(n_ants);
   result.edge_survival.resize(n_ants);
 
@@ -2209,7 +2395,6 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
   if (require_prob) {
     if (!parallel_traced) {
       result.traces.reserve(n_ants, n_ants * min_new_edges * 2);
-      result.logps.resize(n_ants);
       result.traces.starts.push_back(0);
 
       std::vector<int32_t> checklist;
@@ -2217,15 +2402,18 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
 
       for (int32_t a = 0; a < n_ants; ++a) {
         result.routes[a].resize(m);
+        result.routes_raw[a].resize(m);
+
         MFACOTrace trace;
         trace.reserve(min_new_edges * 2);
 
         float logp_sum = 0.0f;
         int32_t mne_out = 0;
         float surv_out = 0.0f;
-        float cost = sample_ant_traced(probmat.data(), start_nodes[a],
-                                       result.routes[a], mne_out, checklist,
-                                       trace, rng_, logp_sum, surv_out);
+        float cost = sample_ant_traced(
+            probmat.data(), start_nodes[a], result.routes[a],
+            result.routes_raw[a], result.costs_raw[a], mne_out, checklist,
+            trace, rng_, logp_sum, surv_out, prior_ptr);
         result.costs[a] = cost;
         result.new_edges_count[a] = mne_out;
         result.edge_survival[a] = surv_out;
@@ -2238,6 +2426,7 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
           result.traces.is_stochastic.push_back(trace.is_stochastic[i]);
           result.traces.pick_j.push_back(trace.pick_j[i]);
           result.traces.valid_mask.push_back(trace.valid_mask[i]);
+          result.traces.is_new_edge.push_back(trace.is_new_edge[i]);
         }
         result.traces.starts.push_back(
             (int32_t)result.traces.curr_nodes.size());
@@ -2254,6 +2443,7 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
 #pragma omp for schedule(static, 1)
         for (int32_t a = 0; a < n_ants; ++a) {
           result.routes[a].resize(m);
+          result.routes_raw[a].resize(m);
           MFACOTrace &trace = traces_per_ant[(size_t)a];
           trace.reserve(min_new_edges * 2);
           Xoshiro128Plus rng_local;
@@ -2263,35 +2453,36 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
           int32_t mne_out = 0;
           float surv_out = 0.0f;
           result.costs[a] = sample_ant_traced(
-              probmat.data(), start_nodes[a], result.routes[a], mne_out,
-              checklist, trace, rng_local, logp_sum, surv_out);
+              probmat.data(), start_nodes[a], result.routes[a],
+              result.routes_raw[a], result.costs_raw[a], mne_out, checklist,
+              trace, rng_local, logp_sum, surv_out, prior_ptr);
           result.new_edges_count[a] = mne_out;
           result.edge_survival[a] = surv_out;
           result.logps[a] = logp_sum;
         }
       }
 
+      // Merge traces in ant index order
       result.traces.clear();
       result.traces.starts.resize((size_t)n_ants + 1);
       result.traces.start_nodes.resize((size_t)n_ants);
       result.traces.starts[0] = 0;
-
       for (int32_t a = 0; a < n_ants; ++a) {
-        const auto &t = traces_per_ant[(size_t)a];
+        const MFACOTrace &t = traces_per_ant[(size_t)a];
         result.traces.start_nodes[(size_t)a] = t.start_node;
         result.traces.starts[(size_t)a + 1] =
             result.traces.starts[(size_t)a] + (int32_t)t.curr_nodes.size();
       }
-
       int32_t total = result.traces.starts[(size_t)n_ants];
       result.traces.curr_nodes.resize((size_t)total);
       result.traces.chosen_nodes.resize((size_t)total);
       result.traces.is_stochastic.resize((size_t)total);
       result.traces.pick_j.resize((size_t)total);
       result.traces.valid_mask.resize((size_t)total);
+      result.traces.is_new_edge.resize((size_t)total);
 
       for (int32_t a = 0; a < n_ants; ++a) {
-        const auto &t = traces_per_ant[(size_t)a];
+        const MFACOTrace &t = traces_per_ant[(size_t)a];
         int32_t off = result.traces.starts[(size_t)a];
         for (size_t i = 0; i < t.curr_nodes.size(); ++i) {
           result.traces.curr_nodes[(size_t)off + i] = t.curr_nodes[i];
@@ -2299,10 +2490,12 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
           result.traces.is_stochastic[(size_t)off + i] = t.is_stochastic[i];
           result.traces.pick_j[(size_t)off + i] = t.pick_j[i];
           result.traces.valid_mask[(size_t)off + i] = t.valid_mask[i];
+          result.traces.is_new_edge[(size_t)off + i] = t.is_new_edge[i];
         }
       }
     }
   } else {
+    // Fast mode: parallel
     ensure_ant_seeds();
 #pragma omp parallel
     {
@@ -2314,9 +2507,9 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
         result.routes[a].resize(m);
         Xoshiro128Plus rng_local;
         rng_local.seed(ant_seeds[(size_t)a]);
-        result.costs[a] =
-            sample_ant_fast(probmat.data(), start_nodes[a], result.routes[a],
-                            result.new_edges_count[a], checklist, rng_local);
+        result.costs[a] = sample_ant_fast(
+            probmat.data(), start_nodes[a], result.routes[a],
+            result.new_edges_count[a], checklist, rng_local, prior_ptr);
       }
     }
   }
@@ -2358,12 +2551,12 @@ void MFACO_CVRP::update_pheromone(const int32_t *iter_best_perm_ptr,
       int32_t last = perm[j];
 
       // depot -> first
-      int32_t jd = nn_pos[0 * n + first];
+      int32_t jd = find_neighbor_index(0, first);
       if (jd >= 0)
         pheromone_sparse[0 * k + jd] =
             std::min(pheromone_sparse[0 * k + jd] + deposit, tau_max);
 
-      int32_t jdr = nn_pos[first * n + 0];
+      int32_t jdr = find_neighbor_index(first, 0);
       if (jdr >= 0)
         pheromone_sparse[first * k + jdr] =
             std::min(pheromone_sparse[first * k + jdr] + deposit, tau_max);
@@ -2373,24 +2566,24 @@ void MFACO_CVRP::update_pheromone(const int32_t *iter_best_perm_ptr,
         int32_t u = perm[t];
         int32_t v = perm[t + 1];
 
-        int32_t ju = nn_pos[u * n + v];
+        int32_t ju = find_neighbor_index(u, v);
         if (ju >= 0)
           pheromone_sparse[u * k + ju] =
               std::min(pheromone_sparse[u * k + ju] + deposit, tau_max);
 
-        int32_t jv = nn_pos[v * n + u];
+        int32_t jv = find_neighbor_index(v, u);
         if (jv >= 0)
           pheromone_sparse[v * k + jv] =
               std::min(pheromone_sparse[v * k + jv] + deposit, tau_max);
       }
 
       // last -> depot
-      int32_t jl = nn_pos[last * n + 0];
+      int32_t jl = find_neighbor_index(last, 0);
       if (jl >= 0)
         pheromone_sparse[last * k + jl] =
             std::min(pheromone_sparse[last * k + jl] + deposit, tau_max);
 
-      int32_t jlr = nn_pos[0 * n + last];
+      int32_t jlr = find_neighbor_index(0, last);
       if (jlr >= 0)
         pheromone_sparse[0 * k + jlr] =
             std::min(pheromone_sparse[0 * k + jlr] + deposit, tau_max);
@@ -2453,6 +2646,113 @@ void MFACO_CVRP::update_pheromone(const int32_t *iter_best_perm_ptr,
   std::fill(source_positions.begin(), source_positions.end(), -1);
   for (int32_t i = 0; i < m; ++i)
     source_positions[source_perm[i]] = i;
+}
+
+float MFACO_CVRP::two_opt_nn_prior(std::vector<int32_t> &perm,
+                                   std::vector<int32_t> &positions,
+                                   std::vector<int32_t> &checklist,
+                                   const float *prior_ptr) {
+  int32_t changes_count = 0;
+  float total_gain = 0.0f;
+  size_t checklist_pos = 0;
+
+  auto get_prior = [&](int32_t u, int32_t v) -> float {
+    // u, v are nodes 1..n-1. Virtual depots (>=n) map to 0.
+    int32_t u_real = (u >= n) ? 0 : u;
+    int32_t v_real = (v >= n) ? 0 : v;
+    int32_t idx = find_neighbor_index(u_real, v_real);
+    if (idx >= 0) {
+      return prior_ptr[u_real * k + idx];
+    }
+    return -1e9f;
+  };
+
+  while (checklist_pos < checklist.size()) {
+    int32_t a = checklist[checklist_pos++];
+    if (a <= 0 || a >= n)
+      continue;
+
+    int32_t a_next = get_succ(a, perm, positions);
+    int32_t a_prev = get_pred(a, perm, positions);
+
+    // Prior values
+    float prior_a_next = get_prior(a, a_next);
+    float prior_a_prev = get_prior(a_prev, a);
+
+    // printf("DEBUG: a=%d, a_real=%d, a_next=%d, a_prev=%d\n", a, (a >= n) ? 0
+    // : a, a_next, a_prev);
+
+    float max_gain = 0.0f;
+    int32_t best_move[4] = {-1, -1, -1, -1};
+
+    // Check moves with a -> a_next edge using nn_list
+    int32_t a_real = (a >= n) ? 0 : a;
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t b = nn_list[a_real * k + j];
+      if (b <= 0 || b >= n)
+        continue;
+
+      float prior_ab = get_prior(a, b);
+      int32_t b_next = get_succ(b, perm, positions);
+      float prior_b_bnext = get_prior(b, b_next);
+      float prior_anext_bnext = get_prior(a_next, b_next);
+
+      float current_score = prior_a_next + prior_b_bnext;
+      float new_score = prior_ab + prior_anext_bnext;
+
+      float gain = new_score - current_score;
+
+      if (gain > max_gain) {
+        best_move[0] = a_next;
+        best_move[1] = b_next;
+        best_move[2] = a;
+        best_move[3] = b;
+        max_gain = gain;
+      }
+    }
+
+    // Check moves with a_prev -> a edge
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t b = nn_list[a_real * k + j];
+      if (b <= 0 || b >= n)
+        continue;
+
+      float prior_ab = get_prior(a, b);
+      int32_t b_prev = get_pred(b, perm, positions);
+      float prior_bprev_b = get_prior(b_prev, b);
+      float prior_aprev_bprev = get_prior(a_prev, b_prev);
+
+      float current_score = prior_a_prev + prior_bprev_b;
+      float new_score = prior_ab + prior_aprev_bprev;
+
+      float gain = new_score - current_score;
+
+      if (gain > max_gain) {
+        best_move[0] = a;
+        best_move[1] = b;
+        best_move[2] = a_prev;
+        best_move[3] = b_prev;
+        max_gain = gain;
+      }
+    }
+
+    if (max_gain > 0) {
+      flip_route_section(best_move[0], best_move[1], perm, positions);
+      ++changes_count;
+      total_gain += max_gain;
+
+      if (extend_ls) {
+        for (int32_t i = 0; i < 4; ++i) {
+          int32_t node = best_move[i];
+          if (std::find(checklist.begin(), checklist.end(), node) ==
+              checklist.end()) {
+            checklist.push_back(node);
+          }
+        }
+      }
+    }
+  }
+  return total_gain;
 }
 
 } // namespace mfaco

@@ -214,6 +214,8 @@ public:
                   // improving moves
   bool disable_heuristic; // if true, set eta=1 so sampling uses pheromone (+
                           // prior) only
+  bool nls;               // if true, use Neural Local Search (guided by prior)
+  int32_t T_nls;          // number of NLS iterations (default 10)
 
   // Distance type (currently fixed to explicit Euclidean 2D without rounding).
   DistanceType distance_type = DistanceType::EXPLICT_EUC_2D;
@@ -225,9 +227,8 @@ public:
   std::vector<float>
       pheromone_sparse; // (n, k) row-major: pheromone on candidate edges
   std::vector<float>
-      heuristic_sparse; // (n, k) row-major: 1/dist for candidate edges
-  std::vector<int32_t>
-      nn_pos; // (n, n) row-major: nn_pos[u,v] = j if nn_list[u,j]=v, else -1
+      heuristic_sparse;        // (n, k) row-major: 1/dist for candidate edges
+  std::vector<int32_t> nn_pos; // REMOVED to save memory
 
   // Solution state
   std::vector<int32_t> source_route; // (n,) current source solution
@@ -254,7 +255,7 @@ public:
             float decay = 0.9f, float alpha = 1.0f, float p_best = 0.05f,
             bool use_local_search = true, bool disable_heuristic = false,
             bool extend_ls = false, bool smooth_mmas = false,
-            int32_t fixed_steps = 0);
+            int32_t fixed_steps = 0, bool nls = false, int32_t T_nls = 10);
 
   // ========================================================================
   // API Methods
@@ -312,7 +313,15 @@ public:
   float *heuristic_data() { return heuristic_sparse.data(); }
   int32_t *source_route_data() { return source_route.data(); }
   int32_t *best_route_data() { return best_route.data(); }
-  int32_t *nn_pos_data() { return nn_pos.data(); }
+  // int32_t *nn_pos_data() { return nn_pos.data(); }
+
+  inline int32_t find_neighbor_index(int32_t u, int32_t v) const {
+    for (int32_t j = 0; j < k; ++j) {
+      if (nn_list[u * k + j] == v)
+        return j;
+    }
+    return -1;
+  }
 
 private:
   // ========================================================================
@@ -320,7 +329,7 @@ private:
   // ========================================================================
 
   void build_nn_lists();
-  void build_nn_pos();
+  // void build_nn_pos();
   void build_heuristic();
   void build_initial_tour();
 
@@ -338,7 +347,7 @@ private:
   float sample_ant_fast(const float *probmat, // (n, k) precomputed weights
                         int32_t start_node, std::vector<int32_t> &route_out,
                         int32_t &new_edges_out, std::vector<int32_t> &checklist,
-                        Xoshiro128Plus &rng);
+                        Xoshiro128Plus &rng, const float *prior);
 
   float sample_ant_traced(const float *probmat, // (n, k) precomputed weights
                           int32_t start_node, std::vector<int32_t> &route_out,
@@ -346,7 +355,7 @@ private:
                           float &cost_raw_out, int32_t &new_edges_out,
                           std::vector<int32_t> &checklist, MFACOTrace &trace,
                           Xoshiro128Plus &rng, float &logp_sum,
-                          float &survival_out);
+                          float &survival_out, const float *prior);
 
   std::tuple<int32_t, bool, float>
   select_next_node(int32_t curr,
@@ -359,6 +368,11 @@ private:
 
   float two_opt_nn(std::vector<int32_t> &route, std::vector<int32_t> &positions,
                    std::vector<int32_t> &checklist);
+
+  float two_opt_nn_prior(std::vector<int32_t> &route,
+                         std::vector<int32_t> &positions,
+                         std::vector<int32_t> &checklist,
+                         const float *prior_ptr);
 
   float get_route_cost(const std::vector<int32_t> &route) const;
 
@@ -403,6 +417,8 @@ public:
   bool extend_ls;
   bool smooth_mmas;
   bool disable_heuristic;
+  bool nls;
+  int32_t T_nls; // number of NLS iterations (default 10)
 
   float capacity;
   int64_t capacity_int;
@@ -415,9 +431,9 @@ public:
   std::vector<int64_t> demand_int; // (n,) scaled/rounded
   std::vector<float> d0;           // (n,) dist to depot (precomputed)
 
-  std::vector<int32_t> nn_list;        // (n,k)
-  std::vector<int32_t> backup_list;    // (n,bl)
-  std::vector<int32_t> nn_pos;         // (n,n) dense map (same as TSP)
+  std::vector<int32_t> nn_list;     // (n,k)
+  std::vector<int32_t> backup_list; // (n,bl)
+  // std::vector<int32_t> nn_pos;         // REMOVED
   std::vector<float> heuristic_sparse; // (n,k)
 
   std::vector<float> pheromone_sparse; // (n,k)
@@ -447,7 +463,8 @@ public:
              int32_t backup_list_size, int32_t min_new_edges_, float decay,
              float alpha_, float p_best_, bool use_local_search_,
              bool disable_heuristic_, bool extend_ls_ = false,
-             bool smooth_mmas_ = false, int32_t fixed_steps_ = 0);
+             bool smooth_mmas_ = false, int32_t fixed_steps_ = 0,
+             bool nls_ = false, int32_t T_nls_ = 10);
 
   void seed_rng(uint64_t seed);
 
@@ -469,14 +486,22 @@ public:
   int32_t *nn_list_data() { return nn_list.data(); }
   int32_t *backup_list_data() { return backup_list.data(); }
   float *heuristic_data() { return heuristic_sparse.data(); }
-  int32_t *nn_pos_data() { return nn_pos.data(); }
+  // int32_t *nn_pos_data() { return nn_pos.data(); }
+
+  inline int32_t find_neighbor_index(int32_t u, int32_t v) const {
+    for (int32_t j = 0; j < k; ++j) {
+      if (nn_list[u * k + j] == v)
+        return j;
+    }
+    return -1;
+  }
   int32_t *source_perm_data() { return source_perm.data(); }
   int32_t *best_perm_data() { return best_perm.data(); }
 
 private:
   // ---- build helpers ----
   void build_nn_lists();
-  void build_nn_pos();
+  // void build_nn_pos();
   void build_heuristic();
   void build_d0();
   void build_initial_perm();
@@ -487,14 +512,17 @@ private:
   // ---- MFACO sampling primitives on giant tour ----
   float sample_ant_fast(const float *probmat, int32_t start_node,
                         std::vector<int32_t> &perm_out, int32_t &new_edges_out,
-                        std::vector<int32_t> &checklist, Xoshiro128Plus &rng);
+                        std::vector<int32_t> &checklist, Xoshiro128Plus &rng,
+                        const float *prior);
 
   float sample_ant_traced(const float *probmat, int32_t start_node,
                           std::vector<int32_t> &perm_out,
-                          int32_t &new_edges_out,
+                          std::vector<int32_t> &perm_raw_out,
+                          float &cost_raw_out, int32_t &new_edges_out,
                           std::vector<int32_t> &checklist,
                           class MFACOTrace &trace, Xoshiro128Plus &rng,
-                          float &logp_sum, float &survival_out);
+                          float &logp_sum, float &survival_out,
+                          const float *prior);
 
   std::tuple<int32_t, bool, float>
   select_next_node(int32_t curr, const float *probmat_row,
@@ -506,6 +534,10 @@ private:
                       std::vector<int32_t> &positions);
   float two_opt_nn(std::vector<int32_t> &perm, std::vector<int32_t> &positions,
                    std::vector<int32_t> &checklist);
+  float two_opt_nn_prior(std::vector<int32_t> &perm,
+                         std::vector<int32_t> &positions,
+                         std::vector<int32_t> &checklist,
+                         const float *prior_ptr);
   void flip_route_section(int32_t start_node, int32_t end_node,
                           std::vector<int32_t> &perm,
                           std::vector<int32_t> &positions);

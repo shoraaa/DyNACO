@@ -77,6 +77,8 @@ class MFACO_TSP:
         disable_heuristic: bool = False,
         normalized_heuristic: bool = False,
         fixed_steps: int = 0,
+        nls: bool = False,
+        T_nls: int = 10,
         **kwargs
     ):
         self.device = device
@@ -110,6 +112,8 @@ class MFACO_TSP:
             self.extend_ls,
             self.smooth_mmas,
             self.fixed_steps,
+            nls,
+            int(T_nls)
         )
         
         if self.normalized_heuristic and not self.disable_heuristic:
@@ -163,8 +167,8 @@ class MFACO_TSP:
     def nn_list(self) -> np.ndarray: return np.asarray(self._cpp.nn_list)
     @property
     def backup_list(self) -> np.ndarray: return np.asarray(self._cpp.backup_list)
-    @property
-    def nn_pos(self) -> np.ndarray: return np.asarray(self._cpp.nn_pos)
+    # @property
+    # def nn_pos(self) -> np.ndarray: return np.asarray(self._cpp.nn_pos)
     @property
     def source_positions(self) -> np.ndarray: return np.asarray(self._cpp.source_positions)
 
@@ -275,6 +279,8 @@ class MFACO_CVRP:
         enable_torch_sync: bool = True,
         normalized_heuristic: bool = False,
         fixed_steps: int = 0,
+        nls: bool = False,
+        T_nls: int = 10,
         **kwargs
     ):
         coords_np = _as_numpy_f32(coords)
@@ -299,6 +305,8 @@ class MFACO_CVRP:
             bool(extend_ls),
             bool(smooth_mmas),
             int(fixed_steps),
+            bool(nls),
+            int(T_nls),
         )
         self.device = device
         self.enable_torch_sync = enable_torch_sync
@@ -330,8 +338,8 @@ class MFACO_CVRP:
     def nn_list(self) -> np.ndarray: return np.asarray(self.solver.nn_list)
     @property
     def backup_list(self) -> np.ndarray: return np.asarray(self.solver.backup_list)
-    @property
-    def nn_pos(self) -> np.ndarray: return np.asarray(self.solver.nn_pos)
+    # @property
+    # def nn_pos(self) -> np.ndarray: return np.asarray(self.solver.nn_pos)
     
     @property
     def pheromone_sparse(self) -> torch.Tensor:
@@ -343,14 +351,14 @@ class MFACO_CVRP:
     def sample(self, require_prob: bool = False, prior=None, parallel_traced: bool = False, return_decoded: bool = False):
         if prior is not None:
             prior = _as_numpy_f32(prior)
-        costs, perms, decoded, logps, traces, new_edges_count, survival = self.solver.sample(
+        costs, perms, decoded, logps, traces, costs_raw, perms_raw, new_edges_count, survival = self.solver.sample(
             require_prob, prior, parallel_traced, return_decoded
         )
 
         if isinstance(survival, np.ndarray):
              survival = torch.from_numpy(survival).to(self.device)
 
-        return costs, perms, decoded, logps, traces, new_edges_count, survival
+        return costs, perms, decoded, logps, traces, costs_raw, perms_raw, new_edges_count, survival
 
     def update_pheromone(self, best_perm, best_cost: float):
         p = _as_numpy_i32(best_perm)

@@ -1,0 +1,171 @@
+wandb: Currently logged in as: shoraaa (shoraaa-vnu) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run 8wj5ny3m
+wandb: Tracking run with wandb version 0.23.1
+wandb: Run data is saved locally in /home/shora/Research/old/NGFACO/wandb/run-20260130_034714-8wj5ny3m
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run baseline_mne8
+wandb: ⭐️ View project at https://wandb.ai/shoraaa-vnu/lga_tsp_search_mne8
+wandb: 🚀 View run at https://wandb.ai/shoraaa-vnu/lga_tsp_search_mne8/runs/8wj5ny3m
+Validation dataset not found. Generating 16 instances on fly...
+Saved generated dataset to /home/shora/Research/old/NGFACO/data/tsp/valDataset-100.pt
+Computing LKH baseline for 16 examples...
+LKH Baseline:   0%|          | 0/16 [00:00<?, ?it/s]LKH Baseline:  12%|█▎        | 2/16 [00:00<00:00, 19.91it/s]LKH Baseline:  31%|███▏      | 5/16 [00:00<00:00, 25.75it/s]LKH Baseline:  56%|█████▋    | 9/16 [00:00<00:00, 31.21it/s]LKH Baseline:  81%|████████▏ | 13/16 [00:00<00:00, 30.24it/s]LKH Baseline: 100%|██████████| 16/16 [00:00<00:00, 26.81it/s]
+Saved baseline to /home/shora/Research/old/NGFACO/data/tsp/valDataset-100-932aea5b566fb9e7-lkh.pt
+Epoch:   0%|          | 0/32 [00:00<?, ?it/s]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:01<00:13,  1.48s/it][A
+Outer:  20%|██        | 2/10 [00:02<00:09,  1.16s/it][A
+Outer:  30%|███       | 3/10 [00:03<00:07,  1.03s/it][A
+Outer:  40%|████      | 4/10 [00:04<00:05,  1.07it/s][A
+Outer:  50%|█████     | 5/10 [00:04<00:04,  1.13it/s][A
+Outer:  60%|██████    | 6/10 [00:05<00:03,  1.14it/s][A
+Outer:  70%|███████   | 7/10 [00:06<00:02,  1.18it/s][A
+Outer:  80%|████████  | 8/10 [00:07<00:01,  1.20it/s][A
+Outer:  90%|█████████ | 9/10 [00:08<00:00,  1.22it/s][A
+Outer: 100%|██████████| 10/10 [00:09<00:00,  1.19it/s][A
+                                                      [AEpoch:   3%|▎         | 1/32 [00:09<04:40,  9.03s/it]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:00<00:07,  1.14it/s][A
+Outer:  20%|██        | 2/10 [00:01<00:06,  1.20it/s][A
+Outer:  30%|███       | 3/10 [00:02<00:05,  1.23it/s][A
+Outer:  40%|████      | 4/10 [00:03<00:04,  1.25it/s][A
+Outer:  50%|█████     | 5/10 [00:04<00:04,  1.21it/s][A
+Outer:  60%|██████    | 6/10 [00:04<00:03,  1.23it/s][A
+Outer:  70%|███████   | 7/10 [00:05<00:02,  1.23it/s][A
+Outer:  80%|████████  | 8/10 [00:06<00:01,  1.24it/s][A
+Outer:  90%|█████████ | 9/10 [00:07<00:00,  1.20it/s][A
+Outer: 100%|██████████| 10/10 [00:08<00:00,  1.22it/s][A
+                                                      [AEpoch:   6%|▋         | 2/32 [00:17<04:16,  8.54s/it]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:00<00:07,  1.26it/s][A
+Outer:  20%|██        | 2/10 [00:01<00:06,  1.26it/s][A
+Outer:  30%|███       | 3/10 [00:02<00:05,  1.23it/s][A
+Outer:  40%|████      | 4/10 [00:03<00:04,  1.22it/s][A
+Outer:  50%|█████     | 5/10 [00:04<00:03,  1.25it/s][A
+Outer:  60%|██████    | 6/10 [00:04<00:03,  1.24it/s][A
+Outer:  70%|███████   | 7/10 [00:05<00:02,  1.24it/s][A
+Outer:  80%|████████  | 8/10 [00:06<00:01,  1.23it/s][A
+Outer:  90%|█████████ | 9/10 [00:07<00:00,  1.25it/s][A
+Outer: 100%|██████████| 10/10 [00:08<00:00,  1.27it/s][A
+                                                      [AEpoch:   9%|▉         | 3/32 [00:25<04:00,  8.30s/it]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:00<00:06,  1.30it/s][A
+Outer:  20%|██        | 2/10 [00:01<00:06,  1.29it/s][A
+Outer:  30%|███       | 3/10 [00:02<00:05,  1.28it/s][A
+Outer:  40%|████      | 4/10 [00:03<00:04,  1.27it/s][A
+Outer:  50%|█████     | 5/10 [00:03<00:03,  1.28it/s][A
+Outer:  60%|██████    | 6/10 [00:04<00:03,  1.28it/s][A
+Outer:  70%|███████   | 7/10 [00:05<00:02,  1.24it/s][A
+Outer:  80%|████████  | 8/10 [00:06<00:01,  1.26it/s][A
+Outer:  90%|█████████ | 9/10 [00:07<00:00,  1.27it/s][A
+Outer: 100%|██████████| 10/10 [00:07<00:00,  1.28it/s][A
+                                                      [AEpoch:  12%|█▎        | 4/32 [00:33<03:47,  8.13s/it]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:00<00:08,  1.11it/s][A
+Outer:  20%|██        | 2/10 [00:01<00:06,  1.20it/s][A
+Outer:  30%|███       | 3/10 [00:02<00:05,  1.23it/s][A
+Outer:  40%|████      | 4/10 [00:03<00:04,  1.25it/s][A
+Outer:  50%|█████     | 5/10 [00:04<00:04,  1.25it/s][A
+Outer:  60%|██████    | 6/10 [00:04<00:03,  1.25it/s][A
+Outer:  70%|███████   | 7/10 [00:05<00:02,  1.26it/s][A
+Outer:  80%|████████  | 8/10 [00:06<00:01,  1.27it/s][A
+Outer:  90%|█████████ | 9/10 [00:07<00:00,  1.26it/s][A
+Outer: 100%|██████████| 10/10 [00:08<00:00,  1.25it/s][A
+                                                      [AEpoch:  16%|█▌        | 5/32 [00:41<03:38,  8.10s/it]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:00<00:07,  1.24it/s][A
+Outer:  20%|██        | 2/10 [00:01<00:06,  1.19it/s][A
+Outer:  30%|███       | 3/10 [00:02<00:05,  1.21it/s][A
+Outer:  40%|████      | 4/10 [00:03<00:04,  1.22it/s][A
+Outer:  50%|█████     | 5/10 [00:04<00:04,  1.22it/s][A
+Outer:  60%|██████    | 6/10 [00:04<00:03,  1.23it/s][A
+Outer:  70%|███████   | 7/10 [00:05<00:02,  1.17it/s][A
+Outer:  80%|████████  | 8/10 [00:06<00:01,  1.16it/s][A
+Outer:  90%|█████████ | 9/10 [00:07<00:00,  1.14it/s][A
+Outer: 100%|██████████| 10/10 [00:08<00:00,  1.16it/s][A
+                                                      [AEpoch:  19%|█▉        | 6/32 [00:49<03:33,  8.22s/it]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:00<00:08,  1.01it/s][A
+Outer:  20%|██        | 2/10 [00:01<00:07,  1.11it/s][A
+Outer:  30%|███       | 3/10 [00:02<00:06,  1.14it/s][A
+Outer:  40%|████      | 4/10 [00:03<00:05,  1.11it/s][A
+Outer:  50%|█████     | 5/10 [00:04<00:04,  1.13it/s][A
+Outer:  60%|██████    | 6/10 [00:05<00:03,  1.17it/s][A
+Outer:  70%|███████   | 7/10 [00:06<00:02,  1.16it/s][A
+Outer:  80%|████████  | 8/10 [00:06<00:01,  1.17it/s][A
+Outer:  90%|█████████ | 9/10 [00:07<00:00,  1.16it/s][A
+Outer: 100%|██████████| 10/10 [00:08<00:00,  1.18it/s][A
+                                                      [AEpoch:  22%|██▏       | 7/32 [00:58<03:29,  8.37s/it]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:00<00:06,  1.30it/s][A
+Outer:  20%|██        | 2/10 [00:01<00:06,  1.24it/s][A
+Outer:  30%|███       | 3/10 [00:02<00:06,  1.16it/s][A
+Outer:  40%|████      | 4/10 [00:03<00:05,  1.19it/s][A
+Outer:  50%|█████     | 5/10 [00:04<00:04,  1.16it/s][A
+Outer:  60%|██████    | 6/10 [00:05<00:03,  1.15it/s][A
+Outer:  70%|███████   | 7/10 [00:05<00:02,  1.17it/s][A
+Outer:  80%|████████  | 8/10 [00:06<00:01,  1.16it/s][A
+Outer:  90%|█████████ | 9/10 [00:07<00:00,  1.15it/s][A
+Outer: 100%|██████████| 10/10 [00:08<00:00,  1.14it/s][A
+                                                      [AEpoch:  25%|██▌       | 8/32 [01:06<03:22,  8.44s/it]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:00<00:07,  1.18it/s][A
+Outer:  20%|██        | 2/10 [00:01<00:07,  1.13it/s][A
+Outer:  30%|███       | 3/10 [00:02<00:05,  1.19it/s][A
+Outer:  40%|████      | 4/10 [00:03<00:04,  1.23it/s][A
+Outer:  50%|█████     | 5/10 [00:04<00:03,  1.25it/s][A
+Outer:  60%|██████    | 6/10 [00:04<00:03,  1.26it/s][A
+Outer:  70%|███████   | 7/10 [00:05<00:02,  1.29it/s][A
+Outer:  80%|████████  | 8/10 [00:06<00:01,  1.24it/s][A
+Outer:  90%|█████████ | 9/10 [00:07<00:00,  1.26it/s][A
+Outer: 100%|██████████| 10/10 [00:08<00:00,  1.27it/s][A
+                                                      [AEpoch:  28%|██▊       | 9/32 [01:14<03:11,  8.31s/it]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:00<00:08,  1.11it/s][A
+Outer:  20%|██        | 2/10 [00:01<00:07,  1.13it/s][A
+Outer:  30%|███       | 3/10 [00:02<00:06,  1.12it/s][A
+Outer:  40%|████      | 4/10 [00:03<00:05,  1.17it/s][A
+Outer:  50%|█████     | 5/10 [00:04<00:04,  1.21it/s][A
+Outer:  60%|██████    | 6/10 [00:05<00:03,  1.21it/s][A
+Outer:  70%|███████   | 7/10 [00:05<00:02,  1.19it/s][A
+Outer:  80%|████████  | 8/10 [00:06<00:01,  1.23it/s][A
+Outer:  90%|█████████ | 9/10 [00:07<00:00,  1.18it/s][A
+Outer: 100%|██████████| 10/10 [00:08<00:00,  1.19it/s][A
+                                                      [AEpoch:  31%|███▏      | 10/32 [01:23<03:03,  8.35s/it]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:00<00:07,  1.14it/s][A
+Outer:  20%|██        | 2/10 [00:01<00:06,  1.20it/s][A
+Outer:  30%|███       | 3/10 [00:02<00:06,  1.16it/s][A
+Outer:  40%|████      | 4/10 [00:03<00:05,  1.16it/s][A
+Outer:  50%|█████     | 5/10 [00:04<00:04,  1.18it/s][A
+Outer:  60%|██████    | 6/10 [00:05<00:03,  1.21it/s][A
+Outer:  70%|███████   | 7/10 [00:05<00:02,  1.22it/s][A
+Outer:  80%|████████  | 8/10 [00:06<00:01,  1.20it/s][A
+Outer:  90%|█████████ | 9/10 [00:07<00:00,  1.22it/s][A
+Outer: 100%|██████████| 10/10 [00:08<00:00,  1.25it/s][A
+                                                      [AEpoch:  34%|███▍      | 11/32 [01:31<02:54,  8.32s/it]
+Outer:   0%|          | 0/10 [00:00<?, ?it/s][A
+Outer:  10%|█         | 1/10 [00:00<00:07,  1.18it/s][A
+Outer:  20%|██        | 2/10 [00:01<00:06,  1.16it/s][A
+Outer:  30%|███       | 3/10 [00:02<00:06,  1.14it/s][A
+Outer:  40%|████      | 4/10 [00:03<00:05,  1.16it/s][A
+                                                     [AEpoch:  34%|███▍      | 11/32 [01:35<03:01,  8.66s/it]
+Traceback (most recent call last):
+  File "/home/shora/Research/old/NGFACO/train.py", line 800, in <module>
+    main()
+    ~~~~^^
+  File "/home/shora/Research/old/NGFACO/train.py", line 732, in main
+    global_step, avg_train, t_neural, t_aco = train_epoch(net_model, optimizer, global_step, epoch, args)
+                                              ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/shora/Research/old/NGFACO/train.py", line 416, in train_epoch
+    avg_cost, best_cost, metrics = train_instance_ppo(net, optimizer, instance_data, args)
+                                   ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/shora/Research/old/NGFACO/train.py", line 266, in train_instance_ppo
+    logp_old, ndec = replay_logp_from_cpp_batch_trace(traces, prob_old)
+                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/home/shora/Research/old/NGFACO/train.py", line 63, in replay_logp_from_cpp_batch_trace
+    ant_idx_all = torch.repeat_interleave(
+        torch.arange(n_ants, device=device, dtype=torch.int64),
+        counts_t,
+    )
+KeyboardInterrupt

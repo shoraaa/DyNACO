@@ -342,6 +342,10 @@ def stage3_budget(args, output_dir):
             df = pd.DataFrame(results)
             df.to_csv(output_dir / "stage3_summary.csv", index=False)
 
+    if not results:
+        print("No results collected for Stage 3. Check logs for errors.")
+        return
+    
     df = pd.DataFrame(results)
     df = df.sort_values("score")
     df.to_csv(output_dir / "stage3_summary.csv", index=False)

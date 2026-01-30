@@ -43,9 +43,13 @@ def _popcount_i64(x: torch.Tensor) -> torch.Tensor:
     x = (x + (x >> 4)) & m4
     return (x * h01) >> 56
 
-def replay_logp_from_cpp_batch_trace(traces, prob_sparse: torch.Tensor):
-    device = prob_sparse.device
-    k = int(prob_sparse.size(1))
+def replay_logp_from_cpp_batch_trace(traces, log_prob_sparse: torch.Tensor):
+    """
+    Replay traces to compute log probabilities using log-space arithmetic.
+    log_prob_sparse: (n, k) tensor of UNNORMALIZED log-probabilities (log weights)
+    """
+    device = log_prob_sparse.device
+    k = int(log_prob_sparse.size(1))
     
     # Trace arrays -> torch
     curr = torch.as_tensor(np.asarray(traces.curr_nodes, dtype=np.int64), device=device)
@@ -59,40 +63,58 @@ def replay_logp_from_cpp_batch_trace(traces, prob_sparse: torch.Tensor):
     starts_t = torch.as_tensor(np.asarray(traces.starts, dtype=np.int64), device=device, dtype=torch.int64)
     n_ants = int(getattr(traces, "n_ants", int(starts_t.numel() - 1)))
     counts_t = (starts_t[1:1+n_ants] - starts_t[:n_ants]).to(torch.int64)
-
+    
+    # Map trace steps to ant index
     ant_idx_all = torch.repeat_interleave(
         torch.arange(n_ants, device=device, dtype=torch.int64),
         counts_t,
     )
 
     ndec = torch.bincount(ant_idx_all[is_stoch], minlength=n_ants).to(torch.int32)
-    logp = torch.zeros((n_ants,), device=device, dtype=torch.float32)
+    logp_sum = torch.zeros((n_ants,), device=device, dtype=torch.float32)
 
     roulette = is_stoch & (pick >= 0)
     idx = roulette.nonzero(as_tuple=False).squeeze(1)
     
     if idx.numel() > 0:
-        curr_r = curr[idx]
-        pick_r = pick[idx]
-        vm_r = vm_i64[idx]
-        w = prob_sparse[curr_r]
-
+        curr_r = curr[idx]   # current node
+        pick_r = pick[idx]   # chosen neighbor index in sparse list
+        vm_r = vm_i64[idx]   # valid mask
+        
+        # log weights for the current node's candidates: (batch, k)
+        log_w = log_prob_sparse[curr_r]
+        
+        # Determine valid mask as float: 0.0 for valid, -inf for invalid
         bitpos = torch.arange(k, device=device, dtype=torch.int64)
-        valid = ((vm_r.unsqueeze(1) >> bitpos) & 1).to(w.dtype)
+        # valid: (batch, k), 1 if valid, 0 if invalid
+        valid_bits = ((vm_r.unsqueeze(1) >> bitpos) & 1)
+        
+        # log_mask: 0.0 if valid, -inf otherwise
+        # safe way: use masked_fill
+        log_mask_val = torch.zeros_like(log_w)
+        log_mask_val.masked_fill_(valid_bits == 0, float('-inf'))
+        
+        log_w_valid = log_w + log_mask_val
+        
+        # Log-Sum-Exp for denominator
+        log_denom = torch.logsumexp(log_w_valid, dim=1)
+        
+        # Numerator is just the log_w of the picked choice
+        log_numer = log_w.gather(1, pick_r.unsqueeze(1)).squeeze(1)
+        
+        # log p = log_numer - log_denom
+        step_logp = log_numer - log_denom
+        
+        logp_sum.scatter_add_(0, ant_idx_all[idx], step_logp)
 
-        denom = (w * valid).sum(dim=1).clamp_min(1e-12)
-        numer = w.gather(1, pick_r.unsqueeze(1)).squeeze(1).clamp_min(1e-12)
+    return logp_sum, ndec
 
-        lp = torch.log(numer / denom)
-        logp.scatter_add_(0, ant_idx_all[idx], lp)
-
-    return logp, ndec
-
-def prob_sparse_from_tau_eta_prior(tau_nk, eta_nk, prior_nk, alpha=1.0, beta=1.0, eps=1e-12):
+def log_prob_sparse_from_tau_eta_prior(tau_nk, eta_nk, prior_nk, alpha=1.0, beta=1.0, eps=1e-12):
     tau = tau_nk.clamp_min(eps)
     eta = eta_nk.clamp_min(eps)
-    w = torch.exp(alpha * torch.log(tau) + beta * torch.log(eta) + prior_nk)
-    return w.clamp_min(eps)
+    # log_w = alpha * log(tau) + beta * log(eta) + prior
+    log_w = alpha * torch.log(tau) + beta * torch.log(eta) + prior_nk
+    return log_w
 
 
 
@@ -115,7 +137,9 @@ def setup_aco(args, instance_data, problem_type):
             'min_new_edges': args.min_new_edges,
             'extend_ls': not args.no_extend_ls,
             'normalized_heuristic': not args.no_normalized_heuristic,
-            'fixed_steps': args.L
+            'fixed_steps': args.L,
+            'nls': args.nls,
+            'T_nls': args.T_nls
         }
         pyg_args = (coords, args.device)
         aco = faco.MFACO_TSP(**kwargs)
@@ -138,7 +162,9 @@ def setup_aco(args, instance_data, problem_type):
             'device': args.device,
             'enable_torch_sync': True,
             'normalized_heuristic': not args.no_normalized_heuristic,
-            'fixed_steps': args.L
+            'fixed_steps': args.L,
+            'nls': args.nls,
+            'T_nls': args.T_nls
         }
         pyg_args = (coords, demand, args.device)
         aco = faco.MFACO_CVRP(**kwargs)
@@ -227,11 +253,18 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 current_prior = prior_old * factor
 
             if args.problem == 'tsp':
-                costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges, survival = aco.sample(
-                    require_prob=True, prior=current_prior
-                )
+                if args.nls:
+                    # New signature with NLS (9 outputs)
+                    costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges, survival = aco.sample(
+                        require_prob=True, prior=current_prior
+                    )
+                else:
+                    costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges, survival = aco.sample(
+                        require_prob=True, prior=current_prior
+                    )
             else: # cvrp
-                costs, flats, _, logps, traces, new_edges, survival = aco.sample(
+                # CVRP bindings updated to return 9 items too
+                costs, flats, _, logps, traces, costs_raw, flats_raw, new_edges, survival = aco.sample(
                     require_prob=True, prior=current_prior
                 )
             
@@ -239,15 +272,20 @@ def train_instance_ppo(model, optimizer, instance_data, args):
             metrics["survival"].append(survival.mean().item()) 
             
             costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
+            if costs_raw is not None:
+                costs_raw_t = torch.as_tensor(costs_raw, device=args.device, dtype=torch.float32)
+            else:
+                costs_raw_t = costs_t # Fallback
+            
             tau_nk = aco.tau_nk_torch().detach()
             tau_list.append(tau_nk)
 
             with torch.no_grad():
-                prob_old = prob_sparse_from_tau_eta_prior(
+                log_prob_old = log_prob_sparse_from_tau_eta_prior(
                     tau_nk, eta_nk, current_prior,
                     alpha=args.alpha, beta=args.beta, eps=EPS
                 )
-                logp_old, ndec = replay_logp_from_cpp_batch_trace(traces, prob_old)
+                logp_old, ndec = replay_logp_from_cpp_batch_trace(traces, log_prob_old)
                 ndec_f = ndec.to(torch.float32).clamp_min(1.0)
                 logp_old = (logp_old / ndec_f).detach()
 
@@ -309,11 +347,11 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 costs_t = costs_list[inner]
                 logp_old = logp_old_list[inner]
                 
-                prob_new = prob_sparse_from_tau_eta_prior(
+                log_prob_new = log_prob_sparse_from_tau_eta_prior(
                     tau_nk, eta_nk, current_prior,
                     alpha=args.alpha, beta=args.beta, eps=EPS
                 )
-                logp_new, ndec_new = replay_logp_from_cpp_batch_trace(traces, prob_new)
+                logp_new, ndec_new = replay_logp_from_cpp_batch_trace(traces, log_prob_new)
                 ndec_f = ndec_new.to(torch.float32).clamp_min(1.0)
                 logp_new = logp_new / ndec_f
                 
@@ -327,8 +365,18 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 clip_frac = clipped.float().mean()
                 clip_frac_list.append(clip_frac)
                 
-                baseline = costs_t.mean()
-                adv = (baseline - costs_t).detach()
+                clip_frac = clipped.float().mean()
+                clip_frac_list.append(clip_frac)
+                
+                # Advantage calculation with NLS
+                if args.nls:
+                    cost_combined = args.nls_beta * costs_t + (1.0 - args.nls_beta) * costs_raw_t
+                    baseline = cost_combined.mean()
+                    adv = (baseline - cost_combined).detach()
+                else:
+                    baseline = costs_t.mean()
+                    adv = (baseline - costs_t).detach()
+                
                 if args.adv_norm:
                     adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
                 
@@ -571,12 +619,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--problem", type=str, required=True, choices=['tsp', 'cvrp'])
     parser.add_argument("--n_node", type=int, default=1000)
-    parser.add_argument("--k_sparse", type=int, default=32)
+    parser.add_argument("--k_sparse", type=int, default=16)
     parser.add_argument("--algo", choices=["reinforce", "ppo"], default="ppo")
     
     # PPO
     parser.add_argument("--ppo_epochs", type=int, default=4)
-    parser.add_argument("--ppo_clip", type=float, default=0.2)
+    parser.add_argument("--ppo_clip", type=float, default=0.1)
     parser.add_argument("--adv_norm", action="store_true")
     parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--beta", type=float, default=1.0)
@@ -593,7 +641,7 @@ def main():
     
     # ACO
     parser.add_argument("--rho", type=float, default=0.1) 
-    parser.add_argument("--min_new_edges", type=int, default=12)
+    parser.add_argument("--min_new_edges", type=int, default=8)
     parser.add_argument("--H", type=int, default=10)
     parser.add_argument("--mini_H", type=int, default=100)
     parser.add_argument("--disable_heuristic", action="store_true")
@@ -601,6 +649,12 @@ def main():
     parser.add_argument("--no_smooth_mmas", action="store_true")
     parser.add_argument("--no_extend_ls", action="store_true")
     parser.add_argument("--no_normalized_heuristic", action="store_true")
+    
+    # NLS
+    parser.add_argument("--nls", action="store_true", help="Enable Neural Local Search")
+    parser.add_argument("--nls_beta", type=float, default=0.5, help="Weight for post-LS cost in advantage (1.0 = only post-LS)")
+    parser.add_argument("--T_nls", type=int, default=10, help="Number of NLS iterations")
+
     parser.add_argument("--no_logit_net", action="store_true")
     
     # Misc
@@ -620,6 +674,7 @@ def main():
     parser.add_argument("--threads", type=int, default=None)
     
     args = parser.parse_args()
+    args.adv_norm = True
 
     # Defaults setup
     if args.lr is None:

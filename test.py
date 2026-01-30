@@ -252,7 +252,7 @@ def main():
     ckpt = None
     if args.checkpoint != "none":
         print(f"Loading {args.checkpoint}...")
-        ckpt = torch.load(args.checkpoint, map_location=args.device)
+        ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
         config = ckpt.get("config", {})
         
         if args.problem is None:
@@ -293,7 +293,7 @@ def main():
     # Dataset
     if args.dataset:
         print(f"Loading {args.dataset}...")
-        data = torch.load(args.dataset, map_location="cpu")
+        data = torch.load(args.dataset, map_location="cpu", weights_only=False)
         if isinstance(data, dict):
             if "coords" in data: val_list = data["coords"]
             else: val_list = data

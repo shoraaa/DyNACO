@@ -1,0 +1,17 @@
+{
+  "problem": "tsp",
+  "n_node": 1000,
+  "epochs": 20,
+  "steps_per_epoch": 32,
+  "device": "cuda:0",
+  "seed": 1234,
+  "skip_baseline": false,
+  "skip_nudging": false,
+  "skip_grid": false,
+  "grid_top_n": 4,
+  "grid_combination_size": 2,
+  "output_dir": "search_results",
+  "wandb": true,
+  "force": false,
+  "test_run": false
+}
