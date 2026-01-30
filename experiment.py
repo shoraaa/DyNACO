@@ -177,25 +177,6 @@ def run_tsp_experiments(sizes=[1000, 5000, 10000], dry_run=False):
         cfg.update(TSP_CONFIG)
         cfg["n_node"] = n
         
-        # Training
-        # Note: Large sizes usually train on smaller sizes or same size?
-        # Paper implies training on corresponding size or generating on fly.
-        # We will train on N if N <= 1000, else maybe train on 1000? 
-        # "Validation uses fixed datasets... Training data is generated on-the-fly"
-        # Usually one model per size, or size generalization.
-        # Let's assume training on N for now, or 1000 for all?
-        # Table 4 in paper (not provided but typical) shows generalization. 
-        # But Table 2 shows results for each size. DeepACO trains on same size usually.
-        # Let's train on N.
-        
-        # For very large N (50K), training might be too slow on single GPU if full epochs.
-        # For reproduction, let's train on 1000? Or assume sizes.
-        # Re-reading paper introduction/experiments:
-        # "Training data is generated on-the-fly ... Validation uses fixed datasets"
-        # It doesn't explicitly say "Trained on N".
-        # But section "Zero-shot size generalization" implies models are trained on specific sizes.
-        # We will train on N for 1K. For 5K+, maybe train on N too if feasible.
-        
         if n > 1000 and not dry_run:
              print(f"Warning: Training on N={n} might be slow. Consider using N=1000 model for zero-shot if supported.")
         

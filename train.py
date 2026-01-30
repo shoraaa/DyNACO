@@ -676,9 +676,9 @@ def main():
     # Training
     parser.add_argument("--n_ants", type=int, default=100)
     parser.add_argument("--steps_per_epoch", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=None)
-    parser.add_argument("--ppo_lr", type=float, default=1e-6)
+    parser.add_argument("--ppo_lr", type=float, default=5e-6)
     parser.add_argument("--reinforce_lr", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--device", type=str, default="cuda:0")
