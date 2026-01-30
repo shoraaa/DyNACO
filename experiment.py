@@ -257,9 +257,26 @@ def run_ablation_refresh(dry_run=False):
     results = load_progress()
     
     for H, S in h_s_pairs:
-        key = f"ablation_refresh_H{H}_S{S}"
+        # Check for default config reuse (H=10, S=100)
+        if H == 10 and S == 100:
+             default_key = "tsp_n1000"
+             if default_key in results:
+                 print(f"[REUSE] Using {default_key} for H=10, S=100")
+                 results[f"ablation_refresh_H{H}_S{S}"] = results[default_key]
+                 continue
+             else:
+                 # Train as default if not found? Or just proceed as normal but map it?
+                 # Better to train as tsp_n1000 so others can reuse it.
+                 print(f"[INFO] H=10, S=100 matches Default. Using/Training '{default_key}'...")
+                 # Temporarily switch key
+                 key = default_key
+                 # Proceed to train/test with this key, then map result back
+                 
+        key = f"ablation_refresh_H{H}_S{S}" if not (H==10 and S==100) else "tsp_n1000"
+        
         if key in results:
              print(f"[SKIP] {key} already completed: {results[key]}")
+             if key == "tsp_n1000": results[f"ablation_refresh_H10_S100"] = results[key]
              continue
 
         print(f"\n--- Ablation H={H}, S={S} ---")
@@ -267,12 +284,16 @@ def run_ablation_refresh(dry_run=False):
         cfg["H"] = H
         cfg["mini_H"] = S
         
-        model_path = train_model(cfg, dry_run, wandb_project="lga_ablation_refresh")
+        proj = "lga_ablation_refresh"
+        if key == "tsp_n1000": proj = "lga_tsp"
+        
+        model_path = train_model(cfg, dry_run, wandb_project=proj)
         gap, t_val = test_model(model_path, cfg, dry_run)
         
         result_data = {"gap": gap, "time": t_val}
         save_progress(key, result_data)
         results[key] = result_data
+        if key == "tsp_n1000": results[f"ablation_refresh_H10_S100"] = result_data
         print(f"H={H}: Gap={gap}%, Time={t_val}s")
         
     return results
@@ -292,17 +313,31 @@ def run_ablation_features(dry_run=False):
     
     # Full
     key_full = "ablation_features_full"
-    if key_full in results:
-        print(f"[SKIP] {key_full} already completed: {results[key_full]}")
-        results["Full"] = results[key_full]["gap"] # Adapt to previous structure if needed, but saving consistent dict is better.
+    default_key = "tsp_n1000"
+    
+    # Check reuse
+    if default_key in results:
+         print(f"[REUSE] Using {default_key} for Full Features")
+         results[key_full] = results[default_key]
+         results["Full"] = results[default_key]["gap"]
+    elif key_full in results: # Fallback if run independently previously
+         print(f"[SKIP] {key_full} already completed: {results[key_full]}")
+         results["Full"] = results[key_full]["gap"]
     else:
-        print("\n--- Full Features ---")
-        model_path = train_model(base_cfg, dry_run, wandb_project="lga_ablation_features")
-        gap, t_val = test_model(model_path, base_cfg, dry_run) # Capture time too
-        
-        result_data = {"gap": gap, "time": t_val}
-        save_progress(key_full, result_data)
-        results["Full"] = gap # Keep original return structure locally if needed
+        # Run as tsp_n1000 preference
+        print(f"[INFO] Full Features matches Default. Using/Training '{default_key}'...")
+        if default_key in results: # Double check
+             pass 
+        else:
+             print("\n--- Full Features (Default) ---")
+             model_path = train_model(base_cfg, dry_run, wandb_project="lga_tsp")
+             gap, t_val = test_model(model_path, base_cfg, dry_run)
+             result_data = {"gap": gap, "time": t_val}
+             save_progress(default_key, result_data)
+             results[default_key] = result_data
+             
+        results[key_full] = results[default_key]
+        results["Full"] = results[default_key]["gap"]
     
     # Static Only
     key_static = "ablation_features_static"
@@ -322,32 +357,119 @@ def run_ablation_features(dry_run=False):
     
     return results
 
+def run_ablation_smoothing(dry_run=False):
+    print("\n=== Running Ablation: Smoothing (Table 8) ===")
+    n = 1000  # Based on context usually N=1000
+    base_cfg = DEFAULT_CONFIG.copy()
+    base_cfg.update(TSP_CONFIG) # Assuming TSP for ablation unless specified
+    base_cfg["n_node"] = n
+    
+    results = load_progress()
+    
+    
+    # Default (Smooth MMAS)
+    key_smooth = "ablation_smoothing_on"
+    default_key = "tsp_n1000"
+
+    if default_key in results:
+         print(f"[REUSE] Using {default_key} for Smoothing ON")
+         results[key_smooth] = results[default_key]
+    elif key_smooth in results:
+         print(f"[SKIP] {key_smooth} already completed: {results[key_smooth]}")
+    else:
+        print(f"[INFO] Smoothing ON matches Default. Using/Training '{default_key}'...")
+        print("\n--- Smoothing ON (Default) ---")
+        model_path = train_model(base_cfg, dry_run, wandb_project="lga_tsp")
+        gap, t_val = test_model(model_path, base_cfg, dry_run)
+        
+        result_data = {"gap": gap, "time": t_val}
+        save_progress(default_key, result_data)
+        results[key_smooth] = result_data
+
+    # No Smooth MMAS
+    key_no_smooth = "ablation_smoothing_off"
+    if key_no_smooth in results:
+        print(f"[SKIP] {key_no_smooth} already completed: {results[key_no_smooth]}")
+    else:
+        print("\n--- Smoothing OFF ---")
+        cfg_ns = base_cfg.copy()
+        cfg_ns["no_smooth_mmas"] = True
+        model_path = train_model(cfg_ns, dry_run, wandb_project="lga_ablation_smoothing")
+        gap, t_val = test_model(model_path, cfg_ns, dry_run)
+        
+        result_data = {"gap": gap, "time": t_val}
+        save_progress(key_no_smooth, result_data)
+
+def run_ablation_heuristic(dry_run=False):
+    print("\n=== Running Ablation: Heuristic (Future) ===")
+    n = 1000
+    base_cfg = DEFAULT_CONFIG.copy()
+    base_cfg.update(TSP_CONFIG)
+    base_cfg["n_node"] = n
+    
+    results = load_progress()
+    
+    # Heuristic ON (Default)
+    key_heu_on = "ablation_heuristic_on"
+    default_key = "tsp_n1000"
+    
+    if default_key in results:
+         print(f"[REUSE] Using {default_key} for Heuristic ON")
+         results[key_heu_on] = results[default_key]
+    elif key_heu_on in results:
+         print(f"[SKIP] {key_heu_on} already completed: {results[key_heu_on]}")
+    else:
+        print(f"[INFO] Heuristic ON matches Default. Using/Training '{default_key}'...")
+        print("\n--- Heuristic ON (Default) ---")
+        model_path = train_model(base_cfg, dry_run, wandb_project="lga_tsp")
+        gap, t_val = test_model(model_path, base_cfg, dry_run)
+        save_progress(default_key, {"gap": gap, "time": t_val})
+        results[key_heu_on] = {"gap": gap, "time": t_val}
+
+    # Heuristic OFF
+    key_heu_off = "ablation_heuristic_off"
+    if key_heu_off in results:
+        print(f"[SKIP] {key_heu_off} already completed: {results[key_heu_off]}")
+    else:
+        print("\n--- Heuristic OFF ---")
+        cfg_nh = base_cfg.copy()
+        cfg_nh["disable_heuristic"] = True
+        model_path = train_model(cfg_nh, dry_run, wandb_project="lga_ablation_heuristic")
+        gap, t_val = test_model(model_path, cfg_nh, dry_run)
+        save_progress(key_heu_off, {"gap": gap, "time": t_val})
+
 # =============================================================================
 # Main
 # =============================================================================
 
 def main():
     parser = argparse.ArgumentParser(description="Reproduce experiments from LGA paper")
-    parser.add_argument("--table", type=str, choices=["2", "3", "5", "6", "all"], default="all", help="Which table to reproduce")
+    parser.add_argument("--table", type=str, choices=["2", "3", "5", "6", "8", "heuristic", "all"], default="all", help="Which table to reproduce")
     parser.add_argument("--dry-run", action="store_true", help="Run with minimal steps to verify pipeline")
     parser.add_argument("--fast", action="store_true", help="Skip large instances")
     parser.add_argument("--sizes", type=int, nargs="+", help="Specific sizes to run")
     
     args = parser.parse_args()
     
-    if args.table in ["2", "all"]:
-        sizes = args.sizes if args.sizes else ([1000, 5000, 10000] if not args.fast else [1000])
-        run_tsp_experiments(sizes, args.dry_run)
+    # if args.table in ["2", "all"]:
+    #     sizes = args.sizes if args.sizes else ([1000, 5000, 10000] if not args.fast else [1000])
+    #     run_tsp_experiments(sizes, args.dry_run)
         
-    if args.table in ["3", "all"]:
-        sizes = args.sizes if args.sizes else ([1000, 5000] if not args.fast else [1000])
-        run_cvrp_experiments(sizes, args.dry_run)
+    # if args.table in ["3", "all"]:
+    #     sizes = args.sizes if args.sizes else ([1000, 5000] if not args.fast else [1000])
+    #     run_cvrp_experiments(sizes, args.dry_run)
         
     if args.table in ["5", "all"]:
         run_ablation_refresh(args.dry_run)
         
     if args.table in ["6", "all"]:
         run_ablation_features(args.dry_run)
+        
+    if args.table in ["8", "all"]:
+        run_ablation_smoothing(args.dry_run)
+        
+    if args.table in ["heuristic", "all"]:
+        run_ablation_heuristic(args.dry_run)
 
 if __name__ == "__main__":
     main()

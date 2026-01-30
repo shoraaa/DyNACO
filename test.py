@@ -115,7 +115,9 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
     if hasattr(aco, 'reset_timings'): aco.reset_timings()
 
     best_seen = float("inf")
+    best_seen = float("inf")
     avg_last = None
+    t_neural_total = 0.0
     priors, pher_before = [], []
     metrics_log = {k: [] for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match", "survival"]}
     metrics_log["snapshots"] = []
@@ -139,8 +141,11 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                         pyg_data = build_fn(aco, coords, args.device, dynamic=dynamic)
                     else:
                         pyg_data = build_fn(aco, coords, demand, args.device, dynamic=dynamic)
-                        
+                    
+                    t_neural_start = time.time()
                     heu_vec = model(pyg_data).view(-1)
+                    t_neural_total += time.time() - t_neural_start
+                    
                     prior_mat = heu_vec.view(aco.n, aco.k)
                     # if problem == 'cvrp': prior_mat += EPS
                     
@@ -229,9 +234,13 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                  })
 
 
-    timings = None
+    timings = {}
     if hasattr(aco, 'get_timings') and args.timed:
-        timings = aco.get_timings()
+        t = aco.get_timings()
+        timings = {k: v/1000.0 for k, v in t.items()} # ms to s
+    
+    if args.timed:
+        timings["time_neural"] = t_neural_total
     
     if collect_metrics:
         return avg_last, best_seen, timings, metrics_log
@@ -460,7 +469,13 @@ def main():
         "base_cost": [], "model_cost": [], "mix_cost": [],
         "base_time": [], "model_time": [], "mix_time": [],
         "base_metrics": {}, "model_metrics": {}, "mix_metrics": {},
-        "opt_cost": [], "base_gap": [], "model_gap": [], "mix_gap": []
+        "base_cost": [], "model_cost": [], "mix_cost": [],
+        "base_time": [], "model_time": [], "mix_time": [],
+        "base_metrics": {}, "model_metrics": {}, "mix_metrics": {},
+        "opt_cost": [], "base_gap": [], "model_gap": [], "mix_gap": [],
+        "model_time_breakdown": {
+            "neural": [], "sampling": [], "ls": [], "update": []
+        }
     }
     
     iterable = val_list
@@ -530,10 +545,16 @@ def main():
              tm0 = time.time()
              mod_ret = infer_instance(args.problem, MFACO, build_fn, model, item, args.k_sparse, args.n_ants, not args.no_dynamic_feats, args, use_heuristic_only=False, collect_metrics=args.visualize, metrics_every_step=args.visualize)
              tm1 = time.time()
-             if len(mod_ret) == 4: _, model_best, _, model_m = mod_ret
-             else: _, model_best, _ = mod_ret
+             if len(mod_ret) == 4: _, model_best, mod_timings, model_m = mod_ret
+             else: _, model_best, mod_timings = mod_ret
              results["model_cost"].append(model_best)
              results["model_time"].append(tm1 - tm0)
+             
+             if mod_timings:
+                 if "time_neural" in mod_timings: results["model_time_breakdown"]["neural"].append(mod_timings["time_neural"])
+                 if "time_sampling" in mod_timings: results["model_time_breakdown"]["sampling"].append(mod_timings["time_sampling"])
+                 if "time_ls" in mod_timings: results["model_time_breakdown"]["ls"].append(mod_timings["time_ls"])
+                 if "time_update" in mod_timings: results["model_time_breakdown"]["update"].append(mod_timings["time_update"])
              
              if opt_cost is not None:
                  gap = (model_best - opt_cost) / opt_cost
@@ -618,6 +639,17 @@ def main():
         print(f"Model Cost: {model_cost_mean:.4f}, Time: {model_time_mean:.4f}s")
         if results["model_gap"]:
             print(f"Model Gap: {np.mean(results['model_gap']) * 100:.4f}%")
+        
+        # Timing Breakdown
+        breakdown = results["model_time_breakdown"]
+        if breakdown["neural"]:
+             t_nn = np.sum(breakdown["neural"])
+             t_samp = np.sum(breakdown["sampling"])
+             t_ls = np.sum(breakdown["ls"])
+             t_upd = np.sum(breakdown["update"])
+             t_total_calc = t_nn + t_samp + t_ls + t_upd
+             if t_total_calc > 1e-9:
+                 print(f"Timing Breakdown: NN: {t_nn/t_total_calc*100:.1f}%, Sampling: {t_samp/t_total_calc*100:.1f}%, LS: {t_ls/t_total_calc*100:.1f}%, Update: {t_upd/t_total_calc*100:.1f}%")
             
         if args.warmup:
              mix_cost_mean = np.mean(results["mix_cost"])

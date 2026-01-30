@@ -445,6 +445,7 @@ def train_epoch(net, optimizer, global_step, epoch, args):
     # Pre-determine gen function and capacity for loop
     gen_func = utils.generate_tsp_instance if args.problem == 'tsp' else utils.gen_cvrp_instance
 
+    epoch_train_time = 0.0
     for step in tqdm(range(steps), desc="Epoch", leave=True):
         if args.problem == 'tsp':
             instance_data = np.random.rand(args.n_node, 2).astype(np.float32)
@@ -458,7 +459,9 @@ def train_epoch(net, optimizer, global_step, epoch, args):
         
         # Currently only PPO is verified and refactored fully in this file, REINFORCE can be similar
         # For brevity/focus we use PPO path (default)
+        t_start_instance = time.time()
         avg_cost, best_cost, metrics = train_instance_ppo(net, optimizer, instance_data, args)
+        epoch_train_time += time.time() - t_start_instance
             
         sum_avg_cost += avg_cost
         
@@ -477,7 +480,7 @@ def train_epoch(net, optimizer, global_step, epoch, args):
              wandb.log(log_dict, step=global_step)
         global_step += 1
     
-    return global_step, sum_avg_cost / steps, epoch_time_neural, epoch_time_aco
+    return global_step, sum_avg_cost / steps, epoch_time_neural, epoch_time_aco, epoch_train_time
 
 def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics=True):
     """
@@ -711,6 +714,7 @@ def main():
     parser.add_argument("--baseline_runs", type=int, default=1)
     parser.add_argument("--baseline_time_limit", type=float, default=300.0)
     parser.add_argument("--val_dataset", type=str, default=None, help="Path to validation dataset (optional)")
+    parser.add_argument("--val_size", type=int, default=None, help="Limit validation set size")
     parser.add_argument("--warmup", action="store_true", default=True, help="Use warmup (mixed) strategy in validation")
     parser.add_argument("--train_warmup", action="store_true", help="Use warmup strategy in training (skip model for first H*ratio steps)")
     parser.add_argument("--warmup_ratio", type=float, default=0.5, help="Warmup ratio H/2")
@@ -831,6 +835,13 @@ def main():
         if not args.val_dataset:
             utils.save_val_dataset(val_dataset, args.n_node, problem=args.problem)
     
+    # Limit validation set size if requested (apply to loaded or generated)
+    if args.val_size is not None and val_dataset is not None:
+        if isinstance(val_dataset, (list, tuple)) or torch.is_tensor(val_dataset):
+            original_len = len(val_dataset)
+            val_dataset = val_dataset[:args.val_size]
+            print(f"Limited validation dataset from {original_len} to {len(val_dataset)} instances.")
+
     if baseline_values is None:
         # If val_dataset contains tuples (coords, cost, tour) for TSP, we extract coords
         if args.problem == 'tsp' and isinstance(val_dataset, list) and len(val_dataset) > 0 and isinstance(val_dataset[0], tuple):
@@ -845,9 +856,11 @@ def main():
     
 
     
+    total_train_time = 0.0
     for epoch in range(args.epochs):
         # Train
-        global_step, avg_train, t_neural, t_aco = train_epoch(net_model, optimizer, global_step, epoch, args)
+        global_step, avg_train, t_neural, t_aco, epoch_train_time = train_epoch(net_model, optimizer, global_step, epoch, args)
+        total_train_time += epoch_train_time
         
         # Validate
         if val_dataset is not None:
@@ -903,6 +916,11 @@ def main():
         print(f"Saved best model to {best_path} (Val Cost: {best_val_cost:.4f})")
     
     # Save final model
+
+    print(f"Total Train Time: {total_train_time:.2f}s")
+    if not args.no_wandb:
+        wandb.log({"time/total_train_time": total_train_time})
+
     if args.save_dir:
         final_chkpt = {
             "model_state_dict": net_model.state_dict(),
