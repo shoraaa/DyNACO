@@ -27,7 +27,6 @@ DEFAULT_CONFIG = {
     "gamma": 1.0,
     "min_gamma": 0.2,
     "val_size": 16,
-    "val_size": 16,
     "save_dir": "pretrained"
 }
 
@@ -193,7 +192,7 @@ def test_model(model_path: Path, config: Dict[str, Any], dry_run: bool = False):
     # Some args need to be passed to test (like H, mini_H) if they are not saved/loaded correctly or to ensure test consistency
     # train.py saves config, but test.py logic loads it.
     # We can pass them to be safe.
-    for k in ["H", "mini_H", "n_ants", "k_sparse", "rho", "min_new_edges", "warmup", "warmup_ratio"]:
+    for k in ["H", "mini_H", "n_ants", "k_sparse", "rho", "min_new_edges", "warmup", "warmup_ratio", "val_size"]:
         if k in config:
              if k == "warmup":
                  if config[k] is False: cmd.append("--no-warmup")
