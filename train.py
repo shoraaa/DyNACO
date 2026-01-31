@@ -714,7 +714,7 @@ def main():
     parser.add_argument("--baseline_runs", type=int, default=1)
     parser.add_argument("--baseline_time_limit", type=float, default=300.0)
     parser.add_argument("--val_dataset", type=str, default=None, help="Path to validation dataset (optional)")
-    parser.add_argument("--val_size", type=int, default=None, help="Limit validation set size")
+    parser.add_argument("--val_size", type=int, default=16, help="Limit validation set size")
     parser.add_argument("--warmup", action="store_true", default=True, help="Use warmup (mixed) strategy in validation")
     parser.add_argument("--no-warmup", dest="warmup", action="store_false", help="Disable warmup")
     parser.add_argument("--train_warmup", action="store_true", help="Use warmup strategy in training (skip model for first H*ratio steps)")

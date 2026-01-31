@@ -88,12 +88,16 @@ DEPOT_COOR = [0.5, 0.5]
 
 def gen_cvrp_instance(n, device, capacity=None):
     if capacity is None:
-        if n > 1000:
-             capacity = 300 # Larger scale
-        elif n == 1000:
-             capacity = 200 # CVRP1K
+        if n >= 50000:
+             capacity = 2000
+        elif n >= 10000:
+             capacity = 1000
+        elif n >= 5000:
+             capacity = 500
+        elif n >= 1000:
+             capacity = 250
         else:
-             capacity = 50 # Standard small scale
+             capacity = 50
 
     locations = torch.rand(size=(n, 2), device=device)
     demands = torch.randint(low=DEMAND_LOW, high=DEMAND_HIGH+1, size=(n,), device=device)
