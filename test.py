@@ -285,6 +285,9 @@ def main():
     parser.add_argument("--warmup", action="store_true", default=True)
     parser.add_argument("--no-warmup", dest="warmup", action="store_false", help="Disable warmup")
     parser.add_argument("--warmup_ratio", type=float, default=0.5)
+    parser.add_argument("--generate_val", action="store_true", help="Generate test set instead of loading from file")
+    parser.add_argument("--save_generated", type=str, default=None, help="Path to save generated test dataset")
+    parser.add_argument("--val_size", type=int, default=None, help="Limit validation set size")
 
     args = parser.parse_args()
 
@@ -355,7 +358,20 @@ def main():
         MFACO = faco.MFACO_CVRP
 
     # Dataset
-    if args.dataset:
+    if args.generate_val:
+        # Generate test dataset dynamically
+        baseline_solver = args.baseline
+        val_list = utils.generate_and_save_dataset(
+            problem=args.problem,
+            n_node=args.n_node,
+            n_instances=args.val_size if args.val_size is not None else 16,
+            save_path=args.save_generated,
+            baseline_solver=baseline_solver,
+            baseline_runs=args.baseline_runs,
+            time_limit=args.baseline_time_limit,
+            device='cpu'
+        )
+    elif args.dataset:
         print(f"Loading {args.dataset}...")
         if args.dataset.endswith(".txt") and args.problem == 'tsp':
              val_list = utils.load_tsp_txt_dataset(args.dataset)
@@ -385,6 +401,13 @@ def main():
             
             # Save for reuse
             utils.save_val_dataset(val_list, args.n_node, problem=args.problem)
+
+    # Limit validation set size if requested
+    if args.val_size is not None and val_list is not None:
+        if isinstance(val_list, (list, tuple)) or torch.is_tensor(val_list):
+            original_len = len(val_list)
+            val_list = val_list[:args.val_size]
+            print(f"Limited validation dataset from {original_len} to {len(val_list)} instances.")
 
     # Baseline
     baseline_values = None
@@ -660,6 +683,7 @@ def main():
                 print(f"Mix Gap: {np.mean(results['mix_gap']) * 100:.4f}%")
 
     if baseline_values is not None:
+         print(f"Baseline Cost: {baseline_values.mean():.4f}")
          # Gap to baseline
          base_gap_bl = (np.mean(results["base_cost"]) - baseline_values.mean()) / baseline_values.mean()
          print(f"Base Gap to Baseline: {base_gap_bl * 100:.4f}%")

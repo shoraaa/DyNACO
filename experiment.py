@@ -195,7 +195,7 @@ def test_model(model_path: Path, config: Dict[str, Any], dry_run: bool = False):
              
     if dry_run:
         cmd.extend(["--n_node", "20", "--n_ants", "10"]) # Smaller scale for dry run validation
-        
+             
     log_file = Path("logs") / f"test_{model_path.stem}.log"
     code, output, _ = run_command(cmd, log_file, dry_run)
     return parse_metrics(output)
@@ -560,13 +560,13 @@ def main():
     
     args = parser.parse_args()
     
-    # if args.table in ["2", "all"]:
-    #     sizes = args.sizes if args.sizes else ([1000, 5000, 10000] if not args.fast else [1000])
-    #     run_tsp_experiments(sizes, args.dry_run)
+    if args.table in ["2", "all"]:
+        sizes = args.sizes if args.sizes else ([1000, 5000, 10000] if not args.fast else [1000])
+        run_tsp_experiments(sizes, args.dry_run)
         
-    # if args.table in ["3", "all"]:
-    #     sizes = args.sizes if args.sizes else ([1000, 5000] if not args.fast else [1000])
-    #     run_cvrp_experiments(sizes, args.dry_run)
+    if args.table in ["3", "all"]:
+        sizes = args.sizes if args.sizes else ([1000, 5000] if not args.fast else [1000])
+        run_cvrp_experiments(sizes, args.dry_run)
         
     if args.table in ["5", "all"]:
         run_ablation_refresh(args.dry_run)

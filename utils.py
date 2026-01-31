@@ -3,6 +3,7 @@ import numpy as np
 from pathlib import Path
 from torch_geometric.data import Data
 from torch.utils.data import TensorDataset
+import ast
 
 _THIS_DIR = Path(__file__).resolve().parent
 DATA_DIR = (_THIS_DIR / "data").resolve()
@@ -81,7 +82,7 @@ def build_pyg_data_tsp(aco, coords, device, dynamic: bool):
 
 # ----------------- CVRP Utils -----------------
 
-CAPACITY = 50
+CAPACITY = 250
 DEMAND_LOW = 1
 DEMAND_HIGH = 9
 DEPOT_COOR = [0.5, 0.5]
@@ -344,6 +345,21 @@ def load_tsp_txt_dataset(path):
                 tour = None 
                 
                 data_list.append((coords, cost, tour))
+                
+                data_list.append((coords, cost, tour))
+
+            elif line.startswith("["):
+                 # Generated Format: [coords],cost,[tour]
+                 # We wrap in [] to make it a list of 3 elements: [[coords], cost, [tour]]
+                 try:
+                     row_data = ast.literal_eval(f"[{line}]")
+                     if len(row_data) == 3:
+                         coords_flat, cost, tour = row_data
+                         num_nodes = len(coords_flat) // 2
+                         coords = torch.tensor(coords_flat).view(num_nodes, 2)
+                         data_list.append((coords, cost, tour))
+                 except Exception:
+                     pass
                 
             else:
                 # Unknown format or header
@@ -627,4 +643,110 @@ def row_top1_match_rate(a: torch.Tensor, b: torch.Tensor) -> float:
     if a is None or b is None: 
         return 0.0
     return float((a.argmax(dim=1) == b.argmax(dim=1)).float().mean())
+
+
+def generate_and_save_dataset(problem, n_node, n_instances, save_path, baseline_solver='lkh', 
+                               baseline_runs=1, time_limit=300.0, device='cpu'):
+    """
+    Generate a dataset of problem instances, compute baseline costs, and save to file.
+    
+    Args:
+        problem: 'tsp' or 'cvrp'
+        n_node: Number of nodes/customers
+        n_instances: Number of instances to generate
+        save_path: Path to save the dataset (.txt format)
+        baseline_solver: 'lkh' for TSP, 'hgs' for CVRP, or 'none'
+        baseline_runs: Number of baseline runs per instance
+        time_limit: Time limit for baseline solver
+        device: Device for generation
+        
+    Returns:
+        dataset: List of generated instances with baseline costs
+    """
+    from tqdm import tqdm
+    
+    dataset = []
+    
+    print(f"Generating {n_instances} {problem.upper()} instances (n={n_node})...")
+    
+    for i in tqdm(range(n_instances), desc="Generating"):
+        if problem == 'tsp':
+            coords = generate_tsp_instance(n_node)
+            if isinstance(coords, torch.Tensor):
+                coords_np = coords.cpu().numpy()
+            else:
+                coords_np = coords
+                
+            # Compute baseline
+            if baseline_solver != 'none':
+                from baselines import solve_with_lkh
+                cost, tour = solve_with_lkh(coords_np, runs=baseline_runs, time_limit=time_limit)
+            else:
+                cost, tour = 0.0, list(range(n_node))
+                
+            dataset.append((coords_np, cost, tour))
+            
+        elif problem == 'cvrp':
+            coords, demand, capacity = gen_cvrp_instance(n_node, device)
+            if isinstance(coords, torch.Tensor):
+                coords_np = coords.cpu().numpy()
+            else:
+                coords_np = coords
+            if isinstance(demand, torch.Tensor):
+                demand_np = demand.cpu().numpy()
+            else:
+                demand_np = demand
+            capacity_val = float(capacity)
+            
+            # Compute baseline
+            if baseline_solver != 'none':
+                from baselines import solve_with_hgs
+                # Need to denormalize demand for HGS
+                # gen_cvrp_instance returns normalized demand (demand/capacity)
+                # HGS expects integer demands
+                # Use same capacity logic as gen_cvrp_instance
+                if n_node >= 50000:
+                    real_cap = 2000
+                elif n_node >= 10000:
+                    real_cap = 1000
+                elif n_node >= 5000:
+                    real_cap = 500
+                elif n_node >= 1000:
+                    real_cap = 250  
+                else:
+                    real_cap = 50
+                    
+                # demand_np[1:] contains normalized customer demands, [0] is depot (0)
+                demand_int = (demand_np * real_cap).astype(np.int32)
+                cost = solve_with_hgs(coords_np, demand_int, real_cap, 
+                                         time_limit=time_limit)
+                tour = []  # HGS doesn't return tour in this implementation
+            else:
+                cost, tour = 0.0, list(range(n_node + 1))
+                
+            dataset.append((coords_np, demand_np, capacity_val, cost, tour))
+    
+    # Save to file
+    if save_path:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        print(f"Saving dataset to {save_path}...")
+        with open(save_path, 'w') as f:
+            for item in dataset:
+                if problem == 'tsp':
+                    coords, cost, tour = item
+                    # Format: coords_flat, cost, tour
+                    coords_flat = coords.flatten().tolist()
+                    line = f"{coords_flat},{cost},{tour}\n"
+                else:
+                    coords, demand, capacity, cost, tour = item
+                    coords_flat = coords.flatten().tolist()
+                    demand_flat = demand.flatten().tolist()
+                    line = f"{coords_flat},{demand_flat},{capacity},{cost},{tour}\n"
+                f.write(line)
+                
+        print(f"Saved {len(dataset)} instances.")
+        
+    return dataset
 

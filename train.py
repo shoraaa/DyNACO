@@ -11,6 +11,7 @@ from pathlib import Path
 from tqdm import tqdm
 import sys
 from typing import Optional
+import gc
 
 # Shared helpers
 import wandb
@@ -204,8 +205,7 @@ def train_instance_ppo(model, optimizer, instance_data, args):
     t_aco_update = 0.0
     t_aco_total = 0.0
     
-    prior_prev_outer = None
-    priors_history = [] 
+    prior_prev_outer_cpu = None 
     
     # Warmup
     warmup_steps = 0
@@ -227,17 +227,22 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 metrics["prior_std"].append(prior_old.std().item())
                 
                 # Track prior drift metrics
-                if prior_prev_outer is not None:
-                    metrics["prior_l2_drift"].append(rel_l2_drift(prior_prev_outer, prior_old))
-                    metrics["prior_kl"].append(mean_row_kl(prior_prev_outer, prior_old))
-                    metrics["prior_turnover"].append(top_turnover(prior_prev_outer, prior_old))
-                    metrics["prior_flip"].append(top1_flip_rate(prior_prev_outer, prior_old))
+
                 
                 # Track prior-eta correlation
                 metrics["prior_eta_corr"].append(safe_corr(prior_old, eta_nk))
                 
-                prior_prev_outer = prior_old.detach().clone()
-                priors_history.append(prior_old.detach().clone())
+                # Move to CPU for metrics to save VRAM
+                prior_cpu = prior_old.detach().cpu()
+                
+                if prior_prev_outer_cpu is not None:
+                    # Compute drift metrics on CPU
+                    metrics["prior_l2_drift"].append(rel_l2_drift(prior_prev_outer_cpu, prior_cpu))
+                    metrics["prior_kl"].append(mean_row_kl(prior_prev_outer_cpu, prior_cpu))
+                    metrics["prior_turnover"].append(top_turnover(prior_prev_outer_cpu, prior_cpu))
+                    metrics["prior_flip"].append(top1_flip_rate(prior_prev_outer_cpu, prior_cpu))
+                
+                prior_prev_outer_cpu = prior_cpu
         else:
              # Just to keep metrics consistent in length? Actually users usually expect metrics only for model steps?
              # Or append 0? Let's skip appending to keep metric lists cleaner, or append 0 if length mismatch issues arise.
@@ -436,6 +441,11 @@ def train_instance_ppo(model, optimizer, instance_data, args):
         if v: out_metrics[k] = np.mean(v)
         else: out_metrics[k] = 0.0
     
+    # Explicit memory cleanup
+    del traces_list, tau_list, logp_old_list, ndec_list, costs_list
+    gc.collect()
+    torch.cuda.empty_cache()
+
     return avg_cost_last, best_seen, out_metrics
 
 def train_epoch(net, optimizer, global_step, epoch, args):
@@ -715,6 +725,8 @@ def main():
     parser.add_argument("--baseline_time_limit", type=float, default=300.0)
     parser.add_argument("--val_dataset", type=str, default=None, help="Path to validation dataset (optional)")
     parser.add_argument("--val_size", type=int, default=16, help="Limit validation set size")
+    parser.add_argument("--generate_val", action="store_true", help="Generate validation set instead of loading from file")
+    parser.add_argument("--save_generated", type=str, default=None, help="Path to save generated validation dataset")
     parser.add_argument("--warmup", action="store_true", default=True, help="Use warmup (mixed) strategy in validation")
     parser.add_argument("--no-warmup", dest="warmup", action="store_false", help="Disable warmup")
     parser.add_argument("--train_warmup", action="store_true", help="Use warmup strategy in training (skip model for first H*ratio steps)")
@@ -783,7 +795,20 @@ def main():
     # Load Validation Data & Baselines
     val_dataset = None
     
-    if args.val_dataset:
+    if args.generate_val:
+        # Generate validation dataset dynamically
+        baseline_solver = args.baseline if args.baseline != 'default' else ('lkh' if args.problem == 'tsp' else 'hgs')
+        val_dataset = utils.generate_and_save_dataset(
+            problem=args.problem,
+            n_node=args.n_node,
+            n_instances=args.val_size,
+            save_path=args.save_generated,
+            baseline_solver=baseline_solver,
+            baseline_runs=args.baseline_runs,
+            time_limit=args.baseline_time_limit,
+            device='cpu'
+        )
+    elif args.val_dataset:
         print(f"Loading validation dataset from {args.val_dataset}...")
         if args.val_dataset.endswith(".txt") and args.problem == 'tsp':
              val_dataset = utils.load_tsp_txt_dataset(args.val_dataset)
@@ -843,7 +868,7 @@ def main():
             val_dataset = val_dataset[:args.val_size]
             print(f"Limited validation dataset from {original_len} to {len(val_dataset)} instances.")
 
-    if baseline_values is None:
+    if baseline_values is None and args.baseline != 'none':
         # If val_dataset contains tuples (coords, cost, tour) for TSP, we extract coords
         if args.problem == 'tsp' and isinstance(val_dataset, list) and len(val_dataset) > 0 and isinstance(val_dataset[0], tuple):
              val_dataset_coords = [x[0] for x in val_dataset]
