@@ -87,6 +87,11 @@ DEMAND_HIGH = 9
 DEPOT_COOR = [0.5, 0.5]
 
 def gen_cvrp_instance(n, device, capacity=None):
+    """
+    Generate a CVRP instance matching Kool et al. (2019) and Hou et al. (2023) style.
+    Depot is first node, coordinates are uniform random in [0,1].
+    Demands are integers 1-9 normalized by capacity.
+    """
     if capacity is None:
         if n >= 50000:
              capacity = 2000
@@ -99,17 +104,16 @@ def gen_cvrp_instance(n, device, capacity=None):
         else:
              capacity = 50
 
-    locations = torch.rand(size=(n, 2), device=device)
-    demands = torch.randint(low=DEMAND_LOW, high=DEMAND_HIGH+1, size=(n,), device=device)
-
-    depot = torch.tensor([DEPOT_COOR], device=device, dtype=locations.dtype)
-    coords = torch.cat((depot, locations), dim=0)
+    # All locations including depot are random uniform
+    coords = torch.rand(size=(n + 1, 2), device=device)
     
-    demand = torch.cat((torch.zeros((1,), device=device, dtype=demands.dtype), demands), dim=0)
-    demand_f = demand.float() / capacity
-    capacity_norm = 1.0
-
-    return coords, demand_f, capacity_norm
+    # Demands for n customers (depot has 0 demand)
+    demands = torch.randint(low=DEMAND_LOW, high=DEMAND_HIGH + 1, size=(n,), device=device)
+    demands_normalized = demands.float() / capacity
+    all_demands = torch.cat((torch.zeros((1,), device=device), demands_normalized))
+    
+    # Return coords (n+1, 2), demands (n+1,) normalized, capacity_norm=1.0
+    return coords, all_demands, 1.0
 
 def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
     """
