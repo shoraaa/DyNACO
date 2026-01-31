@@ -571,7 +571,7 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
             if args.problem == 'tsp':
                 costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=prior_numpy, require_prob=False)
             else:
-                costs, flats, _, _, _, new_edges, survival = aco.sample(prior=prior_numpy, require_prob=False)
+                costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=prior_numpy, require_prob=False)
             
             if collect_metrics:
                 metrics_log['new_edges'].append(new_edges.astype(np.float32).mean())
