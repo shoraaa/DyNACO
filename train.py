@@ -716,6 +716,7 @@ def main():
     parser.add_argument("--val_dataset", type=str, default=None, help="Path to validation dataset (optional)")
     parser.add_argument("--val_size", type=int, default=None, help="Limit validation set size")
     parser.add_argument("--warmup", action="store_true", default=True, help="Use warmup (mixed) strategy in validation")
+    parser.add_argument("--no-warmup", dest="warmup", action="store_false", help="Disable warmup")
     parser.add_argument("--train_warmup", action="store_true", help="Use warmup strategy in training (skip model for first H*ratio steps)")
     parser.add_argument("--warmup_ratio", type=float, default=0.5, help="Warmup ratio H/2")
     parser.add_argument("--anneal_prior", action="store_true")

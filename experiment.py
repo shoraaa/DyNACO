@@ -26,6 +26,7 @@ DEFAULT_CONFIG = {
     "anneal_prior": False,
     "gamma": 1.0,
     "min_gamma": 0.2,
+    "val_size": 16,
     "save_dir": "experiments_checkpoints"
 }
 
@@ -81,7 +82,9 @@ def load_progress() -> Dict[str, Any]:
     if os.path.exists(PROGRESS_FILE):
         try:
             with open(PROGRESS_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Filter out null entries just in case
+                return {k: v for k, v in data.items() if v is not None and v.get("gap") is not None}
         except json.JSONDecodeError:
             print(f"[WARNING] Could not decode {PROGRESS_FILE}. Starting fresh.")
             return {}
@@ -89,6 +92,10 @@ def load_progress() -> Dict[str, Any]:
 
 def save_progress(key: str, data: Any):
     """Saves a single experiment result to the progress file."""
+    if data is None or data.get("gap") is None:
+        print(f"[PROGRESS] Skipping save for '{key}' (No data)")
+        return
+
     progress = load_progress()
     progress[key] = data
     with open(PROGRESS_FILE, "w") as f:
@@ -116,7 +123,10 @@ def get_model_path(config: Dict[str, Any], suffix: str = "_best.pt") -> Path:
     # algo is ppo by default
     
     algo = config.get("algo", "ppo")
-    name = f"{config['problem']}_n{config['n_node']}_k{config['k_sparse']}_ants{config['n_ants']}_H{config['H']}_miniH{config['mini_H']}_rho{config['rho']}_mne{config['min_new_edges']}_{algo}"
+    # Match train.py: args.lr is used in filename.
+    # train.py defaults lr to ppo_lr (5e-6) if not set. DEFAULT_CONFIG has lr=5e-6.
+    lr = config.get("lr", 5e-6)
+    name = f"{config['problem']}_n{config['n_node']}_k{config['k_sparse']}_ants{config['n_ants']}_H{config['H']}_miniH{config['mini_H']}_rho{config['rho']}_mne{config['min_new_edges']}_{algo}_lr{lr}"
     
     if config.get("anneal_prior", False):
         name += f"_anneal_g{config['gamma']}_mg{config['min_gamma']}"
@@ -140,7 +150,7 @@ def train_model(config: Dict[str, Any], dry_run: bool = False, force: bool = Fal
     
     # Flags mapping
     # Boolean flags need action
-    bool_flags = ["anneal_prior", "no_dynamic_feats", "disable_heuristic", "no_local_search", "no_smooth_mmas"]
+    bool_flags = ["anneal_prior", "no_dynamic_feats", "disable_heuristic", "no_local_search", "no_smooth_mmas", "train_warmup", "warmup"]
     
     for k, v in config.items():
         if k in ["save_dir"]: # Handled separately or passed? train.py takes save_dir
@@ -149,10 +159,9 @@ def train_model(config: Dict[str, Any], dry_run: bool = False, force: bool = Fal
              
         if k in bool_flags:
             if v is True:
-                # If key is positive (anneal_prior) and True -> --anneal_prior
-                # If key is negative (no_local_search) and True -> --no_local_search
                  cmd.append(f"--{k}")
-            # If False, usually default, so do nothing (checks default in train.py)
+            elif k == "warmup" and v is False:
+                 cmd.append("--no-warmup")
             continue
             
         cmd.extend([f"--{k}", str(v)])
@@ -174,9 +183,15 @@ def test_model(model_path: Path, config: Dict[str, Any], dry_run: bool = False):
     # Some args need to be passed to test (like H, mini_H) if they are not saved/loaded correctly or to ensure test consistency
     # train.py saves config, but test.py logic loads it.
     # We can pass them to be safe.
-    for k in ["H", "mini_H", "n_ants", "k_sparse", "rho", "min_new_edges"]:
+    for k in ["H", "mini_H", "n_ants", "k_sparse", "rho", "min_new_edges", "warmup", "warmup_ratio"]:
         if k in config:
-             cmd.extend([f"--{k}", str(config[k])])
+             if k == "warmup":
+                 if config[k] is False: cmd.append("--no-warmup")
+                 # if True (default), do nothing or pass --warmup explicitly? Default is True.
+             elif config[k] is True:
+                 cmd.append(f"--{k}") # For boolean flags like train_warmup if passed roughly? But this lists params mostly.
+             else:
+                 cmd.extend([f"--{k}", str(config[k])])
              
     if dry_run:
         cmd.extend(["--n_node", "20", "--n_ants", "10"]) # Smaller scale for dry run validation
@@ -438,13 +453,107 @@ def run_ablation_heuristic(dry_run=False):
         gap, t_val = test_model(model_path, cfg_nh, dry_run)
         save_progress(key_heu_off, {"gap": gap, "time": t_val})
 
+def run_ablation_warmup(dry_run=False):
+    print("\n=== Running Ablation: Warmup Strategy (Table Future) ===")
+    n = 1000
+    base_cfg = DEFAULT_CONFIG.copy()
+    base_cfg.update(TSP_CONFIG)
+    base_cfg["n_node"] = n
+    
+    results = load_progress()
+    
+    # Scenarios:
+    # 1. Warmup ON (validation only) - Default
+    # 2. Warmup OFF
+    # 3. Train Warmup (Default Ratio 0.5)
+    # 4. Train Warmup (Ratio 0.2)
+    # 5. Train Warmup (Ratio 0.8)
+    
+    # 1. Default (Warmup ON)
+    key_default = "tsp_n1000"
+    key_warmup_on = "ablation_warmup_val_only"
+    
+    if key_default in results:
+         print(f"[REUSE] Using {key_default} for Warmup ON")
+         results[key_warmup_on] = results[key_default]
+    else:
+         print(f"[INFO] Warmup ON matches Default. Using/Training '{key_default}'...")
+         model_path = train_model(base_cfg, dry_run, wandb_project="lga_tsp")
+         gap, t_val = test_model(model_path, base_cfg, dry_run)
+         save_progress(key_default, {"gap": gap, "time": t_val})
+         results[key_warmup_on] = {"gap": gap, "time": t_val}
+
+    # 2. Warmup OFF
+    key_warmup_off = "ablation_warmup_off"
+    if key_warmup_off in results:
+         print(f"[SKIP] {key_warmup_off} already completed")
+    else:
+         print("\n--- Warmup OFF ---")
+         # We can reuse the default model, but test with --no-warmup
+         # Wait, does training depend on warmup? train.py has --train_warmup separate.
+         # The default config has train_warmup=False, warmup=True (for valid).
+         # So model is same, only inference changes.
+         # Wait, train_model returns path. We can test same model with diff args?
+         # test_model function currently takes config and runs test.py with those args.
+         # So we need a config that says "warmup": False.
+         
+         # Reusing default model but with warmup=False
+         default_model_path = get_model_path(base_cfg)
+         if default_model_path.exists() or dry_run:
+             print("Testing Default Model with Warmup OFF...")
+             cfg_off = base_cfg.copy()
+             cfg_off["warmup"] = False 
+             gap, t_val = test_model(default_model_path, cfg_off, dry_run)
+             save_progress(key_warmup_off, {"gap": gap, "time": t_val})
+         else:
+             print("[ERROR] Default model not found for Warmup OFF ablation. Should have been trained above.")
+         
+    # 3. Train Warmup (Default Ratio 0.5)
+    key_train_warmup = "ablation_train_warmup_r0.5"
+    if key_train_warmup in results:
+         print(f"[SKIP] {key_train_warmup} already completed")
+    else:
+         print("\n--- Train Warmup (Ratio 0.5) ---")
+         cfg_tw = base_cfg.copy()
+         cfg_tw["train_warmup"] = True
+         cfg_tw["warmup_ratio"] = 0.5
+         model_path = train_model(cfg_tw, dry_run, wandb_project="lga_ablation_warmup")
+         gap, t_val = test_model(model_path, cfg_tw, dry_run)
+         save_progress(key_train_warmup, {"gap": gap, "time": t_val})
+
+    # 4. Train Warmup (Ratio 0.2)
+    key_tw_02 = "ablation_train_warmup_r0.2"
+    if key_tw_02 in results:
+         print(f"[SKIP] {key_tw_02} already completed")
+    else:
+         print("\n--- Train Warmup (Ratio 0.2) ---")
+         cfg_tw = base_cfg.copy()
+         cfg_tw["train_warmup"] = True
+         cfg_tw["warmup_ratio"] = 0.2
+         model_path = train_model(cfg_tw, dry_run, wandb_project="lga_ablation_warmup")
+         gap, t_val = test_model(model_path, cfg_tw, dry_run)
+         save_progress(key_tw_02, {"gap": gap, "time": t_val})
+         
+    # 5. Train Warmup (Ratio 0.8)
+    key_tw_08 = "ablation_train_warmup_r0.8"
+    if key_tw_08 in results:
+         print(f"[SKIP] {key_tw_08} already completed")
+    else:
+         print("\n--- Train Warmup (Ratio 0.8) ---")
+         cfg_tw = base_cfg.copy()
+         cfg_tw["train_warmup"] = True
+         cfg_tw["warmup_ratio"] = 0.8
+         model_path = train_model(cfg_tw, dry_run, wandb_project="lga_ablation_warmup")
+         gap, t_val = test_model(model_path, cfg_tw, dry_run)
+         save_progress(key_tw_08, {"gap": gap, "time": t_val})
+
 # =============================================================================
 # Main
 # =============================================================================
 
 def main():
     parser = argparse.ArgumentParser(description="Reproduce experiments from LGA paper")
-    parser.add_argument("--table", type=str, choices=["2", "3", "5", "6", "8", "heuristic", "all"], default="all", help="Which table to reproduce")
+    parser.add_argument("--table", type=str, choices=["2", "3", "5", "6", "8", "heuristic", "warmup", "all"], default="all", help="Which table to reproduce")
     parser.add_argument("--dry-run", action="store_true", help="Run with minimal steps to verify pipeline")
     parser.add_argument("--fast", action="store_true", help="Skip large instances")
     parser.add_argument("--sizes", type=int, nargs="+", help="Specific sizes to run")
@@ -470,6 +579,9 @@ def main():
         
     if args.table in ["heuristic", "all"]:
         run_ablation_heuristic(args.dry_run)
+        
+    if args.table in ["warmup", "all"]:
+        run_ablation_warmup(args.dry_run)
 
 if __name__ == "__main__":
     main()

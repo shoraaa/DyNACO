@@ -410,6 +410,8 @@ def load_cvrp_txt_dataset(path):
                    dem_end_idx = min(keywords) if keywords else len(parts)
                    dem_raw = [float(x) for x in parts[dem_idx+1 : dem_end_idx]]
                    demand = torch.tensor(dem_raw)
+                   if len(demand) == num_cust:
+                       demand = torch.cat([torch.tensor([0.0]), demand])
                 else:
                    demand = None
                 
@@ -462,6 +464,8 @@ def load_cvrp_txt_dataset(path):
                     dem_end_idx = min(keywords) if keywords else len(parts)
                     dem_raw = [float(x) for x in parts[dem_idx+1 : dem_end_idx]]
                     demand = torch.tensor(dem_raw)
+                    if len(demand) == num_cust:
+                        demand = torch.cat([torch.tensor([0.0]), demand])
                 else:
                     demand = None
                 

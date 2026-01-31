@@ -283,6 +283,7 @@ def main():
     parser.add_argument("--threads", type=int, default=None)
 
     parser.add_argument("--warmup", action="store_true", default=True)
+    parser.add_argument("--no-warmup", dest="warmup", action="store_false", help="Disable warmup")
     parser.add_argument("--warmup_ratio", type=float, default=0.5)
 
     args = parser.parse_args()
