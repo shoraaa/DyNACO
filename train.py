@@ -114,7 +114,9 @@ def log_prob_sparse_from_tau_eta_prior(tau_nk, eta_nk, prior_nk, alpha=1.0, beta
     tau = tau_nk.clamp_min(eps)
     eta = eta_nk.clamp_min(eps)
     # log_w = alpha * log(tau) + beta * log(eta) + prior
-    log_w = alpha * torch.log(tau) + beta * torch.log(eta) + prior_nk
+    log_w = alpha * torch.log(tau) + beta * torch.log(eta)
+    if prior_nk is not None:
+        log_w = log_w + prior_nk
     return log_w
 
 
@@ -210,7 +212,9 @@ def train_instance_ppo(model, optimizer, instance_data, args):
     # Warmup
     warmup_steps = 0
     if getattr(args, 'train_warmup', False):
-        warmup_steps = int(args.H * getattr(args, 'warmup_ratio', 0.5))
+        max_limit = int(args.H * getattr(args, 'warmup_ratio', 0.5))
+        # "upto" implies 1 to max_limit
+        warmup_steps = np.random.randint(1, max_limit + 1)
 
     for outer in tqdm(range(args.H), desc="Outer", leave=False):
         t0 = time.time()
@@ -735,6 +739,7 @@ def main():
     parser.add_argument("--simple_train", action="store_true", help="Skip expensive metric calculations")
     
     args = parser.parse_args()
+    args.train_warmup = True
 
     # Defaults setup
     if args.lr is None:
@@ -766,6 +771,8 @@ def main():
         model_name += f"_anneal_g{args.gamma}_mg{args.min_gamma}"
     if args.L > 0:
         model_name += f"_L{args.L}"
+    if args.train_warmup:
+        model_name += f"_warmup{args.warmup_ratio}"
 
     run_id = wandb.util.generate_id()
     if not args.no_wandb:

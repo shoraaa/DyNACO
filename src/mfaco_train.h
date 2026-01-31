@@ -445,6 +445,9 @@ public:
   float tau_min = 0.0f;
   float tau_max = 0.0f;
 
+  // -- LS Optimization Structures (Moved to Local) --
+  // -------------------------------
+
   // Giant tour permutation of customers only (length m)
   std::vector<int32_t> source_perm;
   std::vector<int32_t> best_perm;
@@ -554,6 +557,11 @@ private:
                       std::vector<int32_t> &positions,
                       std::vector<int32_t> &checklist,
                       std::vector<uint8_t> &in_checklist);
+
+  void inter_route_ls_optimized(std::vector<int32_t> &perm,
+                                std::vector<int32_t> &positions,
+                                std::vector<int32_t> &checklist,
+                                std::vector<uint8_t> &in_checklist);
 
   // Reconstruct routes from permutation using split_dp, but returning vector of
   // routes

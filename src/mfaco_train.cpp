@@ -2210,7 +2210,7 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
   auto start_split = std::chrono::steady_clock::now();
 
   if (use_local_search) {
-    inter_route_ls(perm, positions, checklist, in_checklist);
+    inter_route_ls_optimized(perm, positions, checklist, in_checklist);
   }
 
   float cost = split_cost_fast(perm);
@@ -2345,7 +2345,7 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
   auto start_split = std::chrono::steady_clock::now();
 
   if (use_local_search) {
-    inter_route_ls(perm, positions, checklist, in_checklist);
+    inter_route_ls_optimized(perm, positions, checklist, in_checklist);
   }
 
   float cost = split_cost_fast(perm);
@@ -3205,4 +3205,284 @@ void MFACO_CVRP::inter_route_ls(std::vector<int32_t> &perm,
   routes_to_perm(routes, perm, positions);
 }
 
+// ============================================================================
+// Optimized Inter-Route Local Search (Linked List + DLB + O(1) Delta)
+// ============================================================================
+
+void MFACO_CVRP::inter_route_ls_optimized(std::vector<int32_t> &perm,
+                                          std::vector<int32_t> &positions,
+                                          std::vector<int32_t> &checklist,
+                                          std::vector<uint8_t> &in_checklist) {
+  // 1. Initialization (Thread-Local Vectors)
+  std::vector<int32_t> next_node(2 * n);
+  std::vector<int32_t> prev_node(2 * n);
+  std::vector<int32_t> node_route(2 * n);
+  std::vector<int64_t> cum_demand(2 * n);
+  // We'll resize route_loads after finding num_routes
+  std::vector<int64_t> route_loads;
+  std::vector<bool> dlb(n, false);
+
+  // Helpers
+  auto dist = [&](int32_t u, int32_t v) {
+    int32_t ru = (u >= n) ? 0 : u;
+    int32_t rv = (v >= n) ? 0 : v;
+    float dx = coords[ru * 2] - coords[rv * 2];
+    float dy = coords[ru * 2 + 1] - coords[rv * 2 + 1];
+    return std::sqrt(dx * dx + dy * dy);
+  };
+
+  auto touch = [&](int32_t u) {
+    if (u < n) {
+      dlb[u] = false;
+      if (!in_checklist[u]) {
+        checklist.push_back(u);
+        in_checklist[u] = 1;
+      }
+    }
+  };
+
+  auto update_route_state = [&](int32_t start_node, int32_t route_id) {
+    int32_t curr = start_node;
+    if (curr < n)
+      return;
+
+    cum_demand[curr] = 0;
+    node_route[curr] = route_id;
+    int64_t load = 0;
+
+    curr = next_node[curr];
+    while (curr < n) {
+      load += demand_int[curr];
+      cum_demand[curr] = load;
+      node_route[curr] = route_id;
+      curr = next_node[curr];
+    }
+    route_loads[route_id] = load;
+  };
+
+  if (checklist.empty()) {
+    for (int32_t i = 1; i < n; ++i)
+      touch(i);
+  }
+
+  // Get current routes
+  auto res = split_dp(perm);
+  int32_t num_routes = res.segs.size();
+
+  if (num_routes > n) {
+    // Just in case, though guaranteed by split logic usually
+    next_node.resize(n + num_routes);
+    prev_node.resize(n + num_routes);
+    node_route.resize(n + num_routes);
+    cum_demand.resize(n + num_routes);
+  }
+  route_loads.resize(num_routes);
+
+  // Build Linked List
+  for (int r = 0; r < num_routes; ++r) {
+    int32_t depot = n + r;
+    int32_t start_idx = res.segs[r].first;
+    int32_t end_idx = res.segs[r].second;
+
+    int32_t prev = depot;
+    int64_t load = 0;
+
+    node_route[depot] = r;
+    cum_demand[depot] = 0;
+
+    for (int i = start_idx; i <= end_idx; ++i) {
+      int32_t u = perm[i];
+      next_node[prev] = u;
+      prev_node[u] = prev;
+      node_route[u] = r;
+      load += demand_int[u];
+      cum_demand[u] = load;
+      prev = u;
+    }
+    next_node[prev] = depot;
+    prev_node[depot] = prev;
+    route_loads[r] = load;
+  }
+
+  const float EPS = 1e-5f; // Tighten EPS
+
+  // 2. Main Loop
+  int32_t head = 0;
+  while (head < (int32_t)checklist.size()) {
+    int32_t u = checklist[head++];
+    in_checklist[u] = 0;
+
+    if (dlb[u])
+      continue;
+
+    bool improved = false;
+    int32_t r_u = node_route[u];
+
+    // Check neighbors
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t v = nn_list[u * k + j];
+      if (v == 0)
+        continue;
+
+      int32_t r_v = node_route[v];
+
+      // Pruning removed (was unsafe for Relocate/Swap involving prev edges)
+      int32_t next_u = next_node[u];
+      int32_t next_v = next_node[v];
+      int32_t prev_v = prev_node[v];
+      /*
+      if (dist(u, v) > dist(u, next_u) + dist(v, next_v) + EPS) {
+         continue;
+      }
+      */
+
+      // A. Relocate u after v
+      if (use_relocate && r_u != r_v) {
+        if (route_loads[r_v] + demand_int[u] <= capacity_int) {
+          // Case 1: Insert After v
+          int32_t prev_u = prev_node[u];
+          float delta = dist(prev_u, next_u) + dist(v, u) + dist(u, next_v) -
+                        dist(prev_u, u) - dist(u, next_u) - dist(v, next_v);
+
+          if (delta < -EPS) {
+            // Unlink u
+            next_node[prev_u] = next_u;
+            prev_node[next_u] = prev_u;
+            // Link u after v
+            int32_t old_next_v = next_node[v];
+            next_node[v] = u;
+            prev_node[u] = v;
+            next_node[u] = old_next_v;
+            prev_node[old_next_v] = u;
+
+            update_route_state(n + r_u, r_u);
+            update_route_state(n + r_v, r_v);
+            touch(u);
+            touch(v);
+            touch(prev_u);
+            touch(next_u);
+            touch(old_next_v);
+            improved = true;
+            break;
+          }
+
+          // Case 2: Insert Before v (After prev_v)
+          // Effectively: Relocate u after prev_v
+          // Only possible if we didn't do Case 1 (improved=false)
+          // But r_v is same. prev_v might be depot.
+          // Check if prev_v is actually valid target (it is, since r_prev_v ==
+          // r_v != r_u)
+
+          float delta2 = dist(prev_u, next_u) + dist(prev_v, u) + dist(u, v) -
+                         dist(prev_u, u) - dist(u, next_u) - dist(prev_v, v);
+
+          if (delta2 < -EPS) {
+            // Unlink u
+            next_node[prev_u] = next_u;
+            prev_node[next_u] = prev_u;
+            // Link u after prev_v
+            // current next of prev_v is v.
+            next_node[prev_v] = u;
+            prev_node[u] = prev_v;
+            next_node[u] = v;
+            prev_node[v] = u;
+
+            update_route_state(n + r_u, r_u);
+            update_route_state(n + r_v, r_v);
+            // Touches
+            touch(u);
+            touch(prev_v);
+            touch(v);
+            touch(prev_u);
+            touch(next_u);
+            improved = true;
+            break;
+          }
+        }
+      }
+
+      // B. Swap u, v
+      if (use_swap && r_u != r_v) {
+        int64_t load_u_new = route_loads[r_u] - demand_int[u] + demand_int[v];
+        int64_t load_v_new = route_loads[r_v] - demand_int[v] + demand_int[u];
+
+        if (load_u_new <= capacity_int && load_v_new <= capacity_int) {
+          int32_t prev_u = prev_node[u];
+          int32_t prev_v = prev_node[v];
+          float delta = dist(prev_u, v) + dist(v, next_u) + dist(prev_v, u) +
+                        dist(u, next_v) - dist(prev_u, u) - dist(u, next_u) -
+                        dist(prev_v, v) - dist(v, next_v);
+          if (delta < -EPS) {
+            int32_t nu = next_node[u], pu = prev_node[u];
+            int32_t nv = next_node[v], pv = prev_node[v];
+            next_node[pu] = v;
+            prev_node[nu] = v;
+            next_node[pv] = u;
+            prev_node[nv] = u;
+            next_node[u] = nv;
+            prev_node[u] = pv;
+            next_node[v] = nu;
+            prev_node[v] = pu;
+
+            update_route_state(n + r_u, r_u);
+            update_route_state(n + r_v, r_v);
+            touch(u);
+            touch(v);
+            touch(pu);
+            touch(nu);
+            touch(pv);
+            touch(nv);
+            improved = true;
+            break;
+          }
+        }
+      }
+
+      // C. 2-Opt*
+      if (use_2opt_star && r_u != r_v) {
+        int64_t head_u = cum_demand[u];
+        int64_t tail_u = route_loads[r_u] - head_u;
+        int64_t head_v = cum_demand[v];
+        int64_t tail_v = route_loads[r_v] - head_v;
+
+        if (head_u + tail_v <= capacity_int &&
+            head_v + tail_u <= capacity_int) {
+          float delta = dist(u, next_v) + dist(v, next_u) - dist(u, next_u) -
+                        dist(v, next_v);
+          if (delta < -EPS) {
+            int32_t nu = next_node[u];
+            int32_t nv = next_node[v];
+            next_node[u] = nv;
+            prev_node[nv] = u;
+            next_node[v] = nu;
+            prev_node[nu] = v;
+
+            update_route_state(n + r_u, r_u);
+            update_route_state(n + r_v, r_v);
+            touch(u);
+            touch(v);
+            touch(nu);
+            touch(nv);
+            improved = true;
+            break;
+          }
+        }
+      }
+    }
+    if (!improved)
+      dlb[u] = true;
+  }
+
+  // 3. Reconstruct Permutation
+  perm.clear();
+  perm.reserve(m);
+  for (int r = 0; r < num_routes; ++r) {
+    int32_t depot = n + r;
+    int32_t curr = next_node[depot];
+    while (curr < n) {
+      perm.push_back(curr);
+      curr = next_node[curr];
+    }
+  }
+}
 } // namespace mfaco
