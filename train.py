@@ -354,20 +354,25 @@ def train_instance_ppo(model, optimizer, instance_data, args):
             prior_new = model(pyg_data).view(-1).view(aco.n, aco.k)
             t_neural_total += time.time() - t0
             
-            all_losses = []
-            param_kl_list = []
-            clip_frac_list = []
+            # [OOM Fix] Detach prior to allow freeing the inner-loop graph immediately.
+            # We will accumulate gradients on prior_grad_wrapper and backprop to model once.
+            prior_grad_wrapper = prior_new.detach()
+            prior_grad_wrapper.requires_grad = True
+
+            all_losses_val = []
+            param_kl_list_val = []
+            clip_frac_list_val = []
             
             for inner in range(args.mini_H):
                 # Annealing Calc (Same as above)
-                current_prior = prior_new
+                current_prior = prior_grad_wrapper
                 if args.anneal_prior:
                     if args.mini_H > 1:
                         ratio = inner / (args.mini_H - 1)
                         factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
                     else:
                         factor = args.gamma
-                    current_prior = prior_new * factor
+                    current_prior = prior_grad_wrapper * factor
 
                 tau_nk = tau_list[inner]
                 traces = traces_list[inner]
@@ -387,14 +392,11 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 
                 log_ratio = logp_new - logp_old
                 approx_kl = (log_ratio.pow(2) * 0.5).mean()
-                param_kl_list.append(approx_kl)
+                param_kl_list_val.append(approx_kl.item())
                 
                 clipped = (ratio > 1 + args.ppo_clip) | (ratio < 1 - args.ppo_clip)
                 clip_frac = clipped.float().mean()
-                clip_frac_list.append(clip_frac)
-                
-                clip_frac = clipped.float().mean()
-                clip_frac_list.append(clip_frac)
+                clip_frac_list_val.append(clip_frac.item())
                 
                 # Advantage calculation with NLS
                 if args.nls:
@@ -411,10 +413,16 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 surr1 = ratio * adv
                 surr2 = torch.clamp(ratio, 1 - args.ppo_clip, 1 + args.ppo_clip) * adv
                 loss = -torch.mean(torch.min(surr1, surr2))
-                all_losses.append(loss)
+                
+                # Accumulate gradients (scaled average)
+                # Backward here frees the inner loop graph!
+                (loss / args.mini_H).backward()
+                
+                all_losses_val.append(loss.item())
             
-            total_loss = torch.stack(all_losses).mean()
-            total_loss.backward()
+            # Backpropagate accumulated gradients from wrapper to model
+            if prior_grad_wrapper.grad is not None:
+                prior_new.backward(prior_grad_wrapper.grad)
             
             # Compute gradient variance
             grad_norms = []
@@ -426,9 +434,9 @@ def train_instance_ppo(model, optimizer, instance_data, args):
             
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            metrics["loss"].append(total_loss.item())
-            metrics["approx_kl"].append(torch.stack(param_kl_list).mean().item())
-            metrics["clip_frac"].append(torch.stack(clip_frac_list).mean().item())
+            metrics["loss"].append(np.mean(all_losses_val))
+            metrics["approx_kl"].append(np.mean(param_kl_list_val))
+            metrics["clip_frac"].append(np.mean(clip_frac_list_val))
 
     metrics["time_neural"] = [t_neural_total]
     metrics["time_aco"] = [t_aco_total]
