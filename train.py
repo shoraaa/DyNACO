@@ -226,27 +226,25 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 metrics["prior_mean"].append(prior_old.mean().item())
                 metrics["prior_std"].append(prior_old.std().item())
                 
-                # Track prior drift metrics
+                if not args.simple_train:
+                    # Track prior drift metrics
 
-                
-                # Track prior-eta correlation
-                metrics["prior_eta_corr"].append(safe_corr(prior_old, eta_nk))
-                
-                # Move to CPU for metrics to save VRAM
-                prior_cpu = prior_old.detach().cpu()
-                
-                if prior_prev_outer_cpu is not None:
-                    # Compute drift metrics on CPU
-                    metrics["prior_l2_drift"].append(rel_l2_drift(prior_prev_outer_cpu, prior_cpu))
-                    metrics["prior_kl"].append(mean_row_kl(prior_prev_outer_cpu, prior_cpu))
-                    metrics["prior_turnover"].append(top_turnover(prior_prev_outer_cpu, prior_cpu))
-                    metrics["prior_flip"].append(top1_flip_rate(prior_prev_outer_cpu, prior_cpu))
-                
-                prior_prev_outer_cpu = prior_cpu
+                    
+                    # Track prior-eta correlation
+                    metrics["prior_eta_corr"].append(safe_corr(prior_old, eta_nk))
+                    
+                    # Move to CPU for metrics to save VRAM
+                    prior_cpu = prior_old.detach().cpu()
+                    
+                    if prior_prev_outer_cpu is not None:
+                        # Compute drift metrics on CPU
+                        metrics["prior_l2_drift"].append(rel_l2_drift(prior_prev_outer_cpu, prior_cpu))
+                        metrics["prior_kl"].append(mean_row_kl(prior_prev_outer_cpu, prior_cpu))
+                        metrics["prior_turnover"].append(top_turnover(prior_prev_outer_cpu, prior_cpu))
+                        metrics["prior_flip"].append(top1_flip_rate(prior_prev_outer_cpu, prior_cpu))
+                    
+                    prior_prev_outer_cpu = prior_cpu
         else:
-             # Just to keep metrics consistent in length? Actually users usually expect metrics only for model steps?
-             # Or append 0? Let's skip appending to keep metric lists cleaner, or append 0 if length mismatch issues arise.
-             # agg function at end takes mean.
              pass
 
         traces_list = []
@@ -254,9 +252,6 @@ def train_instance_ppo(model, optimizer, instance_data, args):
         logp_old_list = []
         ndec_list = []
         tau_list = []
-        
-        # ... (rest of sampling loop) ...
-        # Need to ensure current_prior handles None, which my previous change to sampling loop likely didn't cover for *this* function (train_instance_ppo)
         
         if hasattr(aco, "reset_timings"):
             aco.reset_timings()
@@ -274,21 +269,19 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                     factor = args.gamma
                 current_prior = prior_old * factor
 
-            prior_numpy = current_prior.cpu().numpy() if current_prior is not None else None
-
             if args.problem == 'tsp':
                 if args.nls:
                     # New signature with NLS (9 outputs)
                     costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges, survival = aco.sample(
-                        require_prob=True, prior=prior_numpy
+                        require_prob=True, prior=current_prior
                     )
                 else:
                     costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges, survival = aco.sample(
-                        require_prob=True, prior=prior_numpy
+                        require_prob=True, prior=current_prior
                     )
             else: # cvrp
                 costs, flats, _, logps, traces, costs_raw, flats_raw, new_edges, survival = aco.sample(
-                    require_prob=True, prior=prior_numpy
+                    require_prob=True, prior=current_prior
                 )
             
             # Record survival
@@ -354,25 +347,20 @@ def train_instance_ppo(model, optimizer, instance_data, args):
             prior_new = model(pyg_data).view(-1).view(aco.n, aco.k)
             t_neural_total += time.time() - t0
             
-            # [OOM Fix] Detach prior to allow freeing the inner-loop graph immediately.
-            # We will accumulate gradients on prior_grad_wrapper and backprop to model once.
-            prior_grad_wrapper = prior_new.detach()
-            prior_grad_wrapper.requires_grad = True
-
-            all_losses_val = []
-            param_kl_list_val = []
-            clip_frac_list_val = []
+            all_losses = []
+            param_kl_list = []
+            clip_frac_list = []
             
             for inner in range(args.mini_H):
                 # Annealing Calc (Same as above)
-                current_prior = prior_grad_wrapper
+                current_prior = prior_new
                 if args.anneal_prior:
                     if args.mini_H > 1:
                         ratio = inner / (args.mini_H - 1)
                         factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
                     else:
                         factor = args.gamma
-                    current_prior = prior_grad_wrapper * factor
+                    current_prior = prior_new * factor
 
                 tau_nk = tau_list[inner]
                 traces = traces_list[inner]
@@ -392,11 +380,14 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 
                 log_ratio = logp_new - logp_old
                 approx_kl = (log_ratio.pow(2) * 0.5).mean()
-                param_kl_list_val.append(approx_kl.item())
+                param_kl_list.append(approx_kl)
                 
                 clipped = (ratio > 1 + args.ppo_clip) | (ratio < 1 - args.ppo_clip)
                 clip_frac = clipped.float().mean()
-                clip_frac_list_val.append(clip_frac.item())
+                clip_frac_list.append(clip_frac)
+                
+                clip_frac = clipped.float().mean()
+                clip_frac_list.append(clip_frac)
                 
                 # Advantage calculation with NLS
                 if args.nls:
@@ -413,30 +404,25 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 surr1 = ratio * adv
                 surr2 = torch.clamp(ratio, 1 - args.ppo_clip, 1 + args.ppo_clip) * adv
                 loss = -torch.mean(torch.min(surr1, surr2))
-                
-                # Accumulate gradients (scaled average)
-                # Backward here frees the inner loop graph!
-                (loss / args.mini_H).backward()
-                
-                all_losses_val.append(loss.item())
+                all_losses.append(loss)
             
-            # Backpropagate accumulated gradients from wrapper to model
-            if prior_grad_wrapper.grad is not None:
-                prior_new.backward(prior_grad_wrapper.grad)
+            total_loss = torch.stack(all_losses).mean()
+            total_loss.backward()
             
             # Compute gradient variance
-            grad_norms = []
-            for p in model.parameters():
-                if p.grad is not None:
-                    grad_norms.append(p.grad.norm().item())
-            if grad_norms:
-                metrics["grad_var"].append(np.var(grad_norms))
+            if not args.simple_train:
+                grad_norms = []
+                for p in model.parameters():
+                    if p.grad is not None:
+                        grad_norms.append(p.grad.norm().item())
+                if grad_norms:
+                    metrics["grad_var"].append(np.var(grad_norms))
             
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            metrics["loss"].append(np.mean(all_losses_val))
-            metrics["approx_kl"].append(np.mean(param_kl_list_val))
-            metrics["clip_frac"].append(np.mean(clip_frac_list_val))
+            metrics["loss"].append(total_loss.item())
+            metrics["approx_kl"].append(torch.stack(param_kl_list).mean().item())
+            metrics["clip_frac"].append(torch.stack(clip_frac_list).mean().item())
 
     metrics["time_neural"] = [t_neural_total]
     metrics["time_aco"] = [t_aco_total]
@@ -584,12 +570,10 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
                     factor = args.gamma
                 current_prior = heuristics * factor
             
-            prior_numpy = current_prior.cpu().numpy() if current_prior is not None else None
-
             if args.problem == 'tsp':
-                costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=prior_numpy, require_prob=False)
+                costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=current_prior, require_prob=False)
             else:
-                costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=prior_numpy, require_prob=False)
+                costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=current_prior, require_prob=False)
             
             if collect_metrics:
                 metrics_log['new_edges'].append(new_edges.astype(np.float32).mean())
@@ -615,7 +599,7 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
     if collect_metrics:
         return avg_cost, best_seen, timings, metrics_log
     
-    return avg_cost, best_seen, timings
+    return avg_cost, best_seen, timings, {}
 
 
 
@@ -645,13 +629,13 @@ def validation(net, val_dataset, args, baseline_values=None):
             if torch.is_tensor(item[1]): item[1] = item[1].numpy()
             if torch.is_tensor(item[2]): item[2] = float(item[2])
             
-        elif args.problem == 'tsp':
+        if args.problem == 'tsp':
             # If item is tuple (coords, cost, tour), extract coords
             if isinstance(item, tuple) or isinstance(item, list):
                 item = item[0]
 
         dynamic = not args.no_dynamic_feats
-        res = infer_instance(net, item, args.k_sparse, args.n_ants, dynamic, args, collect_metrics=True)
+        res = infer_instance(net, item, args.k_sparse, args.n_ants, dynamic, args, collect_metrics=not args.simple_train)
         
         avg, best, timings, metrics = res
         
@@ -745,6 +729,7 @@ def main():
     parser.add_argument("--L", type=int, default=0)
     parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--threads", type=int, default=None)
+    parser.add_argument("--simple_train", action="store_true", help="Skip expensive metric calculations")
     
     args = parser.parse_args()
 
