@@ -698,6 +698,9 @@ def main():
     parser.add_argument("--no_smooth_mmas", action="store_true")
     parser.add_argument("--no_extend_ls", action="store_true")
     parser.add_argument("--no_normalized_heuristic", action="store_true")
+
+    # Optimization
+    parser.add_argument("--grad_checkpoint", action="store_true", help="Enable gradient checkpointing for GNN (saves memory)")
     
     # NLS
     parser.add_argument("--nls", action="store_true", help="Enable Neural Local Search")
@@ -753,7 +756,7 @@ def main():
     # Initialize Net
     # TSP: feats=2, CVRP: feats=4
     feats = 2 if args.problem == 'tsp' else 4
-    net_model = Net(feats=feats, logit_net=not args.no_logit_net).to(args.device)
+    net_model = Net(feats=feats, logit_net=not args.no_logit_net, grad_checkpointing=args.grad_checkpoint).to(args.device)
     
     optimizer = torch.optim.AdamW(net_model.parameters(), lr=args.lr)
 
