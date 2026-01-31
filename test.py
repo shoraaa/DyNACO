@@ -652,7 +652,8 @@ def main():
     # Base
     base_cost_mean = np.mean(results["base_cost"])
     base_time_mean = np.mean(results["base_time"])
-    print(f"Base Cost: {base_cost_mean:.4f}, Time: {base_time_mean:.4f}s")
+    base_time_total = np.sum(results["base_time"])
+    print(f"Base Cost: {base_cost_mean:.4f}, Time: {base_time_mean:.4f}s, Total Time: {base_time_total:.4f}s")
     if results["base_gap"]:
         print(f"Base Gap: {np.mean(results['base_gap']) * 100:.4f}%")
         
@@ -660,7 +661,8 @@ def main():
     if model:
         model_cost_mean = np.mean(results["model_cost"])
         model_time_mean = np.mean(results["model_time"])
-        print(f"Model Cost: {model_cost_mean:.4f}, Time: {model_time_mean:.4f}s")
+        model_time_total = np.sum(results["model_time"])
+        print(f"Model Cost: {model_cost_mean:.4f}, Time: {model_time_mean:.4f}s, Total Time: {model_time_total:.4f}s")
         if results["model_gap"]:
             print(f"Model Gap: {np.mean(results['model_gap']) * 100:.4f}%")
         
@@ -678,7 +680,8 @@ def main():
         if args.warmup:
              mix_cost_mean = np.mean(results["mix_cost"])
              mix_time_mean = np.mean(results["mix_time"])
-             print(f"Mix Cost: {mix_cost_mean:.4f}, Time: {mix_time_mean:.4f}s")
+             mix_time_total = np.sum(results["mix_time"])
+             print(f"Mix Cost: {mix_cost_mean:.4f}, Time: {mix_time_mean:.4f}s, Total Time: {mix_time_total:.4f}s")
              if results["mix_gap"]:
                 print(f"Mix Gap: {np.mean(results['mix_gap']) * 100:.4f}%")
 

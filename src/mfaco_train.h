@@ -420,6 +420,11 @@ public:
   bool nls;
   int32_t T_nls; // number of NLS iterations (default 10)
 
+  // Inter-route LS move selection flags (for ablation study)
+  bool use_relocate;
+  bool use_swap;
+  bool use_2opt_star;
+
   float capacity;
   int64_t capacity_int;
 
@@ -533,14 +538,46 @@ private:
   float relocate_node(int32_t target, int32_t node, std::vector<int32_t> &perm,
                       std::vector<int32_t> &positions);
   float two_opt_nn(std::vector<int32_t> &perm, std::vector<int32_t> &positions,
-                   std::vector<int32_t> &checklist);
+                   std::vector<int32_t> &checklist,
+                   std::vector<uint8_t> &in_checklist);
   float two_opt_nn_prior(std::vector<int32_t> &perm,
                          std::vector<int32_t> &positions,
                          std::vector<int32_t> &checklist,
+                         std::vector<uint8_t> &in_checklist,
                          const float *prior_ptr);
   void flip_route_section(int32_t start_node, int32_t end_node,
                           std::vector<int32_t> &perm,
                           std::vector<int32_t> &positions);
+
+  // ---- Inter-route LS ----
+  void inter_route_ls(std::vector<int32_t> &perm,
+                      std::vector<int32_t> &positions,
+                      std::vector<int32_t> &checklist,
+                      std::vector<uint8_t> &in_checklist);
+
+  // Reconstruct routes from permutation using split_dp, but returning vector of
+  // routes
+  std::vector<std::vector<int32_t>>
+  initial_routes_from_perm(const std::vector<int32_t> &perm) const;
+
+  // Flatten routes back to permutation (simple concatenation)
+  void routes_to_perm(const std::vector<std::vector<int32_t>> &routes,
+                      std::vector<int32_t> &perm,
+                      std::vector<int32_t> &positions);
+
+  bool ls_relocate(std::vector<std::vector<int32_t>> &routes,
+                   std::vector<int64_t> &loads, int32_t u_node, int32_t r_u,
+                   int32_t idx_u, int32_t r_v, int32_t idx_v,
+                   std::vector<int32_t> &node_pos);
+  bool ls_swap(std::vector<std::vector<int32_t>> &routes,
+               std::vector<int64_t> &loads, int32_t u_node, int32_t r_u,
+               int32_t idx_u, int32_t r_v, int32_t idx_v,
+               std::vector<int32_t> &node_pos);
+  bool ls_2opt_star(std::vector<std::vector<int32_t>> &routes,
+                    std::vector<int64_t> &loads, int32_t u_node, int32_t r_u,
+                    int32_t idx_u, int32_t r_v, int32_t idx_v,
+                    std::vector<int32_t> &node_pos,
+                    std::vector<int32_t> &node_to_route);
 
   bool contains_edge(int32_t a, int32_t b) const;
   int32_t get_succ(int32_t node, const std::vector<int32_t> &perm,

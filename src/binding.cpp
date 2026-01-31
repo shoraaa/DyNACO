@@ -688,6 +688,17 @@ PYBIND11_MODULE(faco_opt, m) {
            py::arg("return_decoded") = false)
       .def("update_pheromone_from_perm",
            &PyMFACO_CVRP::update_pheromone_from_perm)
+      .def_property(
+          "use_relocate",
+          [](PyMFACO_CVRP &self) { return self.solver->use_relocate; },
+          [](PyMFACO_CVRP &self, bool v) { self.solver->use_relocate = v; })
+      .def_property(
+          "use_swap", [](PyMFACO_CVRP &self) { return self.solver->use_swap; },
+          [](PyMFACO_CVRP &self, bool v) { self.solver->use_swap = v; })
+      .def_property(
+          "use_2opt_star",
+          [](PyMFACO_CVRP &self) { return self.solver->use_2opt_star; },
+          [](PyMFACO_CVRP &self, bool v) { self.solver->use_2opt_star = v; })
       .def("reset_timings", &PyMFACO_CVRP::reset_timings)
       .def("get_timings", &PyMFACO_CVRP::get_timings);
 }

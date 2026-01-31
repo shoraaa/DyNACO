@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
-#include <numeric>
+
 #include <omp.h>
 #include <stdexcept>
 #include <tuple>
@@ -1298,7 +1298,8 @@ MFACO_CVRP::MFACO_CVRP(const float *coords_ptr, const float *demand_ptr,
       disable_heuristic(disable_heuristic_), extend_ls(extend_ls_),
       smooth_mmas(smooth_mmas_), capacity(capacity_),
       capacity_int(static_cast<int64_t>(std::round(capacity_ * DEMAND_SCALE))),
-      nls(nls_), T_nls(T_nls_) {
+      nls(nls_), T_nls(T_nls_), use_relocate(true), use_swap(true),
+      use_2opt_star(true) {
   if (!coords_ptr || !demand_ptr) {
     throw std::runtime_error("coords_ptr and demand_ptr must not be null");
   }
@@ -2016,9 +2017,13 @@ void MFACO_CVRP::flip_route_section(int32_t start_node, int32_t end_node,
   }
 }
 
-float MFACO_CVRP::two_opt_nn(std::vector<int32_t> &perm,
-                             std::vector<int32_t> &positions,
-                             std::vector<int32_t> &checklist) {
+// -------------------- sampling ants: same MFACO logic, cost via split_dp
+// --------------------
+
+float MFACO_CVRP::two_opt_nn(
+    std::vector<int32_t> &perm, std::vector<int32_t> &positions,
+    std::vector<int32_t> &checklist,
+    std::vector<uint8_t> &in_checklist) { // Added in_checklist
   const int32_t max_changes = 1000;
   int32_t changes = 0;
   float total_change = 0.0f;
@@ -2085,10 +2090,10 @@ float MFACO_CVRP::two_opt_nn(std::vector<int32_t> &perm,
       if (extend_ls) {
         for (int32_t i = 0; i < 4; ++i) {
           int32_t node = best_move[i];
-          if (node > 0 && node < n) { // Ensure valid customer
-            if (std::find(checklist.begin(), checklist.end(), node) ==
-                checklist.end()) {
+          if (node > 0 && node < n) {
+            if (in_checklist[node] == 0) {
               checklist.push_back(node);
+              in_checklist[node] = 1;
             }
           }
         }
@@ -2119,6 +2124,8 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
 
   checklist.clear();
   checklist.push_back(start_customer);
+  std::vector<uint8_t> in_checklist(n, 0);
+  in_checklist[start_customer] = 1;
 
   int32_t new_edges = 0;
   int32_t steps = 0;
@@ -2147,16 +2154,19 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
     // Check if this creates a new edge (in cycle)
     if (!contains_edge(curr, chosen)) {
       ++new_edges;
-      if (std::find(checklist.begin(), checklist.end(), curr) ==
-          checklist.end())
+      if (in_checklist[curr] == 0) {
         checklist.push_back(curr);
-      if (std::find(checklist.begin(), checklist.end(), chosen) ==
-          checklist.end())
+        in_checklist[curr] = 1;
+      }
+      if (in_checklist[chosen] == 0) {
         checklist.push_back(chosen);
+        in_checklist[chosen] = 1;
+      }
       int32_t chosen_pred = get_pred(chosen, perm, positions);
-      if (std::find(checklist.begin(), checklist.end(), chosen_pred) ==
-          checklist.end())
+      if (in_checklist[chosen_pred] == 0) {
         checklist.push_back(chosen_pred);
+        in_checklist[chosen_pred] = 1;
+      }
     }
 
     relocate_node(curr, chosen, perm, positions);
@@ -2173,14 +2183,14 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
   if (use_local_search && !checklist.empty()) {
     auto start_ls = std::chrono::steady_clock::now();
     if (nls && prior) {
-      two_opt_nn(perm, positions, checklist);
+      two_opt_nn(perm, positions, checklist, in_checklist);
 
       float best_cost = split_cost_fast(perm);
       std::vector<int32_t> best_perm = perm;
 
       for (int t = 0; t < T_nls; ++t) {
-        two_opt_nn_prior(perm, positions, checklist, prior);
-        two_opt_nn(perm, positions, checklist);
+        two_opt_nn_prior(perm, positions, checklist, in_checklist, prior);
+        two_opt_nn(perm, positions, checklist, in_checklist);
 
         float current_cost = split_cost_fast(perm);
         if (current_cost < best_cost) {
@@ -2190,7 +2200,7 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
       }
       perm = best_perm;
     } else {
-      two_opt_nn(perm, positions, checklist);
+      two_opt_nn(perm, positions, checklist, in_checklist);
     }
     auto end_ls = std::chrono::steady_clock::now();
     time_ls += std::chrono::duration<double>(end_ls - start_ls).count();
@@ -2198,6 +2208,11 @@ float MFACO_CVRP::sample_ant_fast(const float *probmat, int32_t start_node,
 
   // Split
   auto start_split = std::chrono::steady_clock::now();
+
+  if (use_local_search) {
+    inter_route_ls(perm, positions, checklist, in_checklist);
+  }
+
   float cost = split_cost_fast(perm);
   auto end_split = std::chrono::steady_clock::now();
   time_split += std::chrono::duration<double>(end_split - start_split).count();
@@ -2230,6 +2245,8 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
 
   checklist.clear();
   checklist.push_back(start_customer);
+  std::vector<uint8_t> in_checklist(n, 0);
+  in_checklist[start_customer] = 1;
 
   int32_t new_edges = 0;
   int32_t steps = 0;
@@ -2266,16 +2283,19 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
 
     if (!contains_edge(curr, chosen)) {
       ++new_edges;
-      if (std::find(checklist.begin(), checklist.end(), curr) ==
-          checklist.end())
+      if (in_checklist[curr] == 0) {
         checklist.push_back(curr);
-      if (std::find(checklist.begin(), checklist.end(), chosen) ==
-          checklist.end())
+        in_checklist[curr] = 1;
+      }
+      if (in_checklist[chosen] == 0) {
         checklist.push_back(chosen);
+        in_checklist[chosen] = 1;
+      }
       int32_t chosen_pred = get_pred(chosen, perm, positions);
-      if (std::find(checklist.begin(), checklist.end(), chosen_pred) ==
-          checklist.end())
+      if (in_checklist[chosen_pred] == 0) {
         checklist.push_back(chosen_pred);
+        in_checklist[chosen_pred] = 1;
+      }
     }
 
     relocate_node(curr, chosen, perm, positions);
@@ -2296,14 +2316,16 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
   if (use_local_search && !checklist.empty()) {
     auto start_ls = std::chrono::steady_clock::now();
     if (nls && prior) {
-      two_opt_nn(perm, positions, checklist);
+      two_opt_nn(perm, positions, checklist, in_checklist);
 
       float best_cost = split_cost_fast(perm);
       std::vector<int32_t> best_perm = perm;
 
       for (int t = 0; t < T_nls; ++t) {
-        two_opt_nn_prior(perm, positions, checklist, prior);
-        two_opt_nn(perm, positions, checklist);
+        // two_opt_nn_prior signature update pending, passing in_checklist
+        // anyway assuming next step fixes it
+        two_opt_nn_prior(perm, positions, checklist, in_checklist, prior);
+        two_opt_nn(perm, positions, checklist, in_checklist);
 
         float current_cost = split_cost_fast(perm);
         if (current_cost < best_cost) {
@@ -2313,7 +2335,7 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
       }
       perm = best_perm;
     } else {
-      two_opt_nn(perm, positions, checklist);
+      two_opt_nn(perm, positions, checklist, in_checklist);
     }
     auto end_ls = std::chrono::steady_clock::now();
     time_ls += std::chrono::duration<double>(end_ls - start_ls).count();
@@ -2321,6 +2343,11 @@ float MFACO_CVRP::sample_ant_traced(const float *probmat, int32_t start_node,
 
   // Split
   auto start_split = std::chrono::steady_clock::now();
+
+  if (use_local_search) {
+    inter_route_ls(perm, positions, checklist, in_checklist);
+  }
+
   float cost = split_cost_fast(perm);
   auto end_split = std::chrono::steady_clock::now();
   time_split += std::chrono::duration<double>(end_split - start_split).count();
@@ -2651,6 +2678,7 @@ void MFACO_CVRP::update_pheromone(const int32_t *iter_best_perm_ptr,
 float MFACO_CVRP::two_opt_nn_prior(std::vector<int32_t> &perm,
                                    std::vector<int32_t> &positions,
                                    std::vector<int32_t> &checklist,
+                                   std::vector<uint8_t> &in_checklist,
                                    const float *prior_ptr) {
   int32_t changes_count = 0;
   float total_gain = 0.0f;
@@ -2744,15 +2772,437 @@ float MFACO_CVRP::two_opt_nn_prior(std::vector<int32_t> &perm,
       if (extend_ls) {
         for (int32_t i = 0; i < 4; ++i) {
           int32_t node = best_move[i];
-          if (std::find(checklist.begin(), checklist.end(), node) ==
-              checklist.end()) {
+          if (in_checklist[node] == 0) {
             checklist.push_back(node);
+            in_checklist[node] = 1;
           }
         }
       }
     }
   }
   return total_gain;
+}
+
+// -------------------- Inter-route LS --------------------
+
+std::vector<std::vector<int32_t>>
+MFACO_CVRP::initial_routes_from_perm(const std::vector<int32_t> &perm) const {
+  auto res = split_dp(perm);
+  std::vector<std::vector<int32_t>> routes;
+  routes.reserve(res.segs.size());
+  for (auto &seg : res.segs) {
+    std::vector<int32_t> r;
+    r.reserve(seg.second - seg.first + 3);
+    r.push_back(0); // Depot
+    for (int i = seg.first; i <= seg.second; ++i) {
+      r.push_back(perm[i]);
+    }
+    r.push_back(0); // Depot
+    routes.push_back(r);
+  }
+  return routes;
+}
+
+void MFACO_CVRP::routes_to_perm(const std::vector<std::vector<int32_t>> &routes,
+                                std::vector<int32_t> &perm,
+                                std::vector<int32_t> &positions) {
+  perm.clear();
+  perm.reserve(m);
+  positions.assign(n, -1);
+  int32_t idx = 0;
+  for (const auto &r : routes) {
+    // skip first (0) and last (0)
+    for (size_t i = 1; i < r.size() - 1; ++i) {
+      int32_t node = r[i];
+      perm.push_back(node);
+      positions[node] = idx++;
+    }
+  }
+}
+
+// Helpers for LS
+static inline float dist_sq(float x1, float y1, float x2, float y2) {
+  float dx = x1 - x2;
+  float dy = y1 - y2;
+  return dx * dx + dy * dy;
+}
+
+bool MFACO_CVRP::ls_relocate(std::vector<std::vector<int32_t>> &routes,
+                             std::vector<int64_t> &loads, int32_t u_node,
+                             int32_t r_u, int32_t idx_u, int32_t r_v,
+                             int32_t idx_v, std::vector<int32_t> &node_pos) {
+  // idx_v is the INDEX of the node V. We insert u AFTER V.
+  // v_node can be derived from routes[r_v][idx_v].
+  int32_t v_node = routes[r_v][idx_v];
+
+  // Try to insert u after v
+  if (r_u != r_v) {
+    if (loads[r_v] + demand_int[u_node] > capacity_int)
+      return false;
+  }
+
+  auto &route_u = routes[r_u];
+  auto &route_v = routes[r_v];
+
+  // If same route, check standard relocate checks
+  if (r_u == r_v) {
+    // If v is u's predecessor, no change (insert u after prev(u) is no-op)
+    if (idx_v == idx_u - 1)
+      return false;
+    // If v is u (insert u after u??) -> invalid, no-op
+    if (idx_v == idx_u)
+      return false;
+  }
+
+  // Calculate delta
+  int32_t u_prev = route_u[idx_u - 1];
+  int32_t u_next = route_u[idx_u + 1];
+  int32_t v_next = route_v[idx_v + 1]; // Insert u between v and v_next
+
+  float delta = dist(u_prev, u_next) - dist(u_prev, u_node) -
+                dist(u_node, u_next) + dist(v_node, u_node) +
+                dist(u_node, v_next) - dist(v_node, v_next);
+
+  if (delta < -1e-6f) {
+    // Apply
+    // Remove u from r_u
+    route_u.erase(route_u.begin() + idx_u);
+    // Update indices for r_u elements after idx_u (indices shift left by 1)
+    for (size_t i = idx_u; i < route_u.size(); ++i) {
+      if (route_u[i] != 0)
+        node_pos[route_u[i]] = (int32_t)i;
+    }
+
+    // Be careful with indices if r_u == r_v
+    if (r_u == r_v) {
+      if (idx_u < idx_v) {
+        // u removed before v, so v index shifts down by 1
+        idx_v--;
+      }
+      routes[r_u].insert(routes[r_u].begin() + idx_v + 1, u_node);
+
+      // Update indices for elements after insertion (indices shift right by 1)
+      // Insertion at idx_v + 1. u is at idx_v + 1.
+      for (size_t i = idx_v + 1; i < routes[r_u].size(); ++i) {
+        if (routes[r_u][i] != 0)
+          node_pos[routes[r_u][i]] = (int32_t)i;
+      }
+    } else {
+      routes[r_v].insert(routes[r_v].begin() + idx_v + 1, u_node);
+      loads[r_u] -= demand_int[u_node];
+      loads[r_v] += demand_int[u_node];
+
+      // Update indices for r_v elements after insertion
+      for (size_t i = idx_v + 1; i < routes[r_v].size(); ++i) {
+        if (routes[r_v][i] != 0)
+          node_pos[routes[r_v][i]] = (int32_t)i;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+bool MFACO_CVRP::ls_swap(std::vector<std::vector<int32_t>> &routes,
+                         std::vector<int64_t> &loads, int32_t u_node,
+                         int32_t r_u, int32_t idx_u, int32_t r_v, int32_t idx_v,
+                         std::vector<int32_t> &node_pos) {
+  if (r_u == r_v) {
+    return false;
+  }
+
+  // Implicitly, idx_v is the node to swap with.
+  // v_node might be 0? If so, swapping depot is invalid for ls_swap typically.
+  int32_t v_node = routes[r_v][idx_v];
+  if (v_node == 0)
+    return false; // Cannot swap with depot
+
+  // Swap u and v
+  int64_t d_u = demand_int[u_node];
+  int64_t d_v = demand_int[v_node];
+
+  if (loads[r_u] - d_u + d_v > capacity_int)
+    return false;
+  if (loads[r_v] - d_v + d_u > capacity_int)
+    return false;
+
+  auto &route_u = routes[r_u];
+  auto &route_v = routes[r_v];
+
+  int32_t u_prev = route_u[idx_u - 1];
+  int32_t u_next = route_u[idx_u + 1];
+  int32_t v_prev = route_v[idx_v - 1];
+  int32_t v_next = route_v[idx_v + 1];
+
+  float delta = -dist(u_prev, u_node) - dist(u_node, u_next) -
+                dist(v_prev, v_node) - dist(v_node, v_next) +
+                dist(u_prev, v_node) + dist(v_node, u_next) +
+                dist(v_prev, u_node) + dist(u_node, v_next);
+
+  if (delta < -1e-6f) {
+    std::swap(route_u[idx_u], route_v[idx_v]);
+
+    // Update node_pos
+    std::swap(node_pos[u_node], node_pos[v_node]);
+
+    loads[r_u] = loads[r_u] - d_u + d_v;
+    loads[r_v] = loads[r_v] - d_v + d_u;
+    return true;
+  }
+  return false;
+}
+
+bool MFACO_CVRP::ls_2opt_star(std::vector<std::vector<int32_t>> &routes,
+                              std::vector<int64_t> &loads, int32_t u_node,
+                              int32_t r_u, int32_t idx_u, int32_t r_v,
+                              int32_t idx_v, std::vector<int32_t> &node_pos,
+                              std::vector<int32_t> &node_to_route) {
+  if (r_u == r_v)
+    return false;
+
+  auto &route_u = routes[r_u];
+  auto &route_v = routes[r_v];
+
+  // We cut AFTER idx_u and AFTER idx_v.
+  // v_node is routes[r_v][idx_v]. Can be 0 (cut after depot).
+  int32_t v_node = routes[r_v][idx_v];
+
+  // Tail U load: sum demand from idx_u+1 to end-1
+  int64_t tail_u_load = 0;
+  for (size_t i = idx_u + 1; i < route_u.size() - 1; ++i)
+    tail_u_load += demand_int[route_u[i]];
+
+  int64_t tail_v_load = 0;
+  for (size_t i = idx_v + 1; i < route_v.size() - 1; ++i)
+    tail_v_load += demand_int[route_v[i]];
+
+  int64_t new_load_u = (loads[r_u] - tail_u_load) + tail_v_load;
+  int64_t new_load_v = (loads[r_v] - tail_v_load) + tail_u_load;
+
+  if (new_load_u > capacity_int || new_load_v > capacity_int)
+    return false;
+
+  int32_t u_next = route_u[idx_u + 1];
+  int32_t v_next = route_v[idx_v + 1];
+
+  float delta = -dist(u_node, u_next) - dist(v_node, v_next) +
+                dist(u_node, v_next) + dist(v_node, u_next);
+
+  if (delta < -1e-6f) {
+    // Perform swap
+    std::vector<int32_t> new_tail_u(route_v.begin() + idx_v + 1, route_v.end());
+    std::vector<int32_t> new_tail_v(route_u.begin() + idx_u + 1, route_u.end());
+
+    route_u.resize(idx_u + 1);
+    route_u.insert(route_u.end(), new_tail_u.begin(), new_tail_u.end());
+
+    route_v.resize(idx_v + 1);
+    route_v.insert(route_v.end(), new_tail_v.begin(), new_tail_v.end());
+
+    loads[r_u] = new_load_u;
+    loads[r_v] = new_load_v;
+
+    // Update node_pos and node_to_route for moved nodes
+    // Nodes from new_tail_u came from route_v, now in route_u
+    for (size_t i = idx_u + 1; i < route_u.size() - 1; ++i) {
+      int32_t node = route_u[i];
+      if (node != 0) {
+        node_pos[node] = (int32_t)i;
+        node_to_route[node] = r_u;
+      }
+    }
+    // Nodes from new_tail_v came from route_u, now in route_v
+    for (size_t i = idx_v + 1; i < route_v.size() - 1; ++i) {
+      int32_t node = route_v[i];
+      if (node != 0) {
+        node_pos[node] = (int32_t)i;
+        node_to_route[node] = r_v;
+      }
+    }
+    // Update node_to_route: we processed swapped segments. Depots (start, end)
+    // are fine.
+
+    return true;
+  }
+  return false;
+}
+
+void MFACO_CVRP::inter_route_ls(std::vector<int32_t> &perm,
+                                std::vector<int32_t> &positions,
+                                std::vector<int32_t> &checklist,
+                                std::vector<uint8_t> &in_checklist) {
+  // Pruning removed by user request
+  // Only if best_cost is initialized (>0)
+
+  // 1. Initial Routes
+  auto routes = initial_routes_from_perm(perm);
+
+  // Compute loads map and initialize node_pos
+  std::vector<int64_t> loads(routes.size(), 0);
+  std::vector<int32_t> node_to_route(n, -1);
+  std::vector<int32_t> node_pos(n, -1);
+
+  for (size_t r = 0; r < routes.size(); ++r) {
+    for (size_t i = 1; i < routes[r].size() - 1; ++i) {
+      int32_t node = routes[r][i];
+      loads[r] += demand_int[node];
+      node_to_route[node] = (int32_t)r;
+      node_pos[node] = (int32_t)i;
+    }
+  }
+
+  // 2. Focused Loop
+  size_t checklist_pos = 0;
+
+  while (checklist_pos < checklist.size()) {
+    int32_t u = checklist[checklist_pos++];
+    if (u <= 0 || u >= n)
+      continue;
+
+    int32_t r_u = node_to_route[u];
+    if (r_u < 0)
+      continue;
+
+    // Check neighbors
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t v = nn_list[u * k + j];
+      if (v <= 0)
+        continue;
+
+      int32_t r_v = node_to_route[v];
+      if (r_v < 0)
+        continue;
+
+      int32_t move_type = 0;
+
+      int32_t idx_u = node_pos[u];
+      int32_t idx_v = node_pos[v];
+
+      // Capture neighbors before move for checklist update
+      int32_t p_u = routes[r_u][idx_u - 1];
+      int32_t s_u = routes[r_u][idx_u + 1];
+      int32_t p_v = routes[r_v][idx_v - 1];
+      int32_t s_v = routes[r_v][idx_v + 1];
+
+      // Try Relocate u -> v (insert u after v)
+      if (use_relocate &&
+          ls_relocate(routes, loads, u, r_u, idx_u, r_v, idx_v, node_pos)) {
+        move_type = 1; // Relocate u after v
+      }
+      // Try Relocate u -> prev(v) (insert u before v)
+      else if (use_relocate && ls_relocate(routes, loads, u, r_u, idx_u, r_v,
+                                           idx_v - 1, node_pos)) {
+        move_type = 2; // Relocate u before v
+      }
+      // Try Relocate v -> u (insert v after u)
+      else if (use_relocate && ls_relocate(routes, loads, v, r_v, idx_v, r_u,
+                                           idx_u, node_pos)) {
+        move_type = 3; // Relocate v after u
+      }
+      // Try Relocate v -> prev(u) (insert v before u)
+      else if (use_relocate && ls_relocate(routes, loads, v, r_v, idx_v, r_u,
+                                           idx_u - 1, node_pos)) {
+        move_type = 4; // Relocate v before u
+      }
+      // Try Swap
+      else if (use_swap &&
+               ls_swap(routes, loads, u, r_u, idx_u, r_v, idx_v, node_pos)) {
+        move_type = 5; // Swap
+      }
+      // Try 2-opt* (swap tails: u->v_next)
+      else if (use_2opt_star && ls_2opt_star(routes, loads, u, r_u, idx_u, r_v,
+                                             idx_v, node_pos, node_to_route)) {
+        move_type = 6; // 2-opt* u, v
+      }
+      // Try 2-opt* (swap tails: u->v) (Cut after u, Cut after prev(v))
+      else if (use_2opt_star &&
+               ls_2opt_star(routes, loads, u, r_u, idx_u, r_v, idx_v - 1,
+                            node_pos, node_to_route)) {
+        move_type = 7; // 2-opt* u, v-1
+      }
+      // Try 2-opt* (swap tails: v->u_next)
+      else if (use_2opt_star && ls_2opt_star(routes, loads, v, r_v, idx_v, r_u,
+                                             idx_u, node_pos, node_to_route)) {
+        move_type = 8; // 2-opt* v, u
+      } else if (use_2opt_star &&
+                 ls_2opt_star(routes, loads, v, r_v, idx_v, r_u, idx_u - 1,
+                              node_pos, node_to_route)) {
+        move_type = 9; // 2-opt* v, u-1
+      }
+
+      if (move_type > 0) {
+        // Update node_to_route
+        if (move_type >= 1 && move_type <= 4) { // Relocate
+          if (move_type <= 2) {                 // u moved
+            node_to_route[u] = r_v;
+            r_u = r_v;
+          } else { // v moved
+            node_to_route[v] = r_u;
+          }
+        } else if (move_type == 5) { // Swap
+          node_to_route[u] = r_v;
+          node_to_route[v] = r_u;
+          int32_t tmp = r_u;
+          r_u = r_v;
+          r_v = tmp;
+        }
+        // 2-opt* updates node_to_route internally
+
+        // Extend LS: Add involved nodes to checklist
+        if (extend_ls) {
+          auto add_chk = [&](int32_t node) {
+            if (node > 0 && node < n && in_checklist[node] == 0) {
+              checklist.push_back(node);
+              in_checklist[node] = 1;
+            }
+          };
+
+          // Always check u and v
+          add_chk(u);
+          add_chk(v);
+
+          // Specific neighbors based on move type
+          if (move_type == 1) { // Relocate u after v
+            add_chk(p_u);
+            add_chk(s_u);
+            add_chk(s_v);
+          } else if (move_type == 2) { // Relocate u before v (after p_v)
+            add_chk(p_u);
+            add_chk(s_u);
+            add_chk(p_v);
+          } else if (move_type == 3) { // Relocate v after u
+            add_chk(p_v);
+            add_chk(s_v);
+            add_chk(s_u);
+          } else if (move_type == 4) { // Relocate v before u (after p_u)
+            add_chk(p_v);
+            add_chk(s_v);
+            add_chk(p_u);
+          } else if (move_type == 5) { // Swap
+            add_chk(p_u);
+            add_chk(s_u);
+            add_chk(p_v);
+            add_chk(s_v);
+          } else if (move_type == 6) { // 2-opt* u, v
+            add_chk(s_u);
+            add_chk(s_v);
+          } else if (move_type == 7) { // 2-opt* u, v-1
+            add_chk(s_u);
+            add_chk(p_v);
+          } else if (move_type == 8) { // 2-opt* v, u
+            add_chk(s_v);
+            add_chk(s_u);
+          } else if (move_type == 9) { // 2-opt* v, u-1
+            add_chk(s_v);
+            add_chk(p_u);
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  routes_to_perm(routes, perm, positions);
 }
 
 } // namespace mfaco
