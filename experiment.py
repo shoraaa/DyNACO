@@ -27,6 +27,8 @@ DEFAULT_CONFIG = {
     "gamma": 1.0,
     "min_gamma": 0.2,
     "val_size": 16,
+    "warmup": True,
+    "train_warmup": False,
     "save_dir": "pretrained"
 }
 
@@ -104,17 +106,17 @@ def save_progress(key: str, data: Any):
 
 def parse_metrics(output: str):
     """Parses output from test.py to find Cost, Time, Gap."""
-    # Look for "Model Gap: X.XXXX%" or "Gap: X.XX%"
+    # Look for "Model Cost: ..., Time: ...s" to get specific model stats
+    model_stats = re.search(r"Model Cost: ([-+]?\d*\.\d+|\d+).*?Time: ([-+]?\d*\.\d+|\d+)s", output)
+    
+    # Model Gap
     gap_match = re.search(r"Model Gap: ([-+]?\d*\.\d+|\d+)%", output)
-    if not gap_match:
-         gap_match = re.search(r"Gap.*: ([-+]?\d*\.\d+|\d+)%", output)
-         
-    time_match = re.search(r"Time: ([-+]?\d*\.\d+|\d+)s", output)
     
+    cost = float(model_stats.group(1)) if model_stats else None
+    time_val = float(model_stats.group(2)) if model_stats else None
     gap = float(gap_match.group(1)) if gap_match else None
-    time_val = float(time_match.group(1)) if time_match else None
     
-    return gap, time_val
+    return {"gap": gap, "time": time_val, "cost": cost}
 
 def get_model_path(config: Dict[str, Any], suffix: str = "_best.pt") -> Path:
     """Constructs model path based on config."""
@@ -134,6 +136,13 @@ def get_model_path(config: Dict[str, Any], suffix: str = "_best.pt") -> Path:
     # L arg? Not in default dict but maybe present
     if config.get("L", 0) > 0:
         name += f"_L{config['L']}"
+
+    # Ablation suffixes
+    if config.get("no_dynamic_feats"): name += "_static"
+    if config.get("no_smooth_mmas"): name += "_nosmooth"
+    if config.get("disable_heuristic"): name += "_noheu"
+    if config.get("no_extend_ls"): name += "_noextls"
+    if config.get("no_normalized_heuristic"): name += "_nonorm"
         
     save_dir = Path(config.get("save_dir", "pretrained")) / config["problem"] / f"n{config['n_node']}"
     return save_dir / (name + suffix)
@@ -159,7 +168,7 @@ def train_model(config: Dict[str, Any], dry_run: bool = False, force: bool = Fal
     
     # Flags mapping
     # Boolean flags need action
-    bool_flags = ["anneal_prior", "no_dynamic_feats", "disable_heuristic", "no_local_search", "no_smooth_mmas", "train_warmup", "warmup"]
+    bool_flags = ["anneal_prior", "no_dynamic_feats", "disable_heuristic", "no_local_search", "no_smooth_mmas", "train_warmup", "warmup", "no_extend_ls", "no_normalized_heuristic"]
     
     for k, v in config.items():
         if k in ["save_dir"]: # Handled separately or passed? train.py takes save_dir
@@ -201,6 +210,13 @@ def test_model(model_path: Path, config: Dict[str, Any], dry_run: bool = False):
                  cmd.append(f"--{k}") # For boolean flags like train_warmup if passed roughly? But this lists params mostly.
              else:
                  cmd.extend([f"--{k}", str(config[k])])
+    
+    # Pass boolean flags for ablations
+    # train_model defines these:
+    bool_flags = ["anneal_prior", "no_dynamic_feats", "disable_heuristic", "no_local_search", "no_smooth_mmas", "no_extend_ls", "no_normalized_heuristic"]
+    for k in bool_flags:
+        if config.get(k, False):
+            cmd.append(f"--{k}")
              
     if dry_run:
         cmd.extend(["--n_node", "20", "--n_ants", "10"]) # Smaller scale for dry run validation
@@ -233,14 +249,14 @@ def run_tsp_experiments(sizes=[1000, 5000, 10000], dry_run=False, only_test=Fals
              print(f"Warning: Training on N={n} might be slow. Consider using N=1000 model for zero-shot if supported.")
         
         model_path = train_model(cfg, dry_run, wandb_project="lga_tsp", only_test=only_test)
+        model_path = train_model(cfg, dry_run, wandb_project="lga_tsp", only_test=only_test)
         if model_path is None: continue
 
-        gap, t_val = test_model(model_path, cfg, dry_run)
+        metrics = test_model(model_path, cfg, dry_run)
         
-        result_data = {"gap": gap, "time": t_val}
-        save_progress(key, result_data)
-        results[key] = result_data # Update local dict mostly for return if needed
-        print(f"TSP N={n}: Gap={gap}%, Time={t_val}s")
+        save_progress(key, metrics)
+        results[key] = metrics # Update local dict mostly for return if needed
+        print(f"TSP N={n}: {metrics}")
         
     return results
 
@@ -260,51 +276,54 @@ def run_cvrp_experiments(sizes=[1000, 5000], dry_run=False, only_test=False):
         cfg["n_node"] = n
         
         model_path = train_model(cfg, dry_run, wandb_project="lga_cvrp", only_test=only_test)
+        model_path = train_model(cfg, dry_run, wandb_project="lga_cvrp", only_test=only_test)
         if model_path is None: continue
 
-        gap, t_val = test_model(model_path, cfg, dry_run)
+        metrics = test_model(model_path, cfg, dry_run)
         
-        result_data = {"gap": gap, "time": t_val}
-        save_progress(key, result_data)
-        results[key] = result_data
-        print(f"CVRP N={n}: Gap={gap}%, Time={t_val}s")
+        save_progress(key, metrics)
+        results[key] = metrics
+        print(f"CVRP N={n}: {metrics}")
         
     return results
 
-def run_ablation_refresh(dry_run=False, only_test=False):
-    print("\n=== Running Ablation: Refresh Frequency (Table 5) ===")
-    # N=1000 TSP
+def run_ablation_refresh(problem='tsp', dry_run=False, only_test=False):
+    print(f"\n=== Running Ablation: Refresh Frequency (Table 5) [{problem}] ===")
+    # N=1000
     n = 1000
     base_cfg = DEFAULT_CONFIG.copy()
-    base_cfg.update(TSP_CONFIG)
+    if problem == 'cvrp':
+         base_cfg.update(CVRP_CONFIG)
+    else:
+         base_cfg.update(TSP_CONFIG)
     base_cfg["n_node"] = n
     
     # H values to test. Fixed T = H*S = 1000
-    h_s_pairs = [(1, 1000), (5, 200), (10, 100), (20, 50), (50, 20)]
+    h_s_pairs = [(1, 1000), (5, 200), (10, 100)]
     
     results = load_progress()
     
     for H, S in h_s_pairs:
         # Check for default config reuse (H=10, S=100)
         if H == 10 and S == 100:
-             default_key = "tsp_n1000"
+             default_key = f"{problem}_n{n}"
              if default_key in results:
                  print(f"[REUSE] Using {default_key} for H=10, S=100")
-                 results[f"ablation_refresh_H{H}_S{S}"] = results[default_key]
+                 results[f"{problem}_ablation_refresh_H{H}_S{S}"] = results[default_key]
                  continue
              else:
                  # Train as default if not found? Or just proceed as normal but map it?
-                 # Better to train as tsp_n1000 so others can reuse it.
+                 # Better to train as default so others can reuse it.
                  print(f"[INFO] H=10, S=100 matches Default. Using/Training '{default_key}'...")
                  # Temporarily switch key
                  key = default_key
                  # Proceed to train/test with this key, then map result back
                  
-        key = f"ablation_refresh_H{H}_S{S}" if not (H==10 and S==100) else "tsp_n1000"
+        key = f"{problem}_ablation_refresh_H{H}_S{S}" if not (H==10 and S==100) else f"{problem}_n{n}"
         
         if key in results:
              print(f"[SKIP] {key} already completed: {results[key]}")
-             if key == "tsp_n1000": results[f"ablation_refresh_H10_S100"] = results[key]
+             if key == f"{problem}_n{n}": results[f"{problem}_ablation_refresh_H10_S100"] = results[key]
              continue
 
         print(f"\n--- Ablation H={H}, S={S} ---")
@@ -312,27 +331,29 @@ def run_ablation_refresh(dry_run=False, only_test=False):
         cfg["H"] = H
         cfg["mini_H"] = S
         
-        proj = "lga_ablation_refresh"
-        if key == "tsp_n1000": proj = "lga_tsp"
+        proj = f"lga_{problem}_ablation_refresh"
+        if key == f"{problem}_n{n}": proj = f"lga_{problem}"
         
         model_path = train_model(cfg, dry_run, wandb_project=proj, only_test=only_test)
         if model_path is None: continue
 
-        gap, t_val = test_model(model_path, cfg, dry_run)
+        metrics = test_model(model_path, cfg, dry_run)
         
-        result_data = {"gap": gap, "time": t_val}
-        save_progress(key, result_data)
-        results[key] = result_data
-        if key == "tsp_n1000": results[f"ablation_refresh_H10_S100"] = result_data
-        print(f"H={H}: Gap={gap}%, Time={t_val}s")
+        save_progress(key, metrics)
+        results[key] = metrics
+        if key == "tsp_n1000": results[f"ablation_refresh_H10_S100"] = metrics
+        print(f"H={H}: {metrics}")
         
     return results
 
-def run_ablation_features(dry_run=False, only_test=False):
-    print("\n=== Running Ablation: Features (Table 6) ===")
+def run_ablation_features(problem='tsp', dry_run=False, only_test=False):
+    print(f"\n=== Running Ablation: Features (Table 6) [{problem}] ===")
     n = 1000
     base_cfg = DEFAULT_CONFIG.copy()
-    base_cfg.update(TSP_CONFIG)
+    if problem == 'cvrp':
+         base_cfg.update(CVRP_CONFIG)
+    else:
+         base_cfg.update(TSP_CONFIG)
     base_cfg["n_node"] = n
     
     # Feature settings
@@ -342,36 +363,35 @@ def run_ablation_features(dry_run=False, only_test=False):
     results = load_progress()
     
     # Full
-    key_full = "ablation_features_full"
-    default_key = "tsp_n1000"
+    key_full = f"{problem}_ablation_features_full"
+    default_key = f"{problem}_n{n}"
     
     # Check reuse
     if default_key in results:
          print(f"[REUSE] Using {default_key} for Full Features")
          results[key_full] = results[default_key]
-         results["Full"] = results[default_key]["gap"]
+         results["Full"] = results[default_key].get("gap")
     elif key_full in results: # Fallback if run independently previously
          print(f"[SKIP] {key_full} already completed: {results[key_full]}")
          results["Full"] = results[key_full]["gap"]
     else:
-        # Run as tsp_n1000 preference
+        # Run as default preference
         print(f"[INFO] Full Features matches Default. Using/Training '{default_key}'...")
         if default_key in results: # Double check
              pass 
         else:
              print("\n--- Full Features (Default) ---")
-             model_path = train_model(base_cfg, dry_run, wandb_project="lga_tsp", only_test=only_test)
+             model_path = train_model(base_cfg, dry_run, wandb_project=f"lga_{problem}", only_test=only_test)
              if model_path:
-                 gap, t_val = test_model(model_path, base_cfg, dry_run)
-                 result_data = {"gap": gap, "time": t_val}
-                 save_progress(default_key, result_data)
-                 results[default_key] = result_data
+                 metrics = test_model(model_path, base_cfg, dry_run)
+                 save_progress(default_key, metrics)
+                 results[default_key] = metrics
                  
                  results[key_full] = results[default_key]
-                 results["Full"] = results[default_key]["gap"]
+                 results["Full"] = results[default_key].get("gap")
     
     # Static Only
-    key_static = "ablation_features_static"
+    key_static = f"{problem}_ablation_features_static"
     if key_static in results:
         print(f"[SKIP] {key_static} already completed: {results[key_static]}")
         results["Static"] = results[key_static]["gap"]
@@ -379,29 +399,31 @@ def run_ablation_features(dry_run=False, only_test=False):
         print("\n--- Static Only ---")
         cfg_static = base_cfg.copy()
         cfg_static["no_dynamic_feats"] = True
-        model_path = train_model(cfg_static, dry_run, wandb_project="lga_ablation_features", only_test=only_test)
+        model_path = train_model(cfg_static, dry_run, wandb_project=f"lga_{problem}_ablation_features", only_test=only_test)
         if model_path:
-            gap, t_val = test_model(model_path, cfg_static, dry_run)
+            metrics = test_model(model_path, cfg_static, dry_run)
             
-            result_data = {"gap": gap, "time": t_val}
-            save_progress(key_static, result_data)
-            results["Static"] = gap
+            save_progress(key_static, metrics)
+            results["Static"] = metrics.get("gap")
     
     return results
 
-def run_ablation_smoothing(dry_run=False, only_test=False):
-    print("\n=== Running Ablation: Smoothing (Table 8) ===")
-    n = 1000  # Based on context usually N=1000
+def run_ablation_smoothing(problem='tsp', dry_run=False, only_test=False):
+    print(f"\n=== Running Ablation: Smoothing (Table 8) [{problem}] ===")
+    n = 1000
     base_cfg = DEFAULT_CONFIG.copy()
-    base_cfg.update(TSP_CONFIG) # Assuming TSP for ablation unless specified
+    if problem == 'cvrp':
+         base_cfg.update(CVRP_CONFIG)
+    else:
+         base_cfg.update(TSP_CONFIG)
     base_cfg["n_node"] = n
     
     results = load_progress()
     
     
     # Default (Smooth MMAS)
-    key_smooth = "ablation_smoothing_on"
-    default_key = "tsp_n1000"
+    key_smooth = f"{problem}_ablation_smoothing_on"
+    default_key = f"{problem}_n{n}"
 
     if default_key in results:
          print(f"[REUSE] Using {default_key} for Smoothing ON")
@@ -411,41 +433,42 @@ def run_ablation_smoothing(dry_run=False, only_test=False):
     else:
         print(f"[INFO] Smoothing ON matches Default. Using/Training '{default_key}'...")
         print("\n--- Smoothing ON (Default) ---")
-        model_path = train_model(base_cfg, dry_run, wandb_project="lga_tsp", only_test=only_test)
+        model_path = train_model(base_cfg, dry_run, wandb_project=f"lga_{problem}", only_test=only_test)
         if model_path:
-            gap, t_val = test_model(model_path, base_cfg, dry_run)
+            metrics = test_model(model_path, base_cfg, dry_run)
             
-            result_data = {"gap": gap, "time": t_val}
-            save_progress(default_key, result_data)
-            results[key_smooth] = result_data
+            save_progress(default_key, metrics)
+            results[key_smooth] = metrics
 
     # No Smooth MMAS
-    key_no_smooth = "ablation_smoothing_off"
+    key_no_smooth = f"{problem}_ablation_smoothing_off"
     if key_no_smooth in results:
         print(f"[SKIP] {key_no_smooth} already completed: {results[key_no_smooth]}")
     else:
         print("\n--- Smoothing OFF ---")
         cfg_ns = base_cfg.copy()
         cfg_ns["no_smooth_mmas"] = True
-        model_path = train_model(cfg_ns, dry_run, wandb_project="lga_ablation_smoothing", only_test=only_test)
+        model_path = train_model(cfg_ns, dry_run, wandb_project=f"lga_{problem}_ablation_smoothing", only_test=only_test)
         if model_path:
-            gap, t_val = test_model(model_path, cfg_ns, dry_run)
+            metrics = test_model(model_path, cfg_ns, dry_run)
             
-            result_data = {"gap": gap, "time": t_val}
-            save_progress(key_no_smooth, result_data)
+            save_progress(key_no_smooth, metrics)
 
-def run_ablation_heuristic(dry_run=False, only_test=False):
-    print("\n=== Running Ablation: Heuristic (Future) ===")
+def run_ablation_heuristic(problem='tsp', dry_run=False, only_test=False):
+    print(f"\n=== Running Ablation: Heuristic (Future) [{problem}] ===")
     n = 1000
     base_cfg = DEFAULT_CONFIG.copy()
-    base_cfg.update(TSP_CONFIG)
+    if problem == 'cvrp':
+         base_cfg.update(CVRP_CONFIG)
+    else:
+         base_cfg.update(TSP_CONFIG)
     base_cfg["n_node"] = n
     
     results = load_progress()
     
     # Heuristic ON (Default)
-    key_heu_on = "ablation_heuristic_on"
-    default_key = "tsp_n1000"
+    key_heu_on = f"{problem}_ablation_heuristic_on"
+    default_key = f"{problem}_n{n}"
     
     if default_key in results:
          print(f"[REUSE] Using {default_key} for Heuristic ON")
@@ -455,30 +478,33 @@ def run_ablation_heuristic(dry_run=False, only_test=False):
     else:
         print(f"[INFO] Heuristic ON matches Default. Using/Training '{default_key}'...")
         print("\n--- Heuristic ON (Default) ---")
-        model_path = train_model(base_cfg, dry_run, wandb_project="lga_tsp", only_test=only_test)
+        model_path = train_model(base_cfg, dry_run, wandb_project=f"lga_{problem}", only_test=only_test)
         if model_path:
-            gap, t_val = test_model(model_path, base_cfg, dry_run)
-            save_progress(default_key, {"gap": gap, "time": t_val})
-            results[key_heu_on] = {"gap": gap, "time": t_val}
+            metrics = test_model(model_path, base_cfg, dry_run)
+            save_progress(default_key, metrics)
+            results[key_heu_on] = metrics
 
     # Heuristic OFF
-    key_heu_off = "ablation_heuristic_off"
+    key_heu_off = f"{problem}_ablation_heuristic_off"
     if key_heu_off in results:
         print(f"[SKIP] {key_heu_off} already completed: {results[key_heu_off]}")
     else:
         print("\n--- Heuristic OFF ---")
         cfg_nh = base_cfg.copy()
         cfg_nh["disable_heuristic"] = True
-        model_path = train_model(cfg_nh, dry_run, wandb_project="lga_ablation_heuristic", only_test=only_test)
+        model_path = train_model(cfg_nh, dry_run, wandb_project=f"lga_{problem}_ablation_heuristic", only_test=only_test)
         if model_path:
-            gap, t_val = test_model(model_path, cfg_nh, dry_run)
-            save_progress(key_heu_off, {"gap": gap, "time": t_val})
+            metrics = test_model(model_path, cfg_nh, dry_run)
+            save_progress(key_heu_off, metrics)
 
-def run_ablation_warmup(dry_run=False, only_test=False):
-    print("\n=== Running Ablation: Warmup Strategy (Table Future) ===")
+def run_ablation_warmup(problem='tsp', dry_run=False, only_test=False):
+    print(f"\n=== Running Ablation: Warmup Strategy (Table Future) [{problem}] ===")
     n = 1000
     base_cfg = DEFAULT_CONFIG.copy()
-    base_cfg.update(TSP_CONFIG)
+    if problem == 'cvrp':
+         base_cfg.update(CVRP_CONFIG)
+    else:
+         base_cfg.update(TSP_CONFIG)
     base_cfg["n_node"] = n
     
     results = load_progress()
@@ -491,35 +517,27 @@ def run_ablation_warmup(dry_run=False, only_test=False):
     # 5. Train Warmup (Ratio 0.8)
     
     # 1. Default (Warmup ON)
-    key_default = "tsp_n1000"
-    key_warmup_on = "ablation_warmup_val_only"
+    key_default = f"{problem}_n{n}"
+    key_warmup_on = f"{problem}_ablation_warmup_val_only"
     
     if key_default in results:
          print(f"[REUSE] Using {key_default} for Warmup ON")
          results[key_warmup_on] = results[key_default]
     else:
          print(f"[INFO] Warmup ON matches Default. Using/Training '{key_default}'...")
-         model_path = train_model(base_cfg, dry_run, wandb_project="lga_tsp", only_test=only_test)
+         model_path = train_model(base_cfg, dry_run, wandb_project=f"lga_{problem}", only_test=only_test)
          if model_path:
-             gap, t_val = test_model(model_path, base_cfg, dry_run)
-             save_progress(key_default, {"gap": gap, "time": t_val})
-             results[key_warmup_on] = {"gap": gap, "time": t_val}
+             metrics = test_model(model_path, base_cfg, dry_run)
+             save_progress(key_default, metrics)
+             results[key_warmup_on] = metrics
 
     # 2. Warmup OFF
-    key_warmup_off = "ablation_warmup_off"
+    key_warmup_off = f"{problem}_ablation_warmup_off"
     if key_warmup_off in results:
          print(f"[SKIP] {key_warmup_off} already completed")
     else:
          print("\n--- Warmup OFF ---")
          # We can reuse the default model, but test with --no-warmup
-         # Wait, does training depend on warmup? train.py has --train_warmup separate.
-         # The default config has train_warmup=False, warmup=True (for valid).
-         # So model is same, only inference changes.
-         # Wait, train_model returns path. We can test same model with diff args?
-         # test_model function currently takes config and runs test.py with those args.
-         # So we need a config that says "warmup": False.
-         
-         # Reusing default model but with warmup=False
          default_model_path = get_model_path(base_cfg)
          model_exists = default_model_path.exists()
          
@@ -531,13 +549,13 @@ def run_ablation_warmup(dry_run=False, only_test=False):
                   print("Testing Default Model with Warmup OFF...")
                   cfg_off = base_cfg.copy()
                   cfg_off["warmup"] = False 
-                  gap, t_val = test_model(default_model_path, cfg_off, dry_run)
-                  save_progress(key_warmup_off, {"gap": gap, "time": t_val})
+                  metrics = test_model(default_model_path, cfg_off, dry_run)
+                  save_progress(key_warmup_off, metrics)
          else:
              print("[ERROR] Default model not found for Warmup OFF ablation. Should have been trained above.")
          
     # 3. Train Warmup (Default Ratio 0.5)
-    key_train_warmup = "ablation_train_warmup_r0.5"
+    key_train_warmup = f"{problem}_ablation_train_warmup_r0.5"
     if key_train_warmup in results:
          print(f"[SKIP] {key_train_warmup} already completed")
     else:
@@ -545,13 +563,13 @@ def run_ablation_warmup(dry_run=False, only_test=False):
          cfg_tw = base_cfg.copy()
          cfg_tw["train_warmup"] = True
          cfg_tw["warmup_ratio"] = 0.5
-         model_path = train_model(cfg_tw, dry_run, wandb_project="lga_ablation_warmup", only_test=only_test)
+         model_path = train_model(cfg_tw, dry_run, wandb_project=f"lga_{problem}_ablation_warmup", only_test=only_test)
          if model_path:
-             gap, t_val = test_model(model_path, cfg_tw, dry_run)
-             save_progress(key_train_warmup, {"gap": gap, "time": t_val})
+             metrics = test_model(model_path, cfg_tw, dry_run)
+             save_progress(key_train_warmup, metrics)
 
     # 4. Train Warmup (Ratio 0.2)
-    key_tw_02 = "ablation_train_warmup_r0.2"
+    key_tw_02 = f"{problem}_ablation_train_warmup_r0.2"
     if key_tw_02 in results:
          print(f"[SKIP] {key_tw_02} already completed")
     else:
@@ -559,13 +577,13 @@ def run_ablation_warmup(dry_run=False, only_test=False):
          cfg_tw = base_cfg.copy()
          cfg_tw["train_warmup"] = True
          cfg_tw["warmup_ratio"] = 0.2
-         model_path = train_model(cfg_tw, dry_run, wandb_project="lga_ablation_warmup", only_test=only_test)
+         model_path = train_model(cfg_tw, dry_run, wandb_project=f"lga_{problem}_ablation_warmup", only_test=only_test)
          if model_path:
-             gap, t_val = test_model(model_path, cfg_tw, dry_run)
-             save_progress(key_tw_02, {"gap": gap, "time": t_val})
+             metrics = test_model(model_path, cfg_tw, dry_run)
+             save_progress(key_tw_02, metrics)
          
     # 5. Train Warmup (Ratio 0.8)
-    key_tw_08 = "ablation_train_warmup_r0.8"
+    key_tw_08 = f"{problem}_ablation_train_warmup_r0.8"
     if key_tw_08 in results:
          print(f"[SKIP] {key_tw_08} already completed")
     else:
@@ -573,10 +591,59 @@ def run_ablation_warmup(dry_run=False, only_test=False):
          cfg_tw = base_cfg.copy()
          cfg_tw["train_warmup"] = True
          cfg_tw["warmup_ratio"] = 0.8
-         model_path = train_model(cfg_tw, dry_run, wandb_project="lga_ablation_warmup", only_test=only_test)
+         model_path = train_model(cfg_tw, dry_run, wandb_project=f"lga_{problem}_ablation_warmup", only_test=only_test)
          if model_path:
-             gap, t_val = test_model(model_path, cfg_tw, dry_run)
-             save_progress(key_tw_08, {"gap": gap, "time": t_val})
+             metrics = test_model(model_path, cfg_tw, dry_run)
+             save_progress(key_tw_08, metrics)
+
+def run_ablation_rl_algo(dry_run=False, only_test=False):
+    print("\n=== Running Comparison: PPO vs REINFORCE ===")
+    n = 1000
+    base_cfg = DEFAULT_CONFIG.copy()
+    base_cfg.update(TSP_CONFIG)
+    base_cfg["n_node"] = n
+    
+    results = load_progress()
+    
+    # 1. PPO (Default) - reuse existing if possible
+    key_ppo = "alg_ppo"
+    default_key = "tsp_n1000"
+    
+    if default_key in results:
+         print(f"[REUSE] Using {default_key} for PPO")
+         results[key_ppo] = results[default_key]
+    else:
+         print(f"[INFO] PPO matches Default. Using/Training '{default_key}'...")
+         # PPO is default algo, so no need to specify "algo": "ppo" usually, but explicitly:
+         cfg_ppo = base_cfg.copy()
+         cfg_ppo["algo"] = "ppo" 
+         model_path = train_model(cfg_ppo, dry_run, wandb_project="lga_tsp", only_test=only_test)
+         if model_path:
+             metrics = test_model(model_path, cfg_ppo, dry_run)
+             save_progress(default_key, metrics)
+             results[key_ppo] = metrics
+
+    # 2. REINFORCE
+    key_reinforce = "alg_reinforce"
+    if key_reinforce in results:
+         print(f"[SKIP] {key_reinforce} already completed: {results[key_reinforce]}")
+    else:
+         print("\n--- REINFORCE ---")
+         cfg_reinforce = base_cfg.copy()
+         cfg_reinforce["algo"] = "reinforce"
+         # REINFORCE typically uses higher LR, train.py defaults to 1e-4 if not set. 
+         # Experiment default is 5e-6 in DEFAULT_CONFIG (for PPO).
+         # We should let train.py decide or set it?
+         # train.py logic: if args.lr is None: args.lr = args.ppo_lr if args.algo == 'ppo' else args.reinforce_lr
+         # DEFAULT_CONFIG has "lr": 5e-6. train_model passes it.
+         # So we must remove "lr" from cfg if we want train.py default, OR set it explicitly.
+         # Let's set it to 1e-4 explicitly to be safe or delete it.
+         cfg_reinforce["lr"] = 1e-4
+         
+         model_path = train_model(cfg_reinforce, dry_run, wandb_project="lga_rl_comparison", only_test=only_test)
+         if model_path:
+             metrics = test_model(model_path, cfg_reinforce, dry_run)
+             save_progress(key_reinforce, metrics)
 
 # =============================================================================
 # Main
@@ -584,36 +651,52 @@ def run_ablation_warmup(dry_run=False, only_test=False):
 
 def main():
     parser = argparse.ArgumentParser(description="Reproduce experiments from LGA paper")
-    parser.add_argument("--table", type=str, choices=["2", "3", "5", "6", "8", "heuristic", "warmup", "all"], default="all", help="Which table to reproduce")
+    parser.add_argument("--table", type=str, choices=["2", "3", "5", "6", "8", "heuristic", "warmup", "rl", "all"], default="all", help="Which table to reproduce")
     parser.add_argument("--dry-run", action="store_true", help="Run with minimal steps to verify pipeline")
     parser.add_argument("--fast", action="store_true", help="Skip large instances")
     parser.add_argument("--sizes", type=int, nargs="+", help="Specific sizes to run")
     parser.add_argument("--test", action="store_true", help="Only test existing models, do not train")
+    parser.add_argument("--problem", type=str, choices=["tsp", "cvrp"], default=None, help="Specific problem to run experiments for")
+    parser.add_argument("--save_dir", type=str, default="experiments", help="Directory to save models")
     
     args = parser.parse_args()
     
-    if args.table in ["2", "all"]:
-        sizes = args.sizes if args.sizes else ([1000, 5000, 10000] if not args.fast else [1000])
-        run_tsp_experiments(sizes, args.dry_run, only_test=args.test)
+    # Update default config with save dir
+    DEFAULT_CONFIG["save_dir"] = args.save_dir
+    
+    # Determine which problems to run ablations for
+    # If problem is specified, only run for that problem.
+    # If not specified, default to 'tsp' for ablations to match historical behavior (or both? stick to tsp for now as requested context implies it was tsp only)
+    ablation_problems = [args.problem] if args.problem else ['tsp']
+
+    # if args.table in ["2", "all"]:
+    #     if args.problem is None or args.problem == 'tsp':
+    #         sizes = args.sizes if args.sizes else ([1000, 5000, 10000] if not args.fast else [1000])
+    #         run_tsp_experiments(sizes, args.dry_run, only_test=args.test)
         
-    if args.table in ["3", "all"]:
-        sizes = args.sizes if args.sizes else ([1000, 5000] if not args.fast else [1000])
-        run_cvrp_experiments(sizes, args.dry_run, only_test=args.test)
+    # if args.table in ["3", "all"]:
+    #     if args.problem is None or args.problem == 'cvrp':
+    #         sizes = args.sizes if args.sizes else ([1000, 5000] if not args.fast else [1000])
+    #         run_cvrp_experiments(sizes, args.dry_run, only_test=args.test)
         
-    if args.table in ["5", "all"]:
-        run_ablation_refresh(args.dry_run, only_test=args.test)
-        
-    if args.table in ["6", "all"]:
-        run_ablation_features(args.dry_run, only_test=args.test)
-        
-    if args.table in ["8", "all"]:
-        run_ablation_smoothing(args.dry_run, only_test=args.test)
-        
-    if args.table in ["heuristic", "all"]:
-        run_ablation_heuristic(args.dry_run, only_test=args.test)
-        
-    if args.table in ["warmup", "all"]:
-        run_ablation_warmup(args.dry_run, only_test=args.test)
+    for p in ablation_problems:
+        if args.table in ["5", "all"]:
+            run_ablation_refresh(problem=p, dry_run=args.dry_run, only_test=args.test)
+            
+        if args.table in ["6", "all"]:
+            run_ablation_features(problem=p, dry_run=args.dry_run, only_test=args.test)
+            
+        if args.table in ["8", "all"]:
+            run_ablation_smoothing(problem=p, dry_run=args.dry_run, only_test=args.test)
+            
+        if args.table in ["heuristic", "all"]:
+            run_ablation_heuristic(problem=p, dry_run=args.dry_run, only_test=args.test)
+            
+        if args.table in ["warmup", "all"]:
+            run_ablation_warmup(p, args.dry_run, only_test=args.test)
+
+    if args.table in ["rl", "all"]:
+        run_ablation_rl_algo(args.dry_run, only_test=args.test)
 
 if __name__ == "__main__":
     main()

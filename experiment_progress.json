@@ -1,0 +1,32 @@
+{
+    "tsp_ablation_refresh_H1_S1000": {
+        "gap": 1.1785,
+        "time": 0.7084,
+        "cost": 23.3295
+    },
+    "tsp_ablation_refresh_H5_S200": {
+        "gap": 0.6646,
+        "time": 0.6857,
+        "cost": 23.211
+    },
+    "tsp_n1000": {
+        "gap": 0.909,
+        "time": 0.8799,
+        "cost": 23.2676
+    },
+    "tsp_ablation_refresh_H20_S50": {
+        "gap": 1.8131,
+        "time": 3.5687,
+        "cost": 23.4759
+    },
+    "tsp_ablation_features_static": {
+        "gap": 1.2864,
+        "time": 0.9467,
+        "cost": 23.3544
+    },
+    "tsp_ablation_smoothing_off": {
+        "gap": 0.9365,
+        "time": 1.0747,
+        "cost": 23.2738
+    }
+}

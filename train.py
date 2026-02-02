@@ -213,8 +213,18 @@ def train_instance_ppo(model, optimizer, instance_data, args):
     warmup_steps = 0
     if getattr(args, 'train_warmup', False):
         max_limit = int(args.H * getattr(args, 'warmup_ratio', 0.5))
+        if max_limit < 1: max_limit = 1
         # "upto" implies 1 to max_limit
-        warmup_steps = np.random.randint(1, max_limit + 1)
+        warmup_steps = np.random.randint(0, max_limit + 1) # Allow 0 warmup too? Or strictly 1? Or just handle range properly.
+        # Original was randint(1, max_limit+1). If max_limit=0, range(1, 1) empty.
+        # If we set max_limit=1. range(1, 2) -> returns 1.
+        # But if H=1, do we want warmup? Maybe not.
+        # If H=1, warmup=1 means we skip the only step?
+        # Let's just safeguard the randint.
+        if max_limit > 0:
+             warmup_steps = np.random.randint(1, max_limit + 1)
+        else:
+             warmup_steps = 0
 
     for outer in tqdm(range(args.H), desc="Outer", leave=False):
         t0 = time.time()
@@ -265,7 +275,7 @@ def train_instance_ppo(model, optimizer, instance_data, args):
         for inner in range(args.mini_H):
             current_prior = prior_old
             # Annealing only if we have a model prior
-            if prior_old is not None and args.anneal_prior:
+            if prior_old is not None and args.train_anneal:
                 if args.mini_H > 1:
                     ratio = inner / (args.mini_H - 1)
                     factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
@@ -358,7 +368,7 @@ def train_instance_ppo(model, optimizer, instance_data, args):
             for inner in range(args.mini_H):
                 # Annealing Calc (Same as above)
                 current_prior = prior_new
-                if args.anneal_prior:
+                if args.train_anneal:
                     if args.mini_H > 1:
                         ratio = inner / (args.mini_H - 1)
                         factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
@@ -539,40 +549,40 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
     for outer in range(args.H):
         pyg_data = build_fn(aco, *pyg_args, dynamic=dynamic)
         
-        heuristics = None
+        guidance = None
         # Only query model if past warmup
         if outer >= warmup_steps:
             with torch.no_grad():
-                heuristics = net(pyg_data).view(-1).view(aco.n, aco.k)
+                guidance = net(pyg_data).view(-1).view(aco.n, aco.k)
         
         # Track prior metrics (only if model used)
-        if collect_metrics and heuristics is not None:
-            metrics_log['prior_mean'].append(heuristics.mean().item())
-            metrics_log['prior_std'].append(heuristics.std().item())
+        if collect_metrics and guidance is not None:
+            metrics_log['prior_mean'].append(guidance.mean().item())
+            metrics_log['prior_std'].append(guidance.std().item())
             
             # Track prior drift metrics
             if prior_prev_outer is not None:
-                metrics_log['prior_l2_drift'].append(rel_l2_drift(prior_prev_outer, heuristics))
-                metrics_log['prior_kl'].append(mean_row_kl(prior_prev_outer, heuristics))
-                metrics_log['prior_turnover'].append(top_turnover(prior_prev_outer, heuristics))
-                metrics_log['prior_flip'].append(top1_flip_rate(prior_prev_outer, heuristics))
+                metrics_log['prior_l2_drift'].append(rel_l2_drift(prior_prev_outer, guidance))
+                metrics_log['prior_kl'].append(mean_row_kl(prior_prev_outer, guidance))
+                metrics_log['prior_turnover'].append(top_turnover(prior_prev_outer, guidance))
+                metrics_log['prior_flip'].append(top1_flip_rate(prior_prev_outer, guidance))
             
             # Track prior-eta correlation
-            metrics_log['prior_eta_corr'].append(safe_corr(heuristics, eta_nk))
+            metrics_log['prior_eta_corr'].append(safe_corr(guidance, eta_nk))
             
-            prior_prev_outer = heuristics.detach().clone()
+            prior_prev_outer = guidance.detach().clone()
         
         # Inner loop with mini_H iterations (matching training and test.py)
         for inner in range(args.mini_H):
             # Annealing
-            current_prior = heuristics
-            if heuristics is not None and args.anneal_prior:
+            current_prior = guidance
+            if guidance is not None and not args.no_anneal:
                 if args.mini_H > 1:
                     ratio = inner / (args.mini_H - 1)
                     factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
                 else:
                     factor = args.gamma
-                current_prior = heuristics * factor
+                current_prior = guidance * factor
             
             if args.problem == 'tsp':
                 costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=current_prior, require_prob=False)
@@ -605,10 +615,17 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
     
     return avg_cost, best_seen, timings, {}
 
-
-
 def validation(net, val_dataset, args, baseline_values=None):
-    sum_sample_best, sum_aco_best = 0, 0
+    print(f"Validating on {len(val_dataset)} instances...")
+    
+    # Validation args override
+    val_args = argparse.Namespace(**vars(args))
+    if val_args.val_H is not None: val_args.H = val_args.val_H
+    if val_args.val_mini_H is not None: val_args.mini_H = val_args.val_mini_H
+    
+    net.eval()
+    sum_sample_best = 0.0
+    sum_aco_best = 0.0
     sum_gap = 0
     n_val = len(val_dataset)
     
@@ -639,7 +656,7 @@ def validation(net, val_dataset, args, baseline_values=None):
                 item = item[0]
 
         dynamic = not args.no_dynamic_feats
-        res = infer_instance(net, item, args.k_sparse, args.n_ants, dynamic, args, collect_metrics=not args.simple_train)
+        res = infer_instance(net, item, args.k_sparse, args.n_ants, dynamic, val_args, collect_metrics=not args.simple_train)
         
         avg, best, timings, metrics = res
         
@@ -730,16 +747,20 @@ def main():
     parser.add_argument("--no-warmup", dest="warmup", action="store_false", help="Disable warmup")
     parser.add_argument("--train_warmup", action="store_true", help="Use warmup strategy in training (skip model for first H*ratio steps)")
     parser.add_argument("--warmup_ratio", type=float, default=0.5, help="Warmup ratio H/2")
-    parser.add_argument("--anneal_prior", action="store_true")
+    parser.add_argument("--train_anneal", action="store_true", help="Enable annealing during training")
+    parser.add_argument("--no_anneal", action="store_true", help="Disable annealing during validation")
     parser.add_argument("--gamma", type=float, default=1.0)
-    parser.add_argument("--min_gamma", type=float, default=0.2)
+    parser.add_argument("--min_gamma", type=float, default=0.0)
     parser.add_argument("--L", type=int, default=0)
     parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--threads", type=int, default=None)
     parser.add_argument("--simple_train", action="store_true", help="Skip expensive metric calculations")
     
+    # Validation H override
+    parser.add_argument("--val_H", type=int, default=None)
+    parser.add_argument("--val_mini_H", type=int, default=None)
+    
     args = parser.parse_args()
-    args.train_warmup = True
 
     # Defaults setup
     if args.lr is None:
@@ -767,12 +788,19 @@ def main():
 
     # Generate descriptive filename based on key parameters
     model_name = f"{args.problem}_n{args.n_node}_k{args.k_sparse}_ants{args.n_ants}_H{args.H}_miniH{args.mini_H}_rho{args.rho}_mne{args.min_new_edges}_{args.algo}_lr{args.lr}"
-    if args.anneal_prior:
+    if args.train_anneal:
         model_name += f"_anneal_g{args.gamma}_mg{args.min_gamma}"
     if args.L > 0:
         model_name += f"_L{args.L}"
     if args.train_warmup:
         model_name += f"_warmup{args.warmup_ratio}"
+    
+    # Ablation suffixes
+    if args.no_dynamic_feats: model_name += "_static"
+    if args.no_smooth_mmas: model_name += "_nosmooth"
+    if args.disable_heuristic: model_name += "_noheu"
+    if args.no_extend_ls: model_name += "_noextls"
+    if args.no_normalized_heuristic: model_name += "_nonorm"
 
     run_id = wandb.util.generate_id()
     if not args.no_wandb:

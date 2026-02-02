@@ -259,60 +259,39 @@ void MFACO_TSP::update_pheromone(const int32_t *best_flat,
   tau_min = tmin;
   tau_max = tmax;
 
-  if (!smooth_mmas) {
-    // Classic MMAS-style: evaporate and additively deposit on best route
-    float decay_factor = 1.0f - rho;
-    for (int32_t i = 0; i < n * k; ++i) {
-      pheromone_sparse[i] *= decay_factor;
-      pheromone_sparse[i] =
-          std::max(tau_min, std::min(tau_max, pheromone_sparse[i]));
-    }
+  // Precompute positions for O(1) in-route check (used by both methods now)
+  std::vector<int32_t> pos(static_cast<size_t>(n));
+  for (int32_t i = 0; i < n; ++i) {
+    int32_t v = best_flat[i];
+    pos[static_cast<size_t>(v)] = i;
+  }
 
-    // Deposit on best route
-    float deposit = 1.0f / (new_best_cost + EPS);
-    int32_t prev = best_flat[n - 1]; // last node before wrap
-    for (int32_t i = 0; i < n; ++i) {
-      int32_t cur = best_flat[i];
+  auto in_route_edge = [&](int32_t u, int32_t v) -> bool {
+    int32_t pu = pos[static_cast<size_t>(u)];
+    int32_t pv = pos[static_cast<size_t>(v)];
+    int32_t diff = std::abs(pu - pv);
+    return diff == 1 || diff == n - 1;
+  };
 
-      // Forward edge (prev -> cur)
-      int32_t j = find_neighbor_index(prev, cur);
-      if (j >= 0) {
-        pheromone_sparse[prev * k + j] =
-            std::min(pheromone_sparse[prev * k + j] + deposit, tau_max);
-      }
+  const float decay_factor = 1.0f - rho;
+  const float deposit = (!smooth_mmas) ? (1.0f / (new_best_cost + EPS)) : 0.0f;
 
-      // Symmetric: reverse edge (cur -> prev)
-      int32_t jr = find_neighbor_index(cur, prev);
-      if (jr >= 0) {
-        pheromone_sparse[cur * k + jr] =
-            std::min(pheromone_sparse[cur * k + jr] + deposit, tau_max);
-      }
+#pragma omp parallel for schedule(static)
+  for (int32_t u = 0; u < n; ++u) {
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t v = nn_list[u * k + j];
+      float &tau = pheromone_sparse[u * k + j];
+      bool is_in = in_route_edge(u, v);
 
-      prev = cur;
-    }
-  } else {
-    // Smooth-MMAS: linear interpolation toward tau_min/tau_max targets
-    // tau = (1-rho)*tau + rho*tau_target
-    std::vector<int32_t> pos(static_cast<size_t>(n));
-    for (int32_t i = 0; i < n; ++i) {
-      int32_t v = best_flat[i];
-      pos[static_cast<size_t>(v)] = i;
-    }
-
-    auto in_route_edge = [&](int32_t u, int32_t v) -> bool {
-      int32_t pu = pos[static_cast<size_t>(u)];
-      int32_t pv = pos[static_cast<size_t>(v)];
-      int32_t diff = std::abs(pu - pv);
-      return diff == 1 || diff == n - 1;
-    };
-
-    float keep = 1.0f - rho;
-    for (int32_t u = 0; u < n; ++u) {
-      for (int32_t j = 0; j < k; ++j) {
-        int32_t v = nn_list[u * k + j];
-        float target = in_route_edge(u, v) ? tau_max : tau_min;
-        float &tau = pheromone_sparse[u * k + j];
-        tau = keep * tau + rho * target;
+      if (smooth_mmas) {
+        float target = is_in ? tau_max : tau_min;
+        tau = decay_factor * tau + rho * target;
+      } else {
+        tau *= decay_factor;
+        if (is_in) {
+          tau += deposit;
+        }
+        tau = std::max(tau_min, std::min(tau_max, tau));
       }
     }
   }
@@ -2559,109 +2538,57 @@ void MFACO_CVRP::update_pheromone(const int32_t *iter_best_perm_ptr,
   tau_max = tmax;
 
   // 3) Evaporate
-  if (!smooth_mmas) {
-    float decay_factor = 1.0f - rho;
-    for (int32_t i = 0; i < n * k; ++i) {
-      pheromone_sparse[i] *= decay_factor;
-      pheromone_sparse[i] =
-          std::max(tau_min, std::min(tau_max, pheromone_sparse[i]));
+  // Shared logic: reconstruct segments and build adjacency
+  std::vector<int32_t> perm(iter_best_perm_ptr, iter_best_perm_ptr + m);
+  auto sp = split_dp(perm);
+
+  // Build solution adjacency for fast lookup
+  std::vector<std::vector<int32_t>> sol_adj(n);
+  auto add_edge = [&](int32_t u, int32_t v) {
+    sol_adj[u].push_back(v);
+    sol_adj[v].push_back(u);
+  };
+
+  for (auto [i, j] : sp.segs) {
+    int32_t first = perm[i];
+    int32_t last = perm[j];
+    add_edge(0, first);
+    for (int32_t t = i; t < j; ++t) {
+      add_edge(perm[t], perm[t + 1]);
     }
+    add_edge(last, 0);
+  }
 
-    // 4) Deposit ON ITERATION BEST (consistent with deposit magnitude)
-    std::vector<int32_t> perm(iter_best_perm_ptr, iter_best_perm_ptr + m);
-    auto sp = split_dp(perm);
-    float deposit = 1.0f / (iter_best_cost + EPS);
-
-    // Deposit depot edges + within-segment edges
-    for (auto [i, j] : sp.segs) {
-      int32_t first = perm[i];
-      int32_t last = perm[j];
-
-      // depot -> first
-      int32_t jd = find_neighbor_index(0, first);
-      if (jd >= 0)
-        pheromone_sparse[0 * k + jd] =
-            std::min(pheromone_sparse[0 * k + jd] + deposit, tau_max);
-
-      int32_t jdr = find_neighbor_index(first, 0);
-      if (jdr >= 0)
-        pheromone_sparse[first * k + jdr] =
-            std::min(pheromone_sparse[first * k + jdr] + deposit, tau_max);
-
-      // internal edges
-      for (int32_t t = i; t < j; ++t) {
-        int32_t u = perm[t];
-        int32_t v = perm[t + 1];
-
-        int32_t ju = find_neighbor_index(u, v);
-        if (ju >= 0)
-          pheromone_sparse[u * k + ju] =
-              std::min(pheromone_sparse[u * k + ju] + deposit, tau_max);
-
-        int32_t jv = find_neighbor_index(v, u);
-        if (jv >= 0)
-          pheromone_sparse[v * k + jv] =
-              std::min(pheromone_sparse[v * k + jv] + deposit, tau_max);
-      }
-
-      // last -> depot
-      int32_t jl = find_neighbor_index(last, 0);
-      if (jl >= 0)
-        pheromone_sparse[last * k + jl] =
-            std::min(pheromone_sparse[last * k + jl] + deposit, tau_max);
-
-      int32_t jlr = find_neighbor_index(0, last);
-      if (jlr >= 0)
-        pheromone_sparse[0 * k + jlr] =
-            std::min(pheromone_sparse[0 * k + jlr] + deposit, tau_max);
+  auto is_in_sol = [&](int32_t u, int32_t v) {
+    for (int32_t x : sol_adj[u]) {
+      if (x == v)
+        return true;
     }
-  } else {
-    // Smooth-MMAS
-    std::vector<int32_t> perm(iter_best_perm_ptr, iter_best_perm_ptr + m);
-    auto sp = split_dp(perm);
+    return false;
+  };
 
-    // Identify edges in the best solution
-    // Since n is small (up to 2000-5000), we can use a dense adjacency matrix
-    // or vector of vectors. Or since we only iterate n*k edges in sparse
-    // matrix, we can just check existence. Building a hash set or sorted
-    // vector for fast lookup is better. Given sparse graph, maybe just
-    // marking nodes? No, edges. Let's use `std::vector<std::vector<int32_t>>
-    // adj(n)` just for the solution edges.
+  const float decay_factor = 1.0f - rho;
+  const float deposit = (!smooth_mmas) ? (1.0f / (iter_best_cost + EPS)) : 0.0f;
 
-    std::vector<std::vector<int32_t>> sol_adj(n);
-    auto add_edge = [&](int32_t u, int32_t v) {
-      sol_adj[u].push_back(v);
-      sol_adj[v].push_back(u);
-    };
+#pragma omp parallel for schedule(static)
+  for (int32_t u = 0; u < n; ++u) {
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t v = nn_list[u * k + j];
+      if (v < 0)
+        continue;
 
-    for (auto [i, j] : sp.segs) {
-      int32_t first = perm[i];
-      int32_t last = perm[j];
-      add_edge(0, first);
-      for (int32_t t = i; t < j; ++t) {
-        add_edge(perm[t], perm[t + 1]);
-      }
-      add_edge(last, 0);
-    }
+      float &tau = pheromone_sparse[u * k + j];
+      bool is_in = is_in_sol(u, v);
 
-    auto is_in_sol = [&](int32_t u, int32_t v) {
-      for (int32_t x : sol_adj[u]) {
-        if (x == v)
-          return true;
-      }
-      return false;
-    };
-
-    float keep = 1.0f - rho;
-    for (int32_t u = 0; u < n; ++u) {
-      for (int32_t j = 0; j < k; ++j) {
-        int32_t v = nn_list[u * k + j];
-        if (v < 0)
-          continue; // should check if v is valid node index
-
-        float target = is_in_sol(u, v) ? tau_max : tau_min;
-        float &tau = pheromone_sparse[u * k + j];
-        tau = keep * tau + rho * target;
+      if (smooth_mmas) {
+        float target = is_in ? tau_max : tau_min;
+        tau = decay_factor * tau + rho * target;
+      } else {
+        tau *= decay_factor;
+        if (is_in) {
+          tau += deposit;
+        }
+        tau = std::max(tau_min, std::min(tau_max, tau));
       }
     }
   }

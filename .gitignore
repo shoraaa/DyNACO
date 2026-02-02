@@ -14,3 +14,5 @@ pretrained
 logs
 experiments_checkpoints
 output
+experiments
+data

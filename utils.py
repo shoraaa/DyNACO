@@ -345,8 +345,6 @@ def load_tsp_txt_dataset(path):
                 tour = None 
                 
                 data_list.append((coords, cost, tour))
-                
-                data_list.append((coords, cost, tour))
 
             elif line.startswith("["):
                  # Generated Format: [coords],cost,[tour]

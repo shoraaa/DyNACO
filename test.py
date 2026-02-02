@@ -12,6 +12,8 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import json
 import math
+from datetime import datetime
+
 
 # Unified imports
 import net
@@ -27,6 +29,25 @@ from utils import (
     row_softmax, mean_row_kl, rel_l2_drift, top_set, top_turnover,
     top1_flip_rate, safe_corr, top_overlap_frac, row_top1_match_rate, EPS
 )
+
+class Logger(object):
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log = None
+        if filename:
+            Path(filename).parent.mkdir(parents=True, exist_ok=True)
+            self.log = open(filename, "a")
+
+    def write(self, message):
+        self.terminal.write(message)
+        if self.log:
+            self.log.write(message)
+            self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        if self.log:
+            self.log.flush()
 
 
 def verify_solution_cvrp(coords, demand, capacity, cost, route0):
@@ -155,7 +176,7 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
             for mini_t in range(args.mini_H):
                 # Annealing
                 current_prior = prior_mat
-                if args.anneal_prior and prior_mat is not None:
+                if not args.no_anneal and prior_mat is not None:
                      if args.mini_H > 1:
                         ratio = mini_t / (args.mini_H - 1)
                         factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
@@ -270,9 +291,9 @@ def main():
     parser.add_argument("--baseline", type=str, default='default')
     parser.add_argument("--baseline_time_limit", type=float, default=2.0)
     parser.add_argument("--baseline_runs", type=int, default=1)
-    parser.add_argument("--anneal_prior", action="store_true")
+    parser.add_argument("--no_anneal", action="store_true")
     parser.add_argument("--gamma", type=float, default=1.0)
-    parser.add_argument("--min_gamma", type=float, default=0.2)
+    parser.add_argument("--min_gamma", type=float, default=0.0)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--visualize", action="store_true")
@@ -288,6 +309,7 @@ def main():
     parser.add_argument("--generate_val", action="store_true", help="Generate test set instead of loading from file")
     parser.add_argument("--save_generated", type=str, default=None, help="Path to save generated test dataset")
     parser.add_argument("--val_size", type=int, default=None, help="Limit validation set size")
+    parser.add_argument("--log", action="store_true", help="Enable logging to file (auto-named)")
 
     args = parser.parse_args()
 
@@ -346,6 +368,25 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
+
+    if args.log:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ckpt_name = "nockpt"
+        if args.checkpoint != "none":
+            ckpt_name = Path(args.checkpoint).stem
+        
+        data_name = "gen"
+        if args.dataset:
+            data_name = Path(args.dataset).stem
+        
+        log_dir = "logs"
+        log_name = f"{log_dir}/test_{args.problem}_{args.n_node}_{ckpt_name}_{data_name}_{timestamp}_annealing{str(not args.no_anneal)}.txt"
+        
+        # Logger handles mkdir
+        logger = Logger(log_name)
+        sys.stdout = logger
+        sys.stderr = logger
+        print(f"Logging to {log_name}")
     
     # Setup modules
     if args.problem == 'tsp':
@@ -431,6 +472,13 @@ def main():
                      print("Using baseline costs from dataset.")
                      baseline_values = np.array(costs)
              except Exception: pass
+    
+    # Hardcode for specific datasets if requested (fix for TSP10000)
+    if args.dataset and "tsp10000" in args.dataset.lower() and "test" in args.dataset.lower():
+         print("Hardcoding baseline cost to 71.778 for TSP10000 test set.")
+         # Assuming val_list has correct length, we create an array of this cost
+         if val_list:
+             baseline_values = np.full(len(val_list), 71.778)
 
     if args.baseline != 'none' and baseline_values is None:
         print("Computing baseline...")
