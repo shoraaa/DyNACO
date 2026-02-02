@@ -334,6 +334,11 @@ def main():
             "threads", "seed", "save_dir", "wandb_project", "wandb_entity", "no_wandb", "warmup"
         }
         
+        # If model was not trained with annealing, ignore its min_gamma (use ours)
+        was_annealed = config.get("train_anneal", False) or config.get("anneal_prior", False)
+        if not was_annealed:
+             ignore_args.add("min_gamma")
+        
         print("Restoring config from checkpoint (unless overridden):")
         for k, v in config.items():
             if k in ignore_args: continue
