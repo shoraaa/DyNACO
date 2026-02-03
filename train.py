@@ -145,7 +145,25 @@ def setup_aco(args, instance_data, problem_type):
             'T_nls': args.T_nls
         }
         pyg_args = (coords, args.device)
-        aco = faco.MFACO_TSP(**kwargs)
+        
+        if args.alg == 'mmas':
+            # Use MMAS solver
+            # Strip MFACO-specific args strictly if needed, but kwargs pass is loose often.
+            # However MMAS constructor is different.
+            aco = faco.ACO_TSP(
+                coords=coords,
+                n_ants=args.n_ants,
+                cand_list_size=args.k_sparse,
+                decay=args.rho,
+                alpha=args.alpha,
+                beta=args.beta,
+                p_best=0.05, # Fixed for now or add arg
+                min_max=True, # Standard MMAS
+                device=args.device,
+                enable_torch_sync=True
+            )
+        else:
+            aco = faco.MFACO_TSP(**kwargs)
     else: # cvrp
         coords, demand, capacity = instance_data
         kwargs = {
@@ -174,6 +192,229 @@ def setup_aco(args, instance_data, problem_type):
     
     return aco, pyg_args
 
+
+
+def train_instance_reinforce(model, optimizer, instance_data, args):
+    model.train()
+    
+    aco, pyg_args = setup_aco(args, instance_data, args.problem)
+    
+    # Heuristic view
+    if args.problem == 'tsp':
+        eta_nk = aco.h_sparse_torch
+    else:
+        # For CVRP, heuristic is numpy usually, convert to torch
+        eta_nk = torch.tensor(aco.heuristic_sparse_np, device=args.device)
+
+    # Build function
+    build_fn = utils.build_pyg_data_tsp if args.problem == 'tsp' else utils.build_pyg_data_cvrp
+
+    best_seen = float("inf")
+    avg_cost_last = None
+    
+    metrics = {
+        "ndec": [], "loss": [], 
+        "entropy": [], "prior_mean": [], "prior_std": [],
+        "new_edges": [], "survival": [],
+        "prior_l2_drift": [], "prior_kl": [], "prior_turnover": [], "prior_flip": [],
+        "prior_eta_corr": [], "grad_var": []
+    }
+
+    t_neural_total = 0.0
+    t_aco_sampling = 0.0
+    t_aco_ls = 0.0
+    t_aco_update = 0.0
+    t_aco_total = 0.0
+    
+    prior_prev_outer_cpu = None 
+    
+    # Warmup
+    warmup_steps = 0
+    if getattr(args, 'train_warmup', False):
+        max_limit = int(args.H * getattr(args, 'warmup_ratio', 0.5))
+        if max_limit < 1: max_limit = 1
+        if max_limit > 0:
+             warmup_steps = np.random.randint(1, max_limit + 1)
+        else:
+             warmup_steps = 0
+
+    for outer in tqdm(range(args.H), desc="Outer", leave=False):
+        t0 = time.time()
+        pyg_data = build_fn(aco, *pyg_args, dynamic=not args.no_dynamic_feats)
+        
+        prior_old = None
+        # Only query model if past warmup
+        if outer >= warmup_steps:
+            with torch.no_grad():
+                prior_old = model(pyg_data).view(-1).view(aco.n, aco.k)
+                t_neural_total += time.time() - t0
+                
+                metrics["prior_mean"].append(prior_old.mean().item())
+                metrics["prior_std"].append(prior_old.std().item())
+                
+                if not args.simple_train:
+                    # Track prior-eta correlation
+                    metrics["prior_eta_corr"].append(safe_corr(prior_old, eta_nk))
+                    
+                    # Move to CPU for metrics to save VRAM
+                    prior_cpu = prior_old.detach().cpu()
+                    
+                    if prior_prev_outer_cpu is not None:
+                        # Compute drift metrics on CPU
+                        metrics["prior_l2_drift"].append(rel_l2_drift(prior_prev_outer_cpu, prior_cpu))
+                        metrics["prior_kl"].append(mean_row_kl(prior_prev_outer_cpu, prior_cpu))
+                        metrics["prior_turnover"].append(top_turnover(prior_prev_outer_cpu, prior_cpu))
+                        metrics["prior_flip"].append(top1_flip_rate(prior_prev_outer_cpu, prior_cpu))
+                    
+                    prior_prev_outer_cpu = prior_cpu
+
+        tau_list = []
+        traces_list = []
+        costs_list = []
+        logp_old_list = []
+        ndec_list = []
+
+        if hasattr(aco, "reset_timings"):
+            aco.reset_timings()
+
+        t_aco_start_outer = time.time()
+
+        for inner in range(args.mini_H):
+            # Annealing Calc
+            current_prior = prior_old
+            if prior_old is not None and args.train_anneal:
+                if args.mini_H > 1:
+                    ratio = inner / (args.mini_H - 1)
+                    factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
+                else:
+                    factor = args.gamma
+                current_prior = prior_old * factor
+
+            if args.problem == 'tsp':
+                # Use unified signature (8 or 9 outputs)
+                res = aco.sample(require_prob=True, prior=current_prior)
+                costs, flats, _, logps_cpp, traces, costs_raw, flats_raw, new_edges, survival = res
+            else: # cvrp
+                res = aco.sample(require_prob=True, prior=current_prior)
+                costs, flats, _, logps, traces, costs_raw, flats_raw, new_edges, survival = res
+            
+            if survival is not None:
+                metrics["survival"].append(survival.mean().item()) 
+            else:
+                metrics["survival"].append(0.0)
+
+            costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
+            
+            # Record results for gradient calculation
+            tau_nk = aco.tau_nk_torch().detach()
+            tau_list.append(tau_nk)
+            traces_list.append(traces)
+            costs_list.append(costs_t.detach())
+            
+            if new_edges is not None:
+                metrics["new_edges"].append(new_edges.astype(np.float32).mean())
+            else:
+                metrics["new_edges"].append(0.0)
+
+            best_idx = int(costs_t.argmin().item())
+            best_cost_iter = float(costs[best_idx])
+            best_seen = min(best_seen, best_cost_iter)
+            
+            # Optional Pheromone Update (DeepACO disables this during training)
+            if not args.train_deepaco:
+                with torch.no_grad():
+                    if args.problem == 'tsp':
+                        aco._update_pheromone_from_flat(flats[best_idx], best_cost_iter)
+                    else:
+                        aco.update_pheromone(flats[best_idx], best_cost_iter)
+
+            avg_cost_last = float(costs_t.mean().item())
+
+        t_aco_total += time.time() - t_aco_start_outer
+        
+        if hasattr(aco, "get_timings"):
+             timings = aco.get_timings()
+             if "time_sampling" in timings: t_aco_sampling += timings["time_sampling"] / 1000.0
+             if "time_ls" in timings: t_aco_ls += timings["time_ls"] / 1000.0
+             if "time_update" in timings: t_aco_update += timings["time_update"] / 1000.0
+
+        # REINFORCE Update - Skip if warmup
+        if outer < warmup_steps:
+             continue
+
+        optimizer.zero_grad(set_to_none=True)
+        
+        t0 = time.time()
+        prior_new = model(pyg_data).view(-1).view(aco.n, aco.k)
+        t_neural_total += time.time() - t0
+        
+        all_losses = []
+        all_entropies = []
+        
+        for inner in range(args.mini_H):
+            # Annealing Calc
+            current_prior = prior_new
+            if args.train_anneal:
+                if args.mini_H > 1:
+                    ratio = inner / (args.mini_H - 1)
+                    factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
+                else:
+                    factor = args.gamma
+                current_prior = prior_new * factor
+
+            tau_nk = tau_list[inner]
+            traces = traces_list[inner]
+            costs_t = costs_list[inner]
+            
+            log_prob_new = log_prob_sparse_from_tau_eta_prior(
+                tau_nk, eta_nk, current_prior,
+                alpha=args.alpha, beta=args.beta, eps=EPS
+            )
+            logp_new, ndec_new = replay_logp_from_cpp_batch_trace(traces, log_prob_new)
+            ndec_f = ndec_new.to(torch.float32).clamp_min(1.0)
+            logp_new = logp_new / ndec_f
+            
+            # Baseline: Mean cost of the batch
+            baseline = costs_t.mean()
+            adv = (costs_t - baseline).detach() # Costs - Baseline for REINFORCE (minimization)
+            
+            loss = (logp_new * adv).mean()
+            all_losses.append(loss)
+            
+            entropy = -logp_new.mean()
+            all_entropies.append(entropy.detach().item())
+
+        total_loss = torch.stack(all_losses).mean()
+        total_loss.backward()
+        
+        # Compute gradient variance
+        if not args.simple_train:
+            grad_norms = []
+            for p in model.parameters():
+                if p.grad is not None:
+                    grad_norms.append(p.grad.norm().item())
+            if grad_norms:
+                metrics["grad_var"].append(np.var(grad_norms))
+        
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        
+        metrics["loss"].append(total_loss.item())
+        metrics["entropy"].append(np.mean(all_entropies))
+        metrics["ndec"].append(ndec_f.mean().item())
+
+    metrics["time_neural"] = [t_neural_total]
+    metrics["time_aco"] = [t_aco_total]
+    if t_aco_sampling > 0: metrics["time_sampling"] = [t_aco_sampling]
+    if t_aco_ls > 0: metrics["time_ls"] = [t_aco_ls]
+    if t_aco_update > 0: metrics["time_update"] = [t_aco_update]
+
+    out_metrics = {}
+    for k, v in metrics.items():
+        if v: out_metrics[k] = np.mean(v)
+        else: out_metrics[k] = 0.0
+    
+    return avg_cost_last, best_seen, out_metrics
 
 def train_instance_ppo(model, optimizer, instance_data, args):
     model.train()
@@ -262,6 +503,7 @@ def train_instance_ppo(model, optimizer, instance_data, args):
              pass
 
         traces_list = []
+        flats_list = [] # For MMAS paths
         costs_list = []
         logp_old_list = []
         ndec_list = []
@@ -298,17 +540,19 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                     require_prob=True, prior=current_prior
                 )
             
-            # Record survival
-            metrics["survival"].append(survival.mean().item()) 
-            
+            if survival is not None:
+                metrics["survival"].append(survival.mean().item()) 
+            else:
+                 metrics["survival"].append(0.0)
+
             costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
             if costs_raw is not None:
                 costs_raw_t = torch.as_tensor(costs_raw, device=args.device, dtype=torch.float32)
             else:
                 costs_raw_t = costs_t # Fallback
             
+            # Unified approach: All ACO classes (MFACO and ACO) use traces
             tau_nk = aco.tau_nk_torch().detach()
-            tau_list.append(tau_nk)
 
             with torch.no_grad():
                 log_prob_old = log_prob_sparse_from_tau_eta_prior(
@@ -319,12 +563,18 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 ndec_f = ndec.to(torch.float32).clamp_min(1.0)
                 logp_old = (logp_old / ndec_f).detach()
 
+            # For all ACO classes (MFACO and ACO), populate tau_list and traces_list
+            tau_list.append(tau_nk.detach())
             traces_list.append(traces)
+            flats_list.append(None)
             costs_list.append(costs_t.detach())
             logp_old_list.append(logp_old)
             ndec_list.append(ndec.detach())
             
-            metrics["new_edges"].append(new_edges.astype(np.float32).mean())
+            if new_edges is not None:
+                metrics["new_edges"].append(new_edges.astype(np.float32).mean())
+            else:
+                metrics["new_edges"].append(0.0)
 
             metrics["ndec"].append(ndec.float().mean().item())
             entropy = (-logp_old / ndec.float().clamp_min(1.0)).mean().item()
@@ -334,11 +584,13 @@ def train_instance_ppo(model, optimizer, instance_data, args):
             best_cost_iter = float(costs[best_idx])
             best_seen = min(best_seen, best_cost_iter)
             
-            with torch.no_grad():
-                if args.problem == 'tsp':
-                    aco._update_pheromone_from_flat(flats[best_idx], best_cost_iter)
-                else:
-                    aco.update_pheromone(flats[best_idx], best_cost_iter)
+            # Optional Pheromone Update (DeepACO disables this during training)
+            if not args.train_deepaco:
+                with torch.no_grad():
+                    if args.problem == 'tsp':
+                        aco._update_pheromone_from_flat(flats[best_idx], best_cost_iter)
+                    else:
+                        aco.update_pheromone(flats[best_idx], best_cost_iter)
 
             avg_cost_last = float(costs_t.mean().item())
 
@@ -361,12 +613,17 @@ def train_instance_ppo(model, optimizer, instance_data, args):
             prior_new = model(pyg_data).view(-1).view(aco.n, aco.k)
             t_neural_total += time.time() - t0
             
-            all_losses = []
-            param_kl_list = []
-            clip_frac_list = []
+            total_loss_val = 0.0
+            
+            # Helper list for collecting metrics and losses across chunks
+            all_param_kl = []
+            all_clip_frac = []
+            all_losses = []  # Accumulate loss tensors
+
+            total_loss_val_epoch = 0.0
             
             for inner in range(args.mini_H):
-                # Annealing Calc (Same as above)
+                # Annealing Calc
                 current_prior = prior_new
                 if args.train_anneal:
                     if args.mini_H > 1:
@@ -378,6 +635,7 @@ def train_instance_ppo(model, optimizer, instance_data, args):
 
                 tau_nk = tau_list[inner]
                 traces = traces_list[inner]
+                    
                 costs_t = costs_list[inner]
                 logp_old = logp_old_list[inner]
                 
@@ -387,6 +645,7 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 )
                 logp_new, ndec_new = replay_logp_from_cpp_batch_trace(traces, log_prob_new)
                 ndec_f = ndec_new.to(torch.float32).clamp_min(1.0)
+                
                 logp_new = logp_new / ndec_f
                 
                 # logp_old handles None prior (treated as 0 in log_prob_sparse...)
@@ -394,14 +653,11 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 
                 log_ratio = logp_new - logp_old
                 approx_kl = (log_ratio.pow(2) * 0.5).mean()
-                param_kl_list.append(approx_kl)
+                all_param_kl.append(approx_kl.detach().item())
                 
                 clipped = (ratio > 1 + args.ppo_clip) | (ratio < 1 - args.ppo_clip)
                 clip_frac = clipped.float().mean()
-                clip_frac_list.append(clip_frac)
-                
-                clip_frac = clipped.float().mean()
-                clip_frac_list.append(clip_frac)
+                all_clip_frac.append(clip_frac.detach().item())
                 
                 # Advantage calculation with NLS
                 if args.nls:
@@ -418,10 +674,17 @@ def train_instance_ppo(model, optimizer, instance_data, args):
                 surr1 = ratio * adv
                 surr2 = torch.clamp(ratio, 1 - args.ppo_clip, 1 + args.ppo_clip) * adv
                 loss = -torch.mean(torch.min(surr1, surr2))
+                
+                # Accumulate losses instead of immediate backward
                 all_losses.append(loss)
+                total_loss_val_epoch += loss.item()
             
+            # Single backward pass after accumulating all losses
             total_loss = torch.stack(all_losses).mean()
             total_loss.backward()
+            
+            # Record total loss for logging
+            total_loss_val = total_loss_val_epoch
             
             # Compute gradient variance
             if not args.simple_train:
@@ -434,9 +697,9 @@ def train_instance_ppo(model, optimizer, instance_data, args):
             
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            metrics["loss"].append(total_loss.item())
-            metrics["approx_kl"].append(torch.stack(param_kl_list).mean().item())
-            metrics["clip_frac"].append(torch.stack(clip_frac_list).mean().item())
+            metrics["loss"].append(total_loss_val / args.mini_H)
+            metrics["approx_kl"].append(np.mean(all_param_kl))
+            metrics["clip_frac"].append(np.mean(all_clip_frac))
 
     metrics["time_neural"] = [t_neural_total]
     metrics["time_aco"] = [t_aco_total]
@@ -450,7 +713,7 @@ def train_instance_ppo(model, optimizer, instance_data, args):
         else: out_metrics[k] = 0.0
     
     # Explicit memory cleanup
-    del traces_list, tau_list, logp_old_list, ndec_list, costs_list
+    del traces_list, flats_list, tau_list, logp_old_list, ndec_list, costs_list
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -478,7 +741,11 @@ def train_epoch(net, optimizer, global_step, epoch, args):
         # Currently only PPO is verified and refactored fully in this file, REINFORCE can be similar
         # For brevity/focus we use PPO path (default)
         t_start_instance = time.time()
-        avg_cost, best_cost, metrics = train_instance_ppo(net, optimizer, instance_data, args)
+        if args.algo == 'ppo':
+            avg_cost, best_cost, metrics = train_instance_ppo(net, optimizer, instance_data, args)
+        else:
+            avg_cost, best_cost, metrics = train_instance_reinforce(net, optimizer, instance_data, args)
+
         epoch_train_time += time.time() - t_start_instance
             
         sum_avg_cost += avg_cost
@@ -590,8 +857,10 @@ def infer_instance(net, instance_data, k, n_ants, dynamic, args, collect_metrics
                 costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(prior=current_prior, require_prob=False)
             
             if collect_metrics:
-                metrics_log['new_edges'].append(new_edges.astype(np.float32).mean())
-                metrics_log['survival'].append(survival.mean().item())
+                if new_edges is not None:
+                    metrics_log['new_edges'].append(new_edges.astype(np.float32).mean())
+                if survival is not None:
+                    metrics_log['survival'].append(survival.mean().item())
 
             best_idx = np.argmin(costs)
             best_val = costs[best_idx]
@@ -691,6 +960,7 @@ def main():
     parser.add_argument("--n_node", type=int, default=1000)
     parser.add_argument("--k_sparse", type=int, default=32)
     parser.add_argument("--algo", choices=["reinforce", "ppo"], default="ppo")
+    parser.add_argument("--alg", choices=["faco", "mmas"], default="faco", help="Algorithm type")
     
     # PPO
     parser.add_argument("--ppo_epochs", type=int, default=4)
@@ -755,12 +1025,17 @@ def main():
     parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--threads", type=int, default=None)
     parser.add_argument("--simple_train", action="store_true", help="Skip expensive metric calculations")
+    parser.add_argument("--train_deepaco", action="store_true", help="Disable pheromone updates during training (mini_H acts as grad cumulation)")
+
+
     
     # Validation H override
     parser.add_argument("--val_H", type=int, default=None)
     parser.add_argument("--val_mini_H", type=int, default=None)
     
     args = parser.parse_args()
+
+    args.no_baseline = True
 
     # Defaults setup
     if args.lr is None:
@@ -794,6 +1069,8 @@ def main():
         model_name += f"_L{args.L}"
     if args.train_warmup:
         model_name += f"_warmup{args.warmup_ratio}"
+    if args.train_deepaco:
+        model_name += "_deepaco"
     
     # Ablation suffixes
     if args.no_dynamic_feats: model_name += "_static"
@@ -899,7 +1176,7 @@ def main():
             val_dataset = val_dataset[:args.val_size]
             print(f"Limited validation dataset from {original_len} to {len(val_dataset)} instances.")
 
-    if baseline_values is None and args.baseline != 'none':
+    if baseline_values is None and args.baseline != 'none' and not getattr(args, 'no_baseline', False):
         # If val_dataset contains tuples (coords, cost, tour) for TSP, we extract coords
         if args.problem == 'tsp' and isinstance(val_dataset, list) and len(val_dataset) > 0 and isinstance(val_dataset[0], tuple):
              val_dataset_coords = [x[0] for x in val_dataset]

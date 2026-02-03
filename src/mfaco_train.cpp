@@ -3412,4 +3412,698 @@ void MFACO_CVRP::inter_route_ls_optimized(std::vector<int32_t> &perm,
     }
   }
 }
+
+// ============================================================================
+// ACO_TSP Implementation
+// ============================================================================
+
+ACO_TSP::ACO_TSP(const float *coords_ptr, int32_t n_, int32_t n_ants_,
+                 int32_t cand_list_size, float decay, float alpha_, float beta_,
+                 float p_best_, bool min_max_)
+    : n(n_), n_ants(n_ants_), k(std::min(cand_list_size, n_ - 1)), rho(decay),
+      alpha(alpha_), beta(beta_), p_best(p_best_), min_max(min_max_),
+      elitist(false) {
+  if (coords_ptr == nullptr) {
+    throw std::runtime_error("coords_ptr must not be null");
+  }
+
+  coords.resize(static_cast<size_t>(n) * 2);
+  std::memcpy(coords.data(), coords_ptr,
+              sizeof(float) * static_cast<size_t>(n) * 2);
+
+  build_nn_lists();
+  build_heuristic();
+
+  best_route.resize(n);
+  // Initial random best
+  for (int i = 0; i < n; ++i)
+    best_route[i] = i;
+  best_cost = std::numeric_limits<float>::max();
+
+  // Initialize pheromone
+  float initial_tau = 1.0f;
+  if (min_max) {
+    tau_max = 1.0f;
+    tau_min = 0.0001f;
+    initial_tau = tau_max;
+  } else {
+    initial_tau = 1.0f;
+    tau_min = 0.0f;
+    tau_max = std::numeric_limits<float>::max();
+  }
+
+  pheromone.assign(n * k, initial_tau);
+  rng_.seed(1234);
+}
+
+void ACO_TSP::seed_rng(uint64_t seed) { rng_.seed(seed); }
+
+void ACO_TSP::build_nn_lists() {
+  nn_list.resize(n * k);
+
+  std::vector<Vec2d> pts(static_cast<size_t>(n));
+  for (int32_t i = 0; i < n; ++i) {
+    const size_t off = static_cast<size_t>(i) * 2;
+    pts[i] = Vec2d{static_cast<double>(coords[off + 0]),
+                   static_cast<double>(coords[off + 1])};
+  }
+
+  KDTree kdtree(pts, false); // no rounding
+
+#pragma omp parallel for schedule(static)
+  for (int32_t u = 0; u < n; ++u) {
+    KDTree local_tree = kdtree;
+
+    for (int32_t j = 0; j < k; ++j) {
+      uint32_t pt_idx = local_tree.nn_bottom_up(static_cast<uint32_t>(u));
+      nn_list[u * k + j] = static_cast<int32_t>(pt_idx);
+      local_tree.delete_point(pt_idx);
+    }
+  }
+}
+
+void ACO_TSP::build_heuristic() {
+  heuristic.resize(n * k);
+  for (int32_t u = 0; u < n; ++u) {
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t v = nn_list[u * k + j];
+      float d = dist(u, v);
+      heuristic[u * k + j] = (d > EPS) ? (1.0f / d) : 1.0f;
+    }
+  }
+}
+
+float ACO_TSP::get_route_cost(const std::vector<int32_t> &route) const {
+  float cost = 0.0f;
+  for (int32_t i = 0; i < n; ++i) {
+    cost += dist(route[i], route[(i + 1) % n]);
+  }
+  return cost;
+}
+
+std::pair<float, float> ACO_TSP::calc_trail_limits(float solution_cost) const {
+  if (!min_max)
+    return {0.0f, std::numeric_limits<float>::max()};
+
+  float max_t = 1.0f / (rho * solution_cost);
+  float avg = static_cast<float>(k);
+  float p = std::pow(p_best, 1.0f / n);
+
+  float min_t = max_t * (1.0f - p) / ((avg - 1.0f) * p + EPS);
+  if (min_t > max_t)
+    min_t = max_t;
+
+  return {min_t, max_t};
+}
+
+void ACO_TSP::compute_probmat(const float *prior, std::vector<float> &probmat) {
+  probmat.resize(n * k);
+
+#pragma omp parallel for schedule(static)
+  for (int32_t u = 0; u < n; ++u) {
+    float max_logit = -std::numeric_limits<float>::infinity();
+    float logits[MAX_CAND_LIST_SIZE];
+
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t idx = u * k + j;
+      float tau = pheromone[idx];
+      float eta = heuristic[idx];
+
+      float logit = alpha * std::log(tau + EPS) + beta * std::log(eta + EPS);
+
+      if (prior) {
+        logit += prior[idx];
+      }
+
+      logits[j] = logit;
+      if (logit > max_logit)
+        max_logit = logit;
+    }
+
+    for (int32_t j = 0; j < k; ++j) {
+      probmat[u * k + j] = std::exp(logits[j] - max_logit);
+    }
+  }
+}
+
+float ACO_TSP::sample_ant_constructive(const float *probmat, int32_t start_node,
+                                       std::vector<int32_t> &route_out,
+                                       Xoshiro128Plus &rng, bool require_prob,
+                                       float &logp_out, MFACOTrace *trace) {
+  route_out.resize(n);
+  std::vector<uint8_t> visited(n, 0);
+
+  int32_t curr = start_node;
+  route_out[0] = curr;
+  visited[curr] = 1;
+
+  float log_p_total = 0.0f;
+
+  // Initialize trace if provided
+  if (trace) {
+    trace->clear();
+    trace->start_node = start_node;
+    trace->reserve(n);
+  }
+
+  for (int32_t step = 1; step < n; ++step) {
+    float weights[MAX_CAND_LIST_SIZE];
+    int32_t candidates[MAX_CAND_LIST_SIZE];
+    int32_t cand_j[MAX_CAND_LIST_SIZE]; // j index in nn_list
+    int32_t count = 0;
+    float sum_w = 0.0f;
+    uint64_t valid_mask = 0;
+
+    const float *w_row = &probmat[curr * k];
+    const int32_t *nn_row = &nn_list[curr * k];
+
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t v = nn_row[j];
+      if (!visited[v]) {
+        candidates[count] = v;
+        cand_j[count] = j;
+        weights[count] = w_row[j];
+        sum_w += weights[count];
+        if (j < 64)
+          valid_mask |= (1ULL << j);
+        count++;
+      }
+    }
+
+    int32_t next_node = -1;
+    int16_t pick_j = -1;
+
+    if (count > 0) {
+      float r = rng.next_float() * sum_w;
+      float current_sum = 0.0f;
+      int32_t selected_idx = -1;
+
+      for (int32_t i = 0; i < count; ++i) {
+        current_sum += weights[i];
+        if (current_sum >= r) {
+          selected_idx = i;
+          break;
+        }
+      }
+      if (selected_idx == -1)
+        selected_idx = count - 1;
+
+      next_node = candidates[selected_idx];
+      pick_j = static_cast<int16_t>(cand_j[selected_idx]);
+
+      if (require_prob) {
+        log_p_total += std::log(weights[selected_idx] / sum_w);
+      }
+    } else {
+      // Fallback: nearest unvisited
+      float min_d = std::numeric_limits<float>::max();
+      int32_t best_fallback = -1;
+
+      for (int32_t v = 0; v < n; ++v) {
+        if (!visited[v]) {
+          float d = dist(curr, v);
+          if (d < min_d) {
+            min_d = d;
+            best_fallback = v;
+          }
+        }
+      }
+
+      if (best_fallback != -1) {
+        next_node = best_fallback;
+        pick_j = -1; // Not in nn_list
+      } else {
+        break;
+      }
+    }
+
+    // Record trace
+    if (trace) {
+      trace->curr_nodes.push_back(curr);
+      trace->chosen_nodes.push_back(next_node);
+      trace->is_stochastic.push_back(count > 1 ? 1 : 0);
+      trace->pick_j.push_back(pick_j);
+      trace->valid_mask.push_back(valid_mask);
+      trace->is_new_edge.push_back(0); // ACO_TSP doesn't track this
+    }
+
+    route_out[step] = next_node;
+    visited[next_node] = 1;
+    curr = next_node;
+  }
+
+  logp_out = log_p_total;
+  return get_route_cost(route_out);
+}
+
+void ACO_TSP::sample(bool require_prob, const float *prior,
+                     SampleResult &result, bool parallel_traced) {
+  result.clear();
+  result.costs.resize(n_ants);
+  result.routes.resize(n_ants);
+  if (require_prob)
+    result.logps.resize(n_ants);
+
+  std::vector<float> probmat;
+  compute_probmat(prior, probmat);
+
+  std::vector<int32_t> starts(n_ants);
+  for (int i = 0; i < n_ants; ++i)
+    starts[i] = rng_.next_uint(n);
+
+  // Collect per-ant traces
+  std::vector<MFACOTrace> ant_traces(n_ants);
+
+#pragma omp parallel
+  {
+    int thread_id = omp_get_thread_num();
+    Xoshiro128Plus local_rng = rng_;
+    for (int k = 0; k < thread_id * 100; ++k)
+      local_rng.next_u32();
+
+#pragma omp for schedule(dynamic)
+    for (int i = 0; i < n_ants; ++i) {
+      float logp = 0.0f;
+      MFACOTrace *trace_ptr = require_prob ? &ant_traces[i] : nullptr;
+      result.costs[i] =
+          sample_ant_constructive(probmat.data(), starts[i], result.routes[i],
+                                  local_rng, require_prob, logp, trace_ptr);
+      if (require_prob)
+        result.logps[i] = logp;
+    }
+  }
+
+  // Batch traces if require_prob
+  if (require_prob) {
+    result.traces.clear();
+    result.traces.starts.push_back(0);
+    result.traces.start_nodes.reserve(n_ants);
+
+    for (int i = 0; i < n_ants; ++i) {
+      const auto &tr = ant_traces[i];
+      result.traces.start_nodes.push_back(tr.start_node);
+
+      for (size_t d = 0; d < tr.curr_nodes.size(); ++d) {
+        result.traces.curr_nodes.push_back(tr.curr_nodes[d]);
+        result.traces.chosen_nodes.push_back(tr.chosen_nodes[d]);
+        result.traces.is_stochastic.push_back(tr.is_stochastic[d]);
+        result.traces.pick_j.push_back(tr.pick_j[d]);
+        result.traces.valid_mask.push_back(tr.valid_mask[d]);
+        result.traces.is_new_edge.push_back(tr.is_new_edge[d]);
+      }
+      result.traces.starts.push_back(
+          static_cast<int32_t>(result.traces.curr_nodes.size()));
+    }
+  }
+}
+
+void ACO_TSP::update_pheromone(const int32_t *solution_flat, float cost) {
+  if (cost < best_cost) {
+    best_cost = cost;
+    best_route.assign(solution_flat, solution_flat + n);
+
+    if (min_max) {
+      auto limits = calc_trail_limits(best_cost);
+      tau_min = limits.first;
+      tau_max = limits.second;
+    }
+  }
+
+  std::vector<int32_t> pos(n);
+  for (int i = 0; i < n; ++i)
+    pos[static_cast<size_t>(solution_flat[i])] = i;
+
+  auto in_route = [&](int32_t u, int32_t v) {
+    int32_t pu = pos[u];
+    int32_t pv = pos[v];
+    int32_t diff = std::abs(pu - pv);
+    return diff == 1 || diff == n - 1;
+  };
+
+  float deposit = 1.0f / best_cost;
+
+#pragma omp parallel for schedule(static)
+  for (int32_t u = 0; u < n; ++u) {
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t v = nn_list[u * k + j];
+      float &val = pheromone[u * k + j];
+
+      val *= (1.0f - rho);
+
+      if (in_route(u, v)) {
+        val += deposit;
+      }
+
+      if (min_max) {
+        if (val > tau_max)
+          val = tau_max;
+        if (val < tau_min)
+          val = tau_min;
+      }
+    }
+  }
+}
+
+// ============================================================================
+// ACO_CVRP Implementation
+// ============================================================================
+
+ACO_CVRP::ACO_CVRP(const float *coords_ptr, const float *demand_ptr, int32_t n_,
+                   float capacity_, int32_t n_ants_, int32_t cand_list_size,
+                   float decay, float alpha_, float beta_, float p_best_,
+                   bool min_max_)
+    : n(n_), n_ants(n_ants_), rho(decay), alpha(alpha_), beta(beta_),
+      p_best(p_best_), min_max(min_max_), capacity(capacity_) {
+
+  // Dense mode by default if k=0 passed
+  if (cand_list_size <= 0 || cand_list_size >= n) {
+    k = n; // Dense (includes self potentially, though self-loops masked)
+  } else {
+    k = cand_list_size;
+  }
+
+  // Copy data
+  coords.resize(static_cast<size_t>(n) * 2);
+  std::memcpy(coords.data(), coords_ptr,
+              sizeof(float) * static_cast<size_t>(n) * 2);
+
+  demand.resize(n);
+  std::memcpy(demand.data(), demand_ptr,
+              sizeof(float) * static_cast<size_t>(n));
+
+  // Build lists
+  build_dense_nn_lists();
+  build_heuristic();
+
+  // Initialize pheromone to 1.0 (or small value? MMAS usually uses 1/something)
+  tau_min = min_max_ ? 0.1f : 0.0001f;
+  tau_max = 1000.0f; // Unbounded initially
+
+  pheromone.assign(n * k, min_max_ ? tau_min : 1.0f);
+  best_cost = 0.0f;
+
+  // RNG
+  rng_.seed(42);
+}
+
+void ACO_CVRP::seed_rng(uint64_t seed) { rng_.seed(seed); }
+
+void ACO_CVRP::build_dense_nn_lists() {
+  nn_list.resize(n * k);
+  for (int32_t i = 0; i < n; ++i) {
+    for (int32_t j = 0; j < k; ++j) {
+      nn_list[i * k + j] = j;
+    }
+  }
+}
+
+void ACO_CVRP::build_heuristic() {
+  heuristic.resize(n * k);
+  for (int32_t i = 0; i < n; ++i) {
+    for (int32_t j = 0; j < k; ++j) {
+      int32_t neighbor = nn_list[i * k + j];
+      if (i == neighbor) {
+        heuristic[i * k + j] = 0.0f; // Self
+      } else {
+        float d = dist(i, neighbor);
+        heuristic[i * k + j] = (d < EPS) ? 1e9f : (1.0f / d);
+      }
+    }
+  }
+}
+
+void ACO_CVRP::compute_probmat(const float *prior,
+                               std::vector<float> &probmat) {
+  size_t sz = static_cast<size_t>(n) * k;
+  probmat.resize(sz);
+
+  for (size_t i = 0; i < sz; ++i) {
+    float tau = pheromone[i];
+    float eta = heuristic[i];
+
+    // Python: dist = pheromone ** alpha * heuristic ** beta
+    float prob = std::pow(tau, alpha) * std::pow(eta, beta);
+
+    // Prior from neural network (if provided) - treated as multiplicative
+    if (prior) {
+      // prior is log-additive from neural net, convert to multiplicative
+      prob *= std::exp(prior[i]);
+    }
+
+    probmat[i] = prob;
+  }
+}
+
+float ACO_CVRP::sample_ant_constructive(const float *probmat,
+                                        std::vector<int32_t> &route_out,
+                                        Xoshiro128Plus &rng, bool require_prob,
+                                        float &logp_out, MFACOTrace *trace) {
+  route_out.clear();
+  route_out.reserve(n * 2);
+
+  int32_t curr = 0; // Depot
+  route_out.push_back(curr);
+
+  float cur_capacity = capacity;
+  float total_cost = 0.0f;
+  logp_out = 0.0f;
+
+  // Initialize trace if provided
+  if (trace) {
+    trace->clear();
+    trace->start_node = 0; // CVRP always starts from depot
+    trace->reserve(n * 2);
+  }
+
+  std::vector<uint8_t> visited(n, 0);
+  visited[0] = 1;
+  int32_t visited_count = 1; // Depot visited
+
+  while (visited_count < n) {
+    int32_t next_node = -1;
+    int16_t pick_j = -1;
+    uint64_t valid_mask = 0;
+    bool is_stochastic = false;
+
+    // Optimized scan for dense
+    std::vector<int32_t> candidates;
+    std::vector<int32_t> cand_j; // j index in nn_list
+    std::vector<float> probs;
+    candidates.reserve(n);
+    cand_j.reserve(n);
+    probs.reserve(n);
+    double sum_prob = 0.0;
+
+    for (int32_t j = 1; j < n; ++j) {
+      if (!visited[j]) {
+        if (demand[j] <= cur_capacity) {
+          candidates.push_back(j);
+          cand_j.push_back(j); // For CVRP dense, j == node index
+          float p = probmat[curr * k + j];
+          probs.push_back(p);
+          sum_prob += p;
+          if (j < 64)
+            valid_mask |= (1ULL << j);
+        }
+      }
+    }
+
+    if (candidates.empty()) {
+      if (curr == 0) {
+        // Impossible to satisfy next customer? Or done?
+        // If visited_count < n, and no customer fits capacity (even after
+        // refill if curr==0), implies infeasible for this capacity. For
+        // robustness, we abort or loop? We'll break loop.
+        break;
+      } else {
+        next_node = 0; // Return to depot (deterministic, not stochastic)
+        pick_j = 0;
+        is_stochastic = false;
+      }
+    } else {
+      is_stochastic = true;
+
+      // Check if depot is candidate (allowed return)
+      if (curr != 0) {
+        float p_depot = probmat[curr * k + 0];
+        candidates.push_back(0);
+        cand_j.push_back(0);
+        probs.push_back(p_depot);
+        sum_prob += p_depot;
+        valid_mask |= 1ULL; // depot is j=0
+      }
+
+      double r = rng.next_float() * sum_prob;
+      double running = 0.0;
+      next_node = candidates.back();
+      pick_j = static_cast<int16_t>(cand_j.back());
+      int32_t selected_idx = static_cast<int32_t>(candidates.size()) - 1;
+
+      for (size_t i = 0; i < candidates.size(); ++i) {
+        running += probs[i];
+        if (running >= r) {
+          next_node = candidates[i];
+          pick_j = static_cast<int16_t>(cand_j[i]);
+          selected_idx = static_cast<int32_t>(i);
+          if (require_prob) {
+            // Avoid log(0)
+            if (probs[i] > 0 && sum_prob > 0)
+              logp_out += std::log(probs[i] / sum_prob);
+          }
+          break;
+        }
+      }
+    }
+
+    // Record trace for stochastic decisions only
+    if (trace && is_stochastic) {
+      trace->curr_nodes.push_back(curr);
+      trace->chosen_nodes.push_back(next_node);
+      trace->is_stochastic.push_back(1);
+      trace->pick_j.push_back(pick_j);
+      trace->valid_mask.push_back(valid_mask);
+      trace->is_new_edge.push_back(0); // ACO_CVRP doesn't track this
+    }
+
+    total_cost += dist(curr, next_node);
+    route_out.push_back(next_node);
+
+    if (next_node == 0) {
+      cur_capacity = capacity;
+      curr = 0;
+    } else {
+      cur_capacity -= demand[next_node];
+      if (!visited[next_node]) {
+        visited[next_node] = 1;
+        visited_count++;
+      }
+      curr = next_node;
+    }
+  }
+
+  // Return to depot
+  if (curr != 0) {
+    total_cost += dist(curr, 0);
+    route_out.push_back(0);
+  }
+
+  return total_cost;
+}
+
+void ACO_CVRP::sample(bool require_prob, const float *prior,
+                      SampleResult &result, bool parallel_traced) {
+  result.clear();
+  result.costs.resize(n_ants);
+  result.routes.resize(n_ants);
+
+  if (require_prob) {
+    result.logps.resize(n_ants);
+  }
+
+  std::vector<float> probmat;
+  compute_probmat(prior, probmat);
+
+  // Collect per-ant traces
+  std::vector<MFACOTrace> ant_traces(n_ants);
+
+#pragma omp parallel if (parallel_traced || !require_prob)
+  {
+    int tid = omp_get_thread_num();
+    Xoshiro128Plus local_rng = rng_;
+    // Mix seed
+    local_rng.seed(rng_.next_u32() + tid * 123456789ULL);
+
+    std::vector<int32_t> route;
+#pragma omp for
+    for (int32_t i = 0; i < n_ants; ++i) {
+      float logp = 0.0f;
+      MFACOTrace *trace_ptr = require_prob ? &ant_traces[i] : nullptr;
+      float c = sample_ant_constructive(probmat.data(), route, local_rng,
+                                        require_prob, logp, trace_ptr);
+
+      result.costs[i] = c;
+      result.routes[i] = route;
+      if (require_prob)
+        result.logps[i] = logp;
+    }
+  }
+
+  // Batch traces if require_prob
+  if (require_prob) {
+    result.traces.clear();
+    result.traces.starts.push_back(0);
+    result.traces.start_nodes.reserve(n_ants);
+
+    for (int i = 0; i < n_ants; ++i) {
+      const auto &tr = ant_traces[i];
+      result.traces.start_nodes.push_back(tr.start_node);
+
+      for (size_t d = 0; d < tr.curr_nodes.size(); ++d) {
+        result.traces.curr_nodes.push_back(tr.curr_nodes[d]);
+        result.traces.chosen_nodes.push_back(tr.chosen_nodes[d]);
+        result.traces.is_stochastic.push_back(tr.is_stochastic[d]);
+        result.traces.pick_j.push_back(tr.pick_j[d]);
+        result.traces.valid_mask.push_back(tr.valid_mask[d]);
+        result.traces.is_new_edge.push_back(tr.is_new_edge[d]);
+      }
+      result.traces.starts.push_back(
+          static_cast<int32_t>(result.traces.curr_nodes.size()));
+    }
+  }
+}
+
+void ACO_CVRP::update_pheromone(const int32_t *solution_flat,
+                                int32_t solution_len, float cost) {
+  for (size_t i = 0; i < pheromone.size(); ++i) {
+    pheromone[i] *= (1.0 - rho);
+    if (min_max) {
+      if (pheromone[i] < tau_min)
+        pheromone[i] = tau_min;
+    }
+  }
+
+  if (solution_len < 2)
+    return;
+
+  float deposit = 1.0f / cost;
+
+  for (int32_t i = 0; i < solution_len - 1; ++i) {
+    int32_t u = solution_flat[i];
+    int32_t v = solution_flat[i + 1];
+    if (u < n && v < n) {
+      pheromone[u * k + v] += deposit;
+    }
+  }
+
+  if (min_max) {
+    if (cost < best_cost || best_cost == 0.0f) {
+      best_cost = cost;
+      best_route.assign(solution_flat, solution_flat + solution_len);
+
+      auto limits = calc_trail_limits(best_cost);
+      tau_min = limits.first;
+      tau_max = limits.second;
+
+      // Apply explicit limits immediately?
+      // User code: "self.max = max", "pheromone[... > max] = max", etc.
+      // We do it below.
+    }
+    // Clamp
+    for (auto &val : pheromone) {
+      if (val > tau_max)
+        val = tau_max;
+      if (val < tau_min)
+        val = tau_min;
+    }
+  }
+}
+
+std::pair<float, float> ACO_CVRP::calc_trail_limits(float solution_cost) const {
+  // Match Python: max = problem_size / lowest_cost
+  float max_t = static_cast<float>(n) / solution_cost;
+  // min = 0.1 is fixed in Python (self.min = 0.1 if min is None)
+  float min_t = 0.1f;
+  return {min_t, max_t};
+}
+
 } // namespace mfaco

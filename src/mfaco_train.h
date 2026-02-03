@@ -393,8 +393,84 @@ private:
 };
 
 // ============================================================================
-// MFACO_CVRP class
+// ACO_TSP class - Standard Constructive MMAS
 // ============================================================================
+
+class ACO_TSP {
+public:
+  // Configuration
+  int32_t n;
+  int32_t n_ants;
+  int32_t k; // candidate list size
+  float rho; // pheromone decay
+  float alpha;
+  float beta;   // heuristic exponent (new for ACO)
+  float p_best; // for MMAS limits
+  bool min_max; // Use MMAS min-max limits
+  bool elitist; // Use elitist update (only best ant deposits) - implied by MMAS
+                // usually
+
+  // Distance type
+  DistanceType distance_type = DistanceType::EXPLICT_EUC_2D;
+
+  // State arrays
+  std::vector<float> coords;    // (n, 2)
+  std::vector<int32_t> nn_list; // (n, k)
+  std::vector<float> pheromone; // (n, k)
+  std::vector<float> heuristic; // (n, k)
+
+  // Solution state
+  std::vector<int32_t> best_route; // (n,)
+  float best_cost;
+  float tau_min;
+  float tau_max;
+
+  // RNG
+  Xoshiro128Plus rng_;
+
+  // Constructor
+  ACO_TSP(const float *coords_ptr, int32_t n, int32_t n_ants,
+          int32_t cand_list_size = 32, float decay = 0.9f, float alpha = 1.0f,
+          float beta = 1.0f, float p_best = 0.05f, bool min_max = true);
+
+  // API
+  void seed_rng(uint64_t seed);
+
+  void sample(bool require_prob, const float *prior, SampleResult &result,
+              bool parallel_traced = false);
+
+  void update_pheromone(const int32_t *solution_flat, float cost);
+
+  // Data access
+  float *pheromone_data() { return pheromone.data(); }
+  int32_t *nn_list_data() { return nn_list.data(); }
+  float *heuristic_data() { return heuristic.data(); }
+  int32_t *best_route_data() { return best_route.data(); }
+
+private:
+  void build_nn_lists();
+  void build_heuristic();
+
+  inline float dist(int32_t a, int32_t b) const {
+    const size_t ia = static_cast<size_t>(a) * 2;
+    const size_t ib = static_cast<size_t>(b) * 2;
+    const float dx = coords[ib + 0] - coords[ia + 0];
+    const float dy = coords[ib + 1] - coords[ia + 1];
+    return std::sqrt(dx * dx + dy * dy);
+  }
+
+  float get_route_cost(const std::vector<int32_t> &route) const;
+
+  void compute_probmat(const float *prior, std::vector<float> &probmat);
+
+  // Sample one ant
+  float sample_ant_constructive(const float *probmat, int32_t start_node,
+                                std::vector<int32_t> &route_out,
+                                Xoshiro128Plus &rng, bool require_prob,
+                                float &logp_out, MFACOTrace *trace = nullptr);
+
+  std::pair<float, float> calc_trail_limits(float solution_cost) const;
+};
 
 class MFACO_CVRP {
 public:
@@ -563,8 +639,8 @@ private:
                                 std::vector<int32_t> &checklist,
                                 std::vector<uint8_t> &in_checklist);
 
-  // Reconstruct routes from permutation using split_dp, but returning vector of
-  // routes
+  // Reconstruct routes from permutation using split_dp, but returning vector
+  // of routes
   std::vector<std::vector<int32_t>>
   initial_routes_from_perm(const std::vector<int32_t> &perm) const;
 
@@ -608,6 +684,100 @@ private:
 
   // distance
   float dist(int32_t u, int32_t v) const;
+};
+
+// ============================================================================
+// ACO_CVRP class - Standard Constructive MMAS for CVRP
+// ============================================================================
+
+class ACO_CVRP {
+public:
+  // Configuration
+  int32_t n; // includes depot at 0
+  int32_t n_ants;
+  int32_t k; // candidate list size (usually n-1 for dense)
+  float rho; // pheromone decay
+  float alpha;
+  float beta;   // heuristic exponent
+  float p_best; // for MMAS limits
+  bool min_max; // Use MMAS min-max limits
+
+  float capacity;
+
+  // State
+  std::vector<float> coords; // (n, 2)
+  std::vector<float> demand; // (n,)
+
+  // Pheromone is dense (n*n) or sparse (n*k) depending on usage.
+  // User requested "disregard k_sparse", so we use dense.
+  // We can represent dense as sparse with k=n.
+  std::vector<int32_t> nn_list; // (n, k)
+  std::vector<float> pheromone; // (n, k)
+  std::vector<float> heuristic; // (n, k)
+
+  // Solution state
+  // Best solution in CVRP is often stored as a giant tour or list of routes.
+  // Since we use constructive sampling returning to depot, a single flattened
+  // vector (giant tour with split delimiters or just route segments) is common.
+  // We'll store "giant tour" format: permutation of customers, or full path
+  // including depots? User's python code returns "paths" which seem to include
+  // 0s (depots). We will store best "path" including depots.
+  std::vector<int32_t> best_route; // (max_len,) - potentially long
+  float best_cost;
+  float tau_min;
+  float tau_max;
+
+  // RNG
+  Xoshiro128Plus rng_;
+
+  // Constructor
+  ACO_CVRP(const float *coords_ptr, const float *demand_ptr, int32_t n,
+           float capacity, int32_t n_ants,
+           int32_t cand_list_size = 0, // 0 means dense (n-1)
+           float decay = 0.9f, float alpha = 1.0f, float beta = 1.0f,
+           float p_best = 0.05f, bool min_max = true);
+
+  // API
+  void seed_rng(uint64_t seed);
+
+  void sample(bool require_prob, const float *prior, SampleResult &result,
+              bool parallel_traced = false);
+
+  void update_pheromone(const int32_t *solution_flat, int32_t solution_len,
+                        float cost);
+
+  // Data access
+  float *pheromone_data() { return pheromone.data(); }
+  int32_t *nn_list_data() { return nn_list.data(); }
+  float *heuristic_data() { return heuristic.data(); }
+  // best_route size varies, so we might need a method to get it safely or just
+  // expose pointer handling in binding For binding, we usually copy to python
+  // list or ensure fixed size buffer? We'll return copies via sample results
+  // mostly.
+  std::vector<int32_t> get_best_route() const { return best_route; }
+
+private:
+  void build_dense_nn_lists();
+  void build_heuristic();
+
+  inline float dist(int32_t a, int32_t b) const {
+    const size_t ia = static_cast<size_t>(a) * 2;
+    const size_t ib = static_cast<size_t>(b) * 2;
+    const float dx = coords[ib + 0] - coords[ia + 0];
+    const float dy = coords[ib + 1] - coords[ia + 1];
+    return std::sqrt(dx * dx + dy * dy);
+  }
+
+  void compute_probmat(const float *prior, std::vector<float> &probmat);
+
+  // Sample one ant
+  // Returns cost. Fills route_out with full path (nodes + depots).
+  float sample_ant_constructive(const float *probmat,
+                                std::vector<int32_t> &route_out,
+                                Xoshiro128Plus &rng, bool require_prob,
+                                float &logp_out, MFACOTrace *trace = nullptr);
+
+  std::pair<float, float> calc_trail_limits(float solution_cost) const;
 };
 
 } // namespace mfaco

@@ -132,6 +132,31 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
             'fixed_steps': args.L
         }
 
+    
+    # Filter kwargs for MMAS classes
+    is_mmas = (aco_class == faco.ACO_TSP or aco_class == faco.ACO_CVRP)
+    if is_mmas:
+        # MMAS classes don't accept these MFACO-specific parameters
+        mmas_kwargs = {
+            'coords': kwargs['coords'],
+            'n_ants': kwargs['n_ants'],
+            'cand_list_size': kwargs['cand_list_size'],
+            'decay': kwargs['decay'],
+            'p_best': kwargs.get('p_best', 0.05),
+            'device': kwargs['device'],
+            'enable_torch_sync': kwargs['enable_torch_sync'],
+        }
+        # Add alpha, beta if available
+        if hasattr(args, 'alpha'):
+            mmas_kwargs['alpha'] = args.alpha
+        if hasattr(args, 'beta'):
+            mmas_kwargs['beta'] = args.beta
+        # CVRP-specific
+        if problem == 'cvrp':
+            mmas_kwargs['demand'] = kwargs['demand']
+            mmas_kwargs['capacity'] = kwargs['capacity']
+        kwargs = mmas_kwargs
+    
     aco = aco_class(**kwargs)
     if hasattr(aco, 'reset_timings'): aco.reset_timings()
 
@@ -272,6 +297,7 @@ def main():
     parser.add_argument("--problem", type=str, default=None, choices=['tsp', 'cvrp'])
     parser.add_argument("--n_node", type=int, default=None)
     parser.add_argument("--k_sparse", type=int, default=32)
+    parser.add_argument("--alg", choices=["faco", "mmas"], default="faco", help="Algorithm type")
     parser.add_argument("--dataset", type=str, default=None)
     parser.add_argument("--checkpoint", type=str, default="none")
     parser.add_argument("--n_ants", type=int, default=100)
@@ -279,6 +305,8 @@ def main():
     parser.add_argument("--mini_H", type=int, default=100)
     
     parser.add_argument("--disable_heuristic", action="store_true")
+    parser.add_argument("--alpha", type=float, default=1.0, help="Pheromone weight for MMAS")
+    parser.add_argument("--beta", type=float, default=1.0, help="Heuristic weight for MMAS")
     parser.add_argument("--no_local_search", action="store_true")
     parser.add_argument("--no_smooth_mmas", action="store_true")
     parser.add_argument("--no_extend_ls", action="store_true")
@@ -310,6 +338,7 @@ def main():
     parser.add_argument("--save_generated", type=str, default=None, help="Path to save generated test dataset")
     parser.add_argument("--val_size", type=int, default=None, help="Limit validation set size")
     parser.add_argument("--log", action="store_true", help="Enable logging to file (auto-named)")
+    parser.add_argument("--no_baseline", action="store_true", help="Skip pure MFACO baseline calculation")
 
     args = parser.parse_args()
 
@@ -354,6 +383,13 @@ def main():
                      print(f"  Override {k}: {current_val} -> {v}")
                      setattr(args, k, v)
         
+    print("\n" + "="*50)
+    print(f"{'Config Parameter':<30} | {'Value':<15}")
+    print("-" * 50)
+    for k, v in sorted(vars(args).items()):
+         print(f"{k:<30} | {str(v):<15}")
+    print("="*50 + "\n")
+        
     if args.problem is None:
          raise ValueError("Problem must be specified (in args or checkpoint).")
          
@@ -397,11 +433,17 @@ def main():
     if args.problem == 'tsp':
         build_fn = utils.build_pyg_data_tsp
         gen_fn = utils.generate_tsp_instance
-        MFACO = faco.MFACO_TSP
+        if args.alg == 'mmas':
+            MFACO = faco.ACO_TSP
+        else:
+            MFACO = faco.MFACO_TSP
     else:
         build_fn = utils.build_pyg_data_cvrp
         gen_fn = utils.gen_cvrp_instance
-        MFACO = faco.MFACO_CVRP
+        if args.alg == 'mmas':
+            MFACO = faco.ACO_CVRP
+        else:
+            MFACO = faco.MFACO_CVRP
 
     # Dataset
     if args.generate_val:
@@ -603,19 +645,21 @@ def main():
                      item[2] = float(item[2])
             
         # Base
-        tb0 = time.time()
-        base_ret = infer_instance(args.problem, MFACO, build_fn, None, item, args.k_sparse, args.n_ants, not args.no_dynamic_feats, args, use_heuristic_only=True, collect_metrics=args.visualize, metrics_every_step=args.visualize)
-        tb1 = time.time()
-        if len(base_ret) == 4: _, base_best, base_timings, base_m = base_ret
-        else: _, base_best, base_timings = base_ret; base_m = None
-        
-        results["base_cost"].append(base_best)
-        results["base_time"].append(tb1 - tb0)
-        
-        if opt_cost is not None:
-             gap = (base_best - opt_cost) / opt_cost
-             results["base_gap"].append(gap)
-             results["opt_cost"].append(opt_cost)
+        base_m = None
+        if not args.no_baseline:
+            tb0 = time.time()
+            base_ret = infer_instance(args.problem, MFACO, build_fn, None, item, args.k_sparse, args.n_ants, not args.no_dynamic_feats, args, use_heuristic_only=True, collect_metrics=args.visualize, metrics_every_step=args.visualize)
+            tb1 = time.time()
+            if len(base_ret) == 4: _, base_best, base_timings, base_m = base_ret
+            else: _, base_best, base_timings = base_ret; base_m = None
+            
+            results["base_cost"].append(base_best)
+            results["base_time"].append(tb1 - tb0)
+            
+            if opt_cost is not None:
+                 gap = (base_best - opt_cost) / opt_cost
+                 results["base_gap"].append(gap)
+                 results["opt_cost"].append(opt_cost)
 
         # Model
         if model:
@@ -703,12 +747,13 @@ def main():
     print("\n--- Results ---")
     
     # Base
-    base_cost_mean = np.mean(results["base_cost"])
-    base_time_mean = np.mean(results["base_time"])
-    base_time_total = np.sum(results["base_time"])
-    print(f"Base Cost: {base_cost_mean:.4f}, Time: {base_time_mean:.4f}s, Total Time: {base_time_total:.4f}s")
-    if results["base_gap"]:
-        print(f"Base Gap: {np.mean(results['base_gap']) * 100:.4f}%")
+    if not args.no_baseline and results["base_cost"]:
+        base_cost_mean = np.mean(results["base_cost"])
+        base_time_mean = np.mean(results["base_time"])
+        base_time_total = np.sum(results["base_time"])
+        print(f"Base Cost: {base_cost_mean:.4f}, Time: {base_time_mean:.4f}s, Total Time: {base_time_total:.4f}s")
+        if results["base_gap"]:
+            print(f"Base Gap: {np.mean(results['base_gap']) * 100:.4f}%")
         
     # Model
     if model:
@@ -741,8 +786,9 @@ def main():
     if baseline_values is not None:
          print(f"Baseline Cost: {baseline_values.mean():.4f}")
          # Gap to baseline
-         base_gap_bl = (np.mean(results["base_cost"]) - baseline_values.mean()) / baseline_values.mean()
-         print(f"Base Gap to Baseline: {base_gap_bl * 100:.4f}%")
+         if not args.no_baseline and results["base_cost"]:
+             base_gap_bl = (np.mean(results["base_cost"]) - baseline_values.mean()) / baseline_values.mean()
+             print(f"Base Gap to Baseline: {base_gap_bl * 100:.4f}%")
          
          if model:
              mod_gap_bl = (np.mean(results["model_cost"]) - baseline_values.mean()) / baseline_values.mean()
