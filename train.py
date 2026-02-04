@@ -1098,14 +1098,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps_per_epoch", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=None)
-    parser.add_argument("--ppo_lr", type=float, default=3e-6)
+    parser.add_argument("--ppo_lr", type=float, default=5e-6)
     parser.add_argument("--reinforce_lr", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--device", type=str, default="cuda:0")
     
     # ACO configuration
     parser.add_argument("--rho", type=float, default=0.5)
-    parser.add_argument("--min_new_edges", type=int, default=6)
+    parser.add_argument("--min_new_edges", type=int, default=12)
     parser.add_argument("--H", type=int, default=10)
     parser.add_argument("--mini_H", type=int, default=100)
     parser.add_argument("--disable_heuristic", action="store_true")

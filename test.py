@@ -405,7 +405,7 @@ def main():
     parser.add_argument("--no_smooth_mmas", action="store_true")
     parser.add_argument("--no_extend_ls", action="store_true")
     parser.add_argument("--rho", type=float, default=0.5)
-    parser.add_argument("--min_new_edges", type=int, default=8)
+    parser.add_argument("--min_new_edges", type=int, default=12)
     parser.add_argument("--no_normalized_heuristic", action="store_true")
     parser.add_argument("--no_logit_net", action="store_true")
     parser.add_argument("--no_dynamic_feats", action="store_true")
