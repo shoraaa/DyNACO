@@ -4,9 +4,275 @@ from pathlib import Path
 from torch_geometric.data import Data
 from torch.utils.data import TensorDataset
 import ast
+import logging
+import sys
+from typing import Optional, Dict, List, Any
+from dataclasses import dataclass, field
 
 _THIS_DIR = Path(__file__).resolve().parent
 DATA_DIR = (_THIS_DIR / "data").resolve()
+
+
+# =============================================================================
+# LOGGING INFRASTRUCTURE
+# =============================================================================
+
+class Logger:
+    """
+    Unified logger for training that handles console output, file logging,
+    and wandb integration.
+    """
+    
+    def __init__(
+        self,
+        name: str = "train",
+        use_wandb: bool = True,
+        log_dir: Optional[Path] = None,
+        verbose: bool = True
+    ):
+        self.name = name
+        self.use_wandb = use_wandb
+        self.verbose = verbose
+        self.log_dir = log_dir
+        self._step = 0
+        
+        # Setup Python logging
+        self._logger = logging.getLogger(name)
+        self._logger.setLevel(logging.DEBUG if verbose else logging.INFO)
+        
+        # Console handler
+        if not self._logger.handlers:
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setLevel(logging.INFO)
+            formatter = logging.Formatter(
+                '%(asctime)s | %(levelname)s | %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            console_handler.setFormatter(formatter)
+            self._logger.addHandler(console_handler)
+            
+            # File handler (if log_dir provided)
+            if log_dir is not None:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                file_handler = logging.FileHandler(log_dir / f"{name}.log")
+                file_handler.setLevel(logging.DEBUG)
+                file_handler.setFormatter(formatter)
+                self._logger.addHandler(file_handler)
+    
+    def set_step(self, step: int):
+        """Set the current global step for wandb logging."""
+        self._step = step
+    
+    def info(self, msg: str):
+        """Log info message to console and file."""
+        self._logger.info(msg)
+    
+    def debug(self, msg: str):
+        """Log debug message (file only unless verbose)."""
+        self._logger.debug(msg)
+    
+    def warning(self, msg: str):
+        """Log warning message."""
+        self._logger.warning(msg)
+    
+    def error(self, msg: str):
+        """Log error message."""
+        self._logger.error(msg)
+    
+    def log_metrics(
+        self,
+        metrics: Dict[str, float],
+        prefix: str = "",
+        step: Optional[int] = None
+    ):
+        """
+        Log metrics to wandb with optional prefix.
+        
+        Args:
+            metrics: Dictionary of metric name -> value
+            prefix: Prefix to add to all metric names (e.g., "train/", "val/")
+            step: Global step (uses internal step if not provided)
+        """
+        if not self.use_wandb:
+            return
+        
+        try:
+            import wandb
+            if wandb.run is None:
+                return
+        except ImportError:
+            return
+        
+        step = step if step is not None else self._step
+        
+        log_dict = {}
+        for k, v in metrics.items():
+            key = f"{prefix}{k}" if prefix else k
+            log_dict[key] = float(v) if v is not None else 0.0
+        
+        wandb.log(log_dict, step=step)
+    
+    def log_train_step(
+        self,
+        avg_cost: float,
+        best_cost: float,
+        epoch: int,
+        metrics: Dict[str, float],
+        step: Optional[int] = None
+    ):
+        """Log a single training step."""
+        step = step if step is not None else self._step
+        
+        log_dict = {
+            "train/avg_cost": avg_cost,
+            "train/best_cost": best_cost,
+            "train/epoch": epoch,
+        }
+        
+        for k, v in metrics.items():
+            log_dict[f"train/{k}"] = float(v) if v is not None else 0.0
+        
+        if self.use_wandb:
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.log(log_dict, step=step)
+            except ImportError:
+                pass
+    
+    def log_validation(
+        self,
+        avg_last: float,
+        avg_best: float,
+        gap: float,
+        epoch: int,
+        metrics: Dict[str, float],
+        timing: Optional[Dict[str, float]] = None,
+        step: Optional[int] = None
+    ):
+        """Log validation results."""
+        step = step if step is not None else self._step
+        
+        log_dict = {
+            "val/avg_last": avg_last,
+            "val/avg_best": avg_best,
+            "val/gap": gap,
+            "val/epoch": epoch,
+        }
+        
+        if timing:
+            for k, v in timing.items():
+                log_dict[f"time/{k}"] = float(v)
+        
+        for k, v in metrics.items():
+            log_dict[f"val/{k}"] = float(v) if v is not None else 0.0
+        
+        if self.use_wandb:
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.log(log_dict, step=step)
+            except ImportError:
+                pass
+    
+    def log_epoch_summary(
+        self,
+        epoch: int,
+        train_cost: float,
+        val_best: float,
+        gap: float
+    ):
+        """Print epoch summary to console."""
+        self.info(
+            f"Epoch {epoch}: TrainCost={train_cost:.4f} "
+            f"ValBest={val_best:.4f} Gap={gap:.2f}%"
+        )
+    
+    def log_model_saved(self, path: Path, epoch: int, val_cost: float, gap: float):
+        """Log model save event."""
+        self.info(
+            f"Saved new best model to {path} "
+            f"(Epoch {epoch}, Val Cost: {val_cost:.4f}, Gap: {gap:.2f}%)"
+        )
+
+
+@dataclass
+class MetricsCollector:
+    """
+    Collects and aggregates metrics during training/inference.
+    
+    Provides a clean interface for accumulating metrics across
+    iterations and computing final aggregates.
+    """
+    
+    _metrics: Dict[str, List[float]] = field(default_factory=dict)
+    
+    def reset(self):
+        """Clear all collected metrics."""
+        self._metrics.clear()
+    
+    def add(self, name: str, value: float):
+        """Add a single metric value."""
+        if name not in self._metrics:
+            self._metrics[name] = []
+        self._metrics[name].append(value)
+    
+    def add_dict(self, metrics: Dict[str, float]):
+        """Add multiple metrics at once."""
+        for name, value in metrics.items():
+            self.add(name, value)
+    
+    def get_mean(self, name: str) -> float:
+        """Get mean of a specific metric."""
+        if name not in self._metrics or len(self._metrics[name]) == 0:
+            return 0.0
+        return float(np.mean(self._metrics[name]))
+    
+    def get_all_means(self) -> Dict[str, float]:
+        """Get means of all collected metrics."""
+        return {k: self.get_mean(k) for k in self._metrics}
+    
+    def get_last(self, name: str) -> Optional[float]:
+        """Get the last value of a specific metric."""
+        if name not in self._metrics or len(self._metrics[name]) == 0:
+            return None
+        return self._metrics[name][-1]
+    
+    def has(self, name: str) -> bool:
+        """Check if a metric exists and has values."""
+        return name in self._metrics and len(self._metrics[name]) > 0
+
+
+# =============================================================================
+# GLOBAL LOGGER INSTANCE
+# =============================================================================
+
+_logger: Optional[Logger] = None
+
+
+def get_logger() -> Logger:
+    """Get the global logger instance."""
+    global _logger
+    if _logger is None:
+        _logger = Logger(use_wandb=False)
+    return _logger
+
+
+def init_logger(
+    use_wandb: bool = True,
+    log_dir: Optional[Path] = None,
+    verbose: bool = True
+) -> Logger:
+    """Initialize the global logger."""
+    global _logger
+    _logger = Logger(
+        name="train",
+        use_wandb=use_wandb,
+        log_dir=log_dir,
+        verbose=verbose
+    )
+    return _logger
+
 
 # ----------------- TSP Utils -----------------
 
@@ -120,6 +386,10 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
     """
     Build PyG Data for CVRP using 4D node features (coords, demand, depot_flag).
     Edge features (6): dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge
+    
+    Note: CVRP source_route is variable-length with depot (0) appearing multiple times:
+        [0, x1, x2, 0, x3, x4, x5, 0, ...]
+    We handle this by building adjacency from consecutive pairs in the route.
     """
     if isinstance(coords, np.ndarray):
         coords_t = torch.from_numpy(coords)
@@ -156,34 +426,41 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
         log_tau_rel = torch.zeros((E, 1), device=device, dtype=torch.float32)
         tau_cv = torch.zeros((E, 1), device=device, dtype=torch.float32)
 
-    # Source-perm features
-    solver = getattr(aco, 'solver', aco)
+    # Source-route features for CVRP
+    # CVRP route is variable-length: [0, c1, c2, 0, c3, c4, 0, ...]
+    # Depot (0) can have multiple edges - we use directed edge matrices
     try:
-        src_perm_np = aco.source_perm
+        src_route_np = aco.source_route
     except AttributeError:
-        src_perm_np = solver.source_perm
-        
-    src_perm = torch.as_tensor(np.asarray(src_perm_np, dtype=np.int64), device=device, dtype=torch.long)
+        src_route_np = aco.source_perm
     
-    succ = torch.full((n,), -1, device=device, dtype=torch.long)
-    pred = torch.full((n,), -1, device=device, dtype=torch.long)
-    if src_perm.numel() > 0:
-        succ[src_perm] = torch.roll(src_perm, shifts=-1)
-        pred[src_perm] = torch.roll(src_perm, shifts=+1)
-
-    is_source_succ = (dst == succ[src]).to(torch.float32).view(E, 1)
-    is_source_pred = (dst == pred[src]).to(torch.float32).view(E, 1)
-
-    pos = torch.full((n,), -1, device=device, dtype=torch.long)
-    if src_perm.numel() > 0:
-        pos[src_perm] = torch.arange(src_perm.numel(), device=device, dtype=torch.long)
-        m = int(src_perm.numel())
-        duv = (pos[src] - pos[dst]).abs()
-        undirected_adj = ((duv == 1) | (duv == (m - 1))) & (pos[src] >= 0) & (pos[dst] >= 0)
-    else:
-        undirected_adj = torch.zeros((E,), device=device, dtype=torch.bool)
-
-    is_new_edge = (~undirected_adj).to(torch.float32).view(E, 1)
+    src_route = torch.as_tensor(np.asarray(src_route_np, dtype=np.int64), device=device, dtype=torch.long)
+    
+    # Build directed edge matrices from route
+    # forward_edge[u,v] = True if (u→v) is in route
+    # backward_edge[u,v] = True if (v→u) is in route (i.e., u is successor of v)
+    forward_edge = torch.zeros((n, n), device=device, dtype=torch.bool)
+    backward_edge = torch.zeros((n, n), device=device, dtype=torch.bool)
+    
+    if src_route.numel() > 1:
+        route_u = src_route[:-1]  # All but last
+        route_v = src_route[1:]   # All but first
+        # Mark directed edges: u → v means v is successor of u
+        forward_edge[route_u, route_v] = True
+        backward_edge[route_v, route_u] = True  # v → u means u is predecessor of v
+    
+    # is_source_succ[e]: for edge (src[e], dst[e]), is dst the successor of src in route?
+    # This correctly handles depot having multiple successors (first customer of each vehicle)
+    is_source_succ = forward_edge[src, dst].to(torch.float32).view(E, 1)
+    
+    # is_source_pred[e]: for edge (src[e], dst[e]), is dst the predecessor of src in route?
+    # This correctly handles depot having multiple predecessors (last customer of each vehicle)  
+    is_source_pred = backward_edge[src, dst].to(torch.float32).view(E, 1)
+    
+    # is_new_edge: edge not in current route (either direction)
+    is_adjacent = forward_edge | backward_edge.T  # Undirected adjacency
+    edge_in_route = is_adjacent[src, dst]
+    is_new_edge = (~edge_in_route).to(torch.float32).view(E, 1)
 
     edge_attr = torch.cat(
         [dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
@@ -302,6 +579,7 @@ def load_tsp_txt_dataset(path):
                 # MCTS Format: float... output int...
                 parts = line.split(" ")
                 output_idx = parts.index("output")
+                name = parts[0] if len(parts) > 0 else f"Instance_{line_idx}"
                 
                 # Parse Coords
                 coords_flat = [float(x) for x in parts[:output_idx]]
@@ -319,7 +597,7 @@ def load_tsp_txt_dataset(path):
                 # Cost
                 cost = calc_tour_length(coords, tour)
                 
-                data_list.append((coords, cost, tour))
+                data_list.append((coords, cost, tour, name))
                 
             elif line.startswith("['"):
                 # TSPlib Format: ['name', 'cost', flattened_coords...]
@@ -332,7 +610,9 @@ def load_tsp_txt_dataset(path):
                 parts = content.split(',')
                 parts = [p.strip() for p in parts]
                 
-                # name = parts[0]
+                parts = [p.strip() for p in parts]
+                
+                name = parts[0]
                 cost = float(parts[1])
                 coords_flat = [float(x) for x in parts[2:]]
                 
@@ -344,7 +624,7 @@ def load_tsp_txt_dataset(path):
                 # But we have the optimal cost provided.
                 tour = None 
                 
-                data_list.append((coords, cost, tour))
+                data_list.append((coords, cost, tour, name))
 
             elif line.startswith("["):
                  # Generated Format: [coords],cost,[tour]
@@ -355,7 +635,8 @@ def load_tsp_txt_dataset(path):
                          coords_flat, cost, tour = row_data
                          num_nodes = len(coords_flat) // 2
                          coords = torch.tensor(coords_flat).view(num_nodes, 2)
-                         data_list.append((coords, cost, tour))
+                         name = f"Gen_{line_idx}"
+                         data_list.append((coords, cost, tour, name))
                  except Exception:
                      pass
                 
@@ -410,6 +691,10 @@ def load_cvrp_txt_dataset(path):
                 except ValueError:
                     continue 
                 
+                    continue 
+                
+                name = parts[0]
+
                 # Depot
                 depot_coords = [float(parts[depot_idx+1]), float(parts[depot_idx+2])]
                 
@@ -445,11 +730,12 @@ def load_cvrp_txt_dataset(path):
                 
                 tour = None # Format 2 usually doesn't have tour
                 
-                data_list.append((coords, demand, capacity, cost, tour))
+                data_list.append((coords, demand, capacity, cost, tour, name))
 
             # Format 1 (Comma separated with keywords)
             elif "depot" in line and "customer" in line:
                 parts = [p.strip() for p in line.split(',')]
+                name = parts[0] if parts else f"Instance_{line_idx}"
                 
                 try:
                     depot_idx = parts.index('depot')
@@ -507,7 +793,7 @@ def load_cvrp_txt_dataset(path):
                         except ValueError:
                              pass
                 
-                data_list.append((coords, demand, capacity, cost, tour))
+                data_list.append((coords, demand, capacity, cost, tour, name))
 
         except Exception as e:
             print(f"Error parsing CVRP line {line_idx+1}: {e}")
@@ -682,7 +968,7 @@ def generate_and_save_dataset(problem, n_node, n_instances, save_path, baseline_
             else:
                 cost, tour = 0.0, list(range(n_node))
                 
-            dataset.append((coords_np, cost, tour))
+            dataset.append((coords_np, cost, tour, f"Gen_{i}"))
             
         elif problem == 'cvrp':
             coords, demand, capacity = gen_cvrp_instance(n_node, device)
@@ -722,7 +1008,7 @@ def generate_and_save_dataset(problem, n_node, n_instances, save_path, baseline_
             else:
                 cost, tour = 0.0, list(range(n_node + 1))
                 
-            dataset.append((coords_np, demand_np, capacity_val, cost, tour))
+            dataset.append((coords_np, demand_np, capacity_val, cost, tour, f"Gen_{i}"))
     
     # Save to file
     if save_path:
@@ -733,12 +1019,12 @@ def generate_and_save_dataset(problem, n_node, n_instances, save_path, baseline_
         with open(save_path, 'w') as f:
             for item in dataset:
                 if problem == 'tsp':
-                    coords, cost, tour = item
+                    coords, cost, tour, name = item
                     # Format: coords_flat, cost, tour
                     coords_flat = coords.flatten().tolist()
-                    line = f"{coords_flat},{cost},{tour}\n"
+                    line = f"{coords_flat},{cost},{tour}\n" # Name not saved in this simplistic generated format but okay
                 else:
-                    coords, demand, capacity, cost, tour = item
+                    coords, demand, capacity, cost, tour, name = item
                     coords_flat = coords.flatten().tolist()
                     demand_flat = demand.flatten().tolist()
                     line = f"{coords_flat},{demand_flat},{capacity},{cost},{tour}\n"

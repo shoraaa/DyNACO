@@ -1,0 +1,18 @@
+Metadata-Version: 2.4
+Name: ngfaco
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.13
+Description-Content-Type: text/markdown
+Requires-Dist: d2l>=0.17.0
+Requires-Dist: ipython>=9.8.0
+Requires-Dist: ipywidgets>=8.1.8
+Requires-Dist: jupyter>=1.1.1
+Requires-Dist: numba>=0.63.1
+Requires-Dist: papermill>=2.6.0
+Requires-Dist: pybind11>=3.0.1
+Requires-Dist: scipy>=1.17.0
+Requires-Dist: seaborn>=0.13.2
+Requires-Dist: torch-geometric>=2.7.0
+Requires-Dist: tqdm>=4.67.1
+Requires-Dist: wandb>=0.23.1

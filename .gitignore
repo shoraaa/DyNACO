@@ -16,3 +16,5 @@ experiments_checkpoints
 output
 experiments
 data
+tmp_models
+*.pdf

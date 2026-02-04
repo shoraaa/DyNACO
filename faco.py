@@ -224,14 +224,34 @@ class MFACO_TSP:
 
         return costs, flats, touched, logps, traces, costs_raw, flats_raw, new_edges_count, survival
 
-    def _update_pheromone_from_flat(self, best_flat: np.ndarray, best_cost: float) -> None:
-        self._cpp._update_pheromone_from_flat(best_flat.astype(np.int32), float(best_cost))
+    def update_pheromone(self, best_flat, best_cost: float) -> None:
+        """Update pheromone with best solution (unified API)."""
+        self._cpp._update_pheromone_from_flat(np.asarray(best_flat, dtype=np.int32), float(best_cost))
         if self._enable_torch_sync:
             self.sync_pheromone_to_torch()
+
+    def _update_pheromone_from_flat(self, best_flat: np.ndarray, best_cost: float) -> None:
+        """Alias for update_pheromone (backward compatibility)."""
+        self.update_pheromone(best_flat, best_cost)
 
     def sync_pheromone_to_torch(self) -> None:
         phe_np = np.asarray(self._cpp.pheromone_sparse_np)
         self._pheromone_sparse.copy_(torch.from_numpy(phe_np).to(self.device))
+    
+    @property
+    def enable_torch_sync(self) -> bool:
+        return self._enable_torch_sync
+    
+    def reset_timings(self) -> None:
+        """Reset timing counters (unified API with MFACO_CVRP)."""
+        if hasattr(self._cpp, 'reset_timings'):
+            self._cpp.reset_timings()
+    
+    def get_timings(self) -> dict:
+        """Get timing counters (unified API with MFACO_CVRP)."""
+        if hasattr(self._cpp, 'get_timings'):
+            return self._cpp.get_timings()
+        return {}
         
     def tau_nk_torch(self) -> torch.Tensor:
         return self._pheromone_sparse.clone()
@@ -532,6 +552,8 @@ class ACO_TSP:
 class MFACO_CVRP:
     """
     Unified MFACO CVRP solver wrapping C++ backend.
+    
+    API is designed to match MFACO_TSP for consistent usage in training code.
     """
     
     def __init__(
@@ -541,7 +563,7 @@ class MFACO_CVRP:
         capacity: float,
         n_ants: int,
         cand_list_size: int = 32,
-        backup_list_size: int = 32,
+        backup_list_size: int = 64,
         min_new_edges: int = 8,
         decay: float = 0.9,
         alpha: float = 1.0,
@@ -564,7 +586,8 @@ class MFACO_CVRP:
             raise ValueError("demand must be 1D")
         demand_np[0] = 0.0
         
-        self.solver = faco_opt.MFACO_CVRP(
+        # Use _cpp for consistency with MFACO_TSP
+        self._cpp = faco_opt.MFACO_CVRP(
             coords_np,
             demand_np,
             float(capacity),
@@ -584,97 +607,134 @@ class MFACO_CVRP:
             int(T_nls),
         )
         self.device = device
-        self.enable_torch_sync = enable_torch_sync
+        self._enable_torch_sync = enable_torch_sync
         self.alpha = alpha
+        self.disable_heuristic = disable_heuristic
         
         if normalized_heuristic and not disable_heuristic:
-            h = np.asarray(self.solver.heuristic_sparse_np)
+            h = np.asarray(self._cpp.heuristic_sparse_np)
             row_sums = h.sum(axis=1, keepdims=True)
             h_norm = h / (row_sums + 1e-12)
             np.copyto(h, h_norm)
         
-        self.disable_heuristic = disable_heuristic
-        self._pheromone_sparse = torch.from_numpy(self.solver.pheromone_sparse_np.copy()).to(device)
-        self._heuristic_sparse = torch.from_numpy(self.solver.heuristic_sparse_np.copy()).to(device)
+        # Torch buffers (matching MFACO_TSP naming)
+        self._pheromone_sparse = torch.from_numpy(self._cpp.pheromone_sparse_np.copy()).to(device)
+        self._h_sparse_torch = torch.from_numpy(self._cpp.heuristic_sparse_np.copy()).to(device)
+        self._nn_torch = torch.from_numpy(self._cpp.nn_list.copy()).to(device).long()
 
-    # Properties
+    # Properties (matching MFACO_TSP naming)
     @property
-    def n(self): return self.solver.n
+    def n(self) -> int: return self._cpp.n
     @property
-    def m(self): return self.solver.m
+    def m(self) -> int: return self._cpp.m
     @property
-    def k(self): return self.solver.k
+    def k(self) -> int: return self._cpp.k
     @property
-    def n_ants(self): return self.solver.n_ants
+    def n_ants(self) -> int: return self._cpp.n_ants
 
     @property
-    def heuristic_sparse_np(self) -> np.ndarray: return np.asarray(self.solver.heuristic_sparse_np)
+    def heuristic_sparse_np(self) -> np.ndarray: return np.asarray(self._cpp.heuristic_sparse_np)
     @property
-    def nn_list(self) -> np.ndarray: return np.asarray(self.solver.nn_list)
+    def nn_list(self) -> np.ndarray: return np.asarray(self._cpp.nn_list)
     @property
-    def backup_list(self) -> np.ndarray: return np.asarray(self.solver.backup_list)
-    # @property
-    # def nn_pos(self) -> np.ndarray: return np.asarray(self.solver.nn_pos)
+    def backup_list(self) -> np.ndarray: return np.asarray(self._cpp.backup_list)
     
     @property
     def pheromone_sparse(self) -> torch.Tensor:
         return self._pheromone_sparse
+    
+    @property
+    def h_sparse_torch(self) -> torch.Tensor:
+        """Alias for heuristic tensor (matches MFACO_TSP API)."""
+        return self._h_sparse_torch
+    
+    @property
+    def nn_torch(self) -> torch.Tensor:
+        return self._nn_torch
 
-    def seed_rng(self, seed: int):
-        self.solver.seed_rng(int(seed))
+    @property
+    def source_perm(self) -> np.ndarray:
+        return np.asarray(self._cpp.source_route)
+    
+    @property
+    def source_route(self) -> np.ndarray:
+        return np.asarray(self._cpp.source_route)
+    
+    @property
+    def enable_torch_sync(self) -> bool:
+        return self._enable_torch_sync
 
-    def sample(self, require_prob: bool = False, prior=None, parallel_traced: bool = False, return_decoded: bool = False):
+    def seed_rng(self, seed: int) -> None:
+        self._cpp.seed_rng(int(seed))
+
+    def sample(
+        self,
+        invtemp: float = 1.0,  # Kept for API compatibility (unused for CVRP)
+        require_prob: bool = False,
+        prior: Optional[Any] = None,
+        parallel_traced: bool = False,
+        return_decoded: bool = False,
+    ):
+        """
+        Sample from C++ backend.
+        
+        Returns tuple matching MFACO_TSP:
+            (costs, flats, touched, logps, traces, costs_raw, flats_raw, new_edges_count, survival)
+        
+        Note: For CVRP, 'touched' contains decoded routes if return_decoded=True.
+        """
         if prior is not None:
             prior = _as_numpy_f32(prior)
-        costs, perms, decoded, logps, traces, costs_raw, perms_raw, new_edges_count, survival = self.solver.sample(
+        
+        costs, routes, decoded, logps, traces, costs_raw, routes_raw, new_edges_count, survival = self._cpp.sample(
             require_prob, prior, parallel_traced, return_decoded
         )
 
         if isinstance(survival, np.ndarray):
-             survival = torch.from_numpy(survival).to(self.device)
+            survival = torch.from_numpy(survival).to(self.device)
 
-        return costs, perms, decoded, logps, traces, costs_raw, perms_raw, new_edges_count, survival
+        # Return format matches MFACO_TSP: (costs, flats, touched, logps, traces, costs_raw, flats_raw, new_edges, survival)
+        return costs, routes, decoded, logps, traces, costs_raw, routes_raw, new_edges_count, survival
 
-    def update_pheromone(self, best_perm, best_cost: float):
-        p = _as_numpy_i32(best_perm)
-        self.solver.update_pheromone_from_perm(p, float(best_cost))
-        if self.enable_torch_sync:
+    def update_pheromone(self, best_route, best_cost: float) -> None:
+        """Update pheromone with best route (matches MFACO_TSP naming)."""
+        p = _as_numpy_i32(best_route)
+        self._cpp.update_pheromone_from_route(p, float(best_cost))
+        if self._enable_torch_sync:
             self.sync_pheromone_to_torch()
+    
+    def _update_pheromone_from_flat(self, best_flat, best_cost: float) -> None:
+        """Alias for update_pheromone (matches MFACO_TSP API)."""
+        self.update_pheromone(best_flat, best_cost)
 
-    def reset_timings(self):
-        self.solver.reset_timings()
+    def reset_timings(self) -> None:
+        self._cpp.reset_timings()
 
-    def get_timings(self):
-        return self.solver.get_timings()
+    def get_timings(self) -> dict:
+        return self._cpp.get_timings()
 
-    def sync_pheromone_to_torch(self):
-        phe_np = np.asarray(self.solver.pheromone_sparse_np)
-        phe_cpu = torch.from_numpy(phe_np)
-        self._pheromone_sparse.copy_(phe_cpu.to(self.device))
+    def sync_pheromone_to_torch(self) -> None:
+        phe_np = np.asarray(self._cpp.pheromone_sparse_np)
+        self._pheromone_sparse.copy_(torch.from_numpy(phe_np).to(self.device))
 
-    def prob_sparse_torch(self, prior: torch.Tensor = None, invtemp: float = 1.0) -> torch.Tensor:
+    def prob_sparse_torch(self, invtemp: float = 1.0, prior: torch.Tensor = None) -> torch.Tensor:
+        """Compute probability tensor (argument order matches MFACO_TSP)."""
         EPS = 1e-10
         tau = self._pheromone_sparse.clamp_min(EPS)
         logit = self.alpha * torch.log(tau)
         
         if not self.disable_heuristic:
-            h = self._heuristic_sparse.clamp_min(EPS)
+            h = self._h_sparse_torch.clamp_min(EPS)
             if invtemp != 1.0:
-                 logit = logit + float(invtemp) * torch.log(h)
+                logit = logit + float(invtemp) * torch.log(h)
             else:
-                 logit = logit + torch.log(h)
+                logit = logit + torch.log(h)
         if prior is not None:
-             logit = logit + prior
+            logit = logit + prior
         return torch.exp(logit)
 
     def tau_nk_torch(self) -> torch.Tensor:
         return self._pheromone_sparse.clone()
-    
-    @property
-    def nn_torch(self) -> torch.Tensor:
-        if not hasattr(self, '_nn_torch'):
-             self._nn_torch = torch.from_numpy(self.solver.nn_list.copy()).to(self.device).long()
-        return self._nn_torch
         
 
 
@@ -694,6 +754,8 @@ class ACO_CVRP:
         beta: float = 1.0,
         p_best: float = 0.05,
         min_max: bool = True,
+        elitist: bool = False,
+        use_local_search: bool = False,
         device: str = "cuda",
         enable_torch_sync: bool = True,
         **kwargs
@@ -723,7 +785,9 @@ class ACO_CVRP:
             float(alpha),
             float(beta),
             float(p_best),
-            bool(min_max)
+            bool(min_max),
+            bool(elitist),
+            bool(use_local_search)
         )
         
         # Torch buffers
@@ -748,6 +812,9 @@ class ACO_CVRP:
     def tau_max(self) -> float: return self._cpp.tau_max
     
     @property
+    def source_perm(self) -> np.ndarray: return np.asarray(self._cpp.source_perm)
+    
+    @property
     def best_route(self) -> np.ndarray: return self._cpp.best_route
     
     @property
@@ -767,6 +834,29 @@ class ACO_CVRP:
 
     def seed_rng(self, seed: int) -> None:
         self._cpp.seed_rng(seed)
+
+    def run(self, n_iterations: int) -> float:
+        for _ in range(n_iterations):
+            # Sample (costs, routes, ...)
+            ret = self.sample(require_prob=False)
+            costs = ret[0]
+            routes = ret[1]
+
+            # Find best in batch
+            best_idx = np.argmin(costs)
+            iteration_best_cost = float(costs[best_idx])
+            iteration_best_route = routes[best_idx]
+
+            # Update pheromone (Min-Max ACO updates with iteration best or global best depending on strategy, 
+            # but usually we pass iteration best to update_pheromone and C++ handles logic?
+            # Actually PyACO_CVRP::update_pheromone calls solver->update_pheromone. 
+            # MMAS usually updates with GLOBAL best? 
+            # Looking at binding.cpp: update_pheromone takes solution, cost.
+            # In mfaco_train.cpp: update_pheromone(route, cost) -> updates global best if better, then deposits pheromone.
+            # So passing iteration best is correct; C++ will check if it's new global best.
+            self.update_pheromone(iteration_best_route, iteration_best_cost)
+        
+        return self.best_cost
 
     def sample(
         self,

@@ -203,8 +203,9 @@ def get_baseline(dataset, problem='tsp', n_node=100, device="cpu", **kwargs):
                 demand = dataset.tensors[1][i]
                 capacity = float(dataset.tensors[2][i])
             else:
-                # List of tuples (coords, demand, capacity)
-                coords, demand, capacity = dataset[i]
+                # List of tuples (coords, demand, capacity) or more
+                item = dataset[i]
+                coords, demand, capacity = item[:3] if len(item) >= 3 else item
                 if isinstance(capacity, torch.Tensor):
                     capacity = float(capacity.item())
             c = solve_with_hgs(coords, demand, capacity, time_limit=time_limit)

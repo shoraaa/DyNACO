@@ -61,7 +61,7 @@ def run_benchmark(dataset_path: str, n_ants: int = 100, H: int = 10, mini_H: int
         baselines = []
         times = []
         
-        for inst_idx, (coords, demand, capacity, baseline_cost, _) in enumerate(data_list):
+        for inst_idx, (coords, demand, capacity, baseline_cost, _, _) in enumerate(data_list):
             baselines.append(baseline_cost)
             
             # Create solver with same parameters as test.py
@@ -71,7 +71,7 @@ def run_benchmark(dataset_path: str, n_ants: int = 100, H: int = 10, mini_H: int
                 capacity=float(capacity),
                 n_ants=n_ants,
                 cand_list_size=k_sparse,
-                backup_list_size=k_sparse,
+                backup_list_size=max(k_sparse, 64),
                 min_new_edges=min_new_edges,
                 decay=rho,
                 p_best=0.05,
@@ -91,11 +91,11 @@ def run_benchmark(dataset_path: str, n_ants: int = 100, H: int = 10, mini_H: int
             start = time.perf_counter()
             for h in range(H):
                 for mini_h in range(mini_H):
-                    costs_t, perms, _, _, _, _, _, _, _ = solver.sample()
+                    costs_t, routes, _, _, _, _, _, _, _ = solver.sample()
                     # Update pheromone with best ant (same as test.py)
                     best_idx = int(costs_t.argmin().item())
                     best_cost = float(costs_t[best_idx].item())
-                    solver.update_pheromone(perms[best_idx], best_cost)
+                    solver.update_pheromone(routes[best_idx], best_cost)
             elapsed = time.perf_counter() - start
             
             costs.append(solver.solver.best_cost)
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     parser.add_argument("--k_sparse", type=int, default=32, help="Candidate list size")
     parser.add_argument("--rho", type=float, default=0.1, help="Pheromone decay")
     parser.add_argument("--min_new_edges", type=int, default=8, help="Min new edges")
-    parser.add_argument("--n_instances", type=int, default=None, help="Number of instances (None=all)")
+    parser.add_argument("--n_instances", type=int, default=2, help="Number of instances (None=all)")
     parser.add_argument("--threads", type=int, default=None, help="CPU threads")
     args = parser.parse_args()
     

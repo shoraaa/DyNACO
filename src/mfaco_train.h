@@ -178,6 +178,7 @@ struct SampleResult {
   std::vector<int32_t> new_edges_count; // (n_ants,)
   std::vector<float>
       edge_survival; // (n_ants,) ratio of sampled edges surviving in final tour
+  std::vector<std::vector<int32_t>> decoded_routes;
 
   void clear() {
     costs.clear();
@@ -188,6 +189,7 @@ struct SampleResult {
     routes_raw.clear();
     new_edges_count.clear();
     edge_survival.clear();
+    decoded_routes.clear();
   }
 };
 
@@ -523,12 +525,10 @@ public:
 
   // -- LS Optimization Structures (Moved to Local) --
   // -------------------------------
-
-  // Giant tour permutation of customers only (length m)
-  std::vector<int32_t> source_perm;
-  std::vector<int32_t> best_perm;
-  std::vector<int32_t>
-      source_positions; // (n,) position of customer in source_perm; depot=-1
+  // Routes
+  std::vector<int32_t> source_route;
+  std::vector<int32_t> best_route;
+  std::vector<int32_t> source_positions; // (n,) position of customer
 
   float source_cost = 0.0f;
   float best_cost = 0.0f;
@@ -559,6 +559,8 @@ public:
 
   // Update pheromone with best permutation (length m) and its CVRP cost
   void update_pheromone(const int32_t *best_perm_ptr, float new_best_cost);
+  void update_pheromone(const std::vector<int32_t> &best_route_in,
+                        float new_best_cost);
 
   // Decode permutation into route-with-zeros (for convenience / debug)
   // perm_ptr length m
@@ -579,8 +581,8 @@ public:
     }
     return -1;
   }
-  int32_t *source_perm_data() { return source_perm.data(); }
-  int32_t *best_perm_data() { return best_perm.data(); }
+  int32_t *source_perm_data() { return source_route.data(); }
+  int32_t *best_perm_data() { return best_route.data(); }
 
 private:
   // ---- build helpers ----
@@ -589,15 +591,46 @@ private:
   void build_heuristic();
   void build_d0();
   void build_initial_perm();
+  void build_initial_solution();
 
   // ---- probability mat on sparse graph (n,k) ----
   void compute_probmat(const float *prior_ptr, std::vector<float> &probmat);
+
+  std::tuple<int32_t, bool, float>
+  select_next_node(int32_t curr, int32_t curr_route, const float *probmat_row,
+                   const std::vector<uint8_t> &visited,
+                   const std::vector<int32_t> &node_route,
+                   const std::vector<int64_t> &route_loads, Xoshiro128Plus &rng,
+                   int16_t &out_pick_j, uint64_t &out_valid_mask);
 
   // ---- MFACO sampling primitives on giant tour ----
   float sample_ant_fast(const float *probmat, int32_t start_node,
                         std::vector<int32_t> &perm_out, int32_t &new_edges_out,
                         std::vector<int32_t> &checklist, Xoshiro128Plus &rng,
                         const float *prior);
+
+  float sample_ant_direct(const float *probmat, int32_t start_node,
+                          std::vector<int32_t> &route_out,
+                          int32_t &new_edges_out,
+                          std::vector<int32_t> &checklist, Xoshiro128Plus &rng,
+                          const float *prior);
+
+  float sample_ant_direct_traced(const float *probmat, int32_t start_node,
+                                 std::vector<int32_t> &route_out,
+                                 std::vector<int32_t> &route_raw_out,
+                                 float &cost_raw_out, int32_t &new_edges_out,
+                                 std::vector<int32_t> &checklist,
+                                 MFACOTrace &trace, Xoshiro128Plus &rng,
+                                 float &logp_sum, float &survival_out,
+                                 const float *prior);
+
+  float intra_route_ls(std::vector<int32_t> &route,
+                       std::vector<int32_t> &checklist);
+
+  float inter_route_ls_optimized(std::vector<int32_t> &perm,
+                                 std::vector<int32_t> &positions,
+                                 std::vector<int32_t> &checklist,
+                                 std::vector<uint8_t> &in_checklist);
 
   float sample_ant_traced(const float *probmat, int32_t start_node,
                           std::vector<int32_t> &perm_out,
@@ -633,11 +666,6 @@ private:
                       std::vector<int32_t> &positions,
                       std::vector<int32_t> &checklist,
                       std::vector<uint8_t> &in_checklist);
-
-  void inter_route_ls_optimized(std::vector<int32_t> &perm,
-                                std::vector<int32_t> &positions,
-                                std::vector<int32_t> &checklist,
-                                std::vector<uint8_t> &in_checklist);
 
   // Reconstruct routes from permutation using split_dp, but returning vector
   // of routes
@@ -675,10 +703,12 @@ private:
     std::vector<std::pair<int32_t, int32_t>>
         segs; // inclusive [i,j] on perm indices
   };
+  bool elitist;
+  // bool use_local_search; // already redundant
   SplitResult split_dp(const std::vector<int32_t> &perm) const;
   float split_cost_fast(const std::vector<int32_t> &perm) const;
 
-  // pheromone bounds
+  // bool use_local_search; // already redundant
   std::pair<float, float> calc_trail_limits_cl(float solution_cost) const;
   std::pair<float, float> calc_trail_limits_smooth(float solution_cost) const;
 
@@ -707,21 +737,13 @@ public:
   // State
   std::vector<float> coords; // (n, 2)
   std::vector<float> demand; // (n,)
+  bool elitist;
+  bool use_local_search;
 
-  // Pheromone is dense (n*n) or sparse (n*k) depending on usage.
-  // User requested "disregard k_sparse", so we use dense.
-  // We can represent dense as sparse with k=n.
   std::vector<int32_t> nn_list; // (n, k)
   std::vector<float> pheromone; // (n, k)
   std::vector<float> heuristic; // (n, k)
 
-  // Solution state
-  // Best solution in CVRP is often stored as a giant tour or list of routes.
-  // Since we use constructive sampling returning to depot, a single flattened
-  // vector (giant tour with split delimiters or just route segments) is common.
-  // We'll store "giant tour" format: permutation of customers, or full path
-  // including depots? User's python code returns "paths" which seem to include
-  // 0s (depots). We will store best "path" including depots.
   std::vector<int32_t> best_route; // (max_len,) - potentially long
   float best_cost;
   float tau_min;
@@ -735,7 +757,8 @@ public:
            float capacity, int32_t n_ants,
            int32_t cand_list_size = 0, // 0 means dense (n-1)
            float decay = 0.9f, float alpha = 1.0f, float beta = 1.0f,
-           float p_best = 0.05f, bool min_max = true);
+           float p_best = 0.05f, bool min_max = true, bool elitist = false,
+           bool use_local_search = false);
 
   // API
   void seed_rng(uint64_t seed);
@@ -743,20 +766,22 @@ public:
   void sample(bool require_prob, const float *prior, SampleResult &result,
               bool parallel_traced = false);
 
+  float run(int32_t n_iterations);
+
   void update_pheromone(const int32_t *solution_flat, int32_t solution_len,
                         float cost);
+
+  void update_pheromone_batch(const std::vector<std::vector<int32_t>> &routes,
+                              const std::vector<float> &costs);
+
+  void local_search(std::vector<int32_t> &route);
+  void two_opt_sequence(std::vector<int32_t> &seq);
 
   // Data access
   float *pheromone_data() { return pheromone.data(); }
   int32_t *nn_list_data() { return nn_list.data(); }
   float *heuristic_data() { return heuristic.data(); }
-  // best_route size varies, so we might need a method to get it safely or just
-  // expose pointer handling in binding For binding, we usually copy to python
-  // list or ensure fixed size buffer? We'll return copies via sample results
-  // mostly.
   std::vector<int32_t> get_best_route() const { return best_route; }
-
-private:
   void build_dense_nn_lists();
   void build_heuristic();
 

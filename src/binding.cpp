@@ -407,11 +407,12 @@ public:
   }
   // py::array_t<int32_t> get_nn_pos() { ... } REMOVED
 
-  py::array_t<int32_t> get_source_perm() {
-    return make_1d_view(solver->source_perm_data(), solver->m);
+  py::array_t<int32_t> get_source_route() {
+    return make_1d_view(solver->source_route.data(),
+                        solver->source_route.size());
   }
-  py::array_t<int32_t> get_best_perm() {
-    return make_1d_view(solver->best_perm_data(), solver->m);
+  py::array_t<int32_t> get_best_route() {
+    return make_1d_view(solver->best_route.data(), solver->best_route.size());
   }
 
   void seed_rng(uint64_t seed) { solver->seed_rng(seed); }
@@ -443,29 +444,19 @@ public:
     for (int32_t a = 0; a < solver->n_ants; ++a)
       cb(a) = result.costs[a];
 
-    py::list perms;
+    py::list routes;
     for (int32_t a = 0; a < solver->n_ants; ++a) {
-      py::array_t<int32_t> perm(solver->m + 1);
-      auto pb = perm.mutable_unchecked<1>();
-      for (int32_t i = 0; i < solver->m; ++i)
-        pb(i) = result.routes[a][i];
-      pb(solver->m) = result.routes[a][0];
-      perms.append(perm);
+      const auto &r = result.routes[a];
+      py::array_t<int32_t> r_arr((py::ssize_t)r.size());
+      auto rb = r_arr.mutable_unchecked<1>();
+      for (size_t i = 0; i < r.size(); ++i)
+        rb(i) = r[i];
+      routes.append(r_arr);
     }
 
     py::object decoded_obj = py::none();
     if (return_decoded) {
-      py::list decoded;
-      for (int32_t a = 0; a < solver->n_ants; ++a) {
-        std::vector<int32_t> r0;
-        solver->decode_perm_to_route0(result.routes[a].data(), r0);
-        py::array_t<int32_t> rr((py::ssize_t)r0.size());
-        auto rb = rr.mutable_unchecked<1>();
-        for (py::ssize_t i = 0; i < (py::ssize_t)r0.size(); ++i)
-          rb(i) = r0[(size_t)i];
-        decoded.append(rr);
-      }
-      decoded_obj = decoded;
+      decoded_obj = routes;
     }
 
     py::object traces_obj = py::none();
@@ -487,12 +478,12 @@ public:
     if (!result.routes_raw.empty()) {
       for (int32_t a = 0; a < solver->n_ants; ++a) {
         if (!result.routes_raw[a].empty()) {
-          py::array_t<int32_t> perm(solver->m + 1);
-          auto pb = perm.mutable_unchecked<1>();
-          for (int32_t i = 0; i < solver->m; ++i)
-            pb(i) = result.routes_raw[a][i];
-          pb(solver->m) = result.routes_raw[a][0];
-          perms_raw.append(perm);
+          const auto &r = result.routes_raw[a];
+          py::array_t<int32_t> r_arr((py::ssize_t)r.size());
+          auto rb = r_arr.mutable_unchecked<1>();
+          for (size_t i = 0; i < r.size(); ++i)
+            rb(i) = r[i];
+          perms_raw.append(r_arr);
         } else {
           perms_raw.append(py::none());
         }
@@ -528,24 +519,25 @@ public:
         surv_buf(a) = 0.0f;
     }
 
-    return py::make_tuple(costs, perms, decoded_obj, logps_arr, traces_obj,
+    return py::make_tuple(costs, routes, decoded_obj, logps_arr, traces_obj,
                           costs_raw, perms_raw, new_edges_arr, survival_arr);
   }
 
-  void update_pheromone_from_perm(
-      py::array_t<int32_t, py::array::c_style | py::array::forcecast> best_perm,
+  void update_pheromone_from_route(
+      py::array_t<int32_t, py::array::c_style | py::array::forcecast>
+          best_route,
       float best_cost) {
-    auto buf = best_perm.request();
-    if (buf.ndim != 1 || buf.shape[0] < solver->m) {
-      throw std::runtime_error("best_perm must be length >= m");
+    auto buf = best_route.request();
+    if (buf.ndim != 1) {
+      throw std::runtime_error("best_route must be 1D");
     }
     const int32_t *p = (const int32_t *)buf.ptr;
+    std::vector<int32_t> route_vec(p, p + buf.shape[0]);
     py::gil_scoped_release release;
-    solver->update_pheromone(p, best_cost);
+    solver->update_pheromone(route_vec, best_cost);
   }
 
   void reset_timings() { solver->reset_timings(); }
-
   py::dict get_timings() {
     py::dict d;
     d["time_ant"] = solver->time_ant;
@@ -691,7 +683,8 @@ public:
       py::array_t<float, py::array::c_style | py::array::forcecast> demand,
       float capacity, int32_t n_ants, int32_t cand_list_size = 0,
       float decay = 0.9f, float alpha = 1.0f, float beta = 1.0f,
-      float p_best = 0.05f, bool min_max = true) {
+      float p_best = 0.05f, bool min_max = true, bool elitist = false,
+      bool use_local_search = false) {
 
     auto cbuf = coords.request();
     if (cbuf.ndim != 2 || cbuf.shape[1] != 2) {
@@ -706,9 +699,9 @@ public:
     }
     const float *demand_ptr = static_cast<const float *>(dbuf.ptr);
 
-    solver = std::make_unique<ACO_CVRP>(coords_ptr, demand_ptr, n, capacity,
-                                        n_ants, cand_list_size, decay, alpha,
-                                        beta, p_best, min_max);
+    solver = std::make_unique<ACO_CVRP>(
+        coords_ptr, demand_ptr, n, capacity, n_ants, cand_list_size, decay,
+        alpha, beta, p_best, min_max, elitist, use_local_search);
   }
 
   // Properties
@@ -966,14 +959,14 @@ PYBIND11_MODULE(faco_opt, m) {
       .def_property_readonly("heuristic_sparse_np",
                              &PyMFACO_CVRP::get_heuristic_sparse_np)
       // .def_property_readonly("nn_pos", &PyMFACO_CVRP::get_nn_pos)
-      .def_property_readonly("source_perm", &PyMFACO_CVRP::get_source_perm)
-      .def_property_readonly("best_perm", &PyMFACO_CVRP::get_best_perm)
+      .def_property_readonly("source_route", &PyMFACO_CVRP::get_source_route)
+      .def_property_readonly("best_route", &PyMFACO_CVRP::get_best_route)
       .def("seed_rng", &PyMFACO_CVRP::seed_rng)
       .def("sample", &PyMFACO_CVRP::sample, py::arg("require_prob") = false,
            py::arg("prior") = py::none(), py::arg("parallel_traced") = false,
            py::arg("return_decoded") = false)
-      .def("update_pheromone_from_perm",
-           &PyMFACO_CVRP::update_pheromone_from_perm)
+      .def("update_pheromone_from_route",
+           &PyMFACO_CVRP::update_pheromone_from_route)
       .def_property(
           "use_relocate",
           [](PyMFACO_CVRP &self) { return self.solver->use_relocate; },
@@ -1024,12 +1017,14 @@ PYBIND11_MODULE(faco_opt, m) {
       .def(py::init<
                py::array_t<float, py::array::c_style | py::array::forcecast>,
                py::array_t<float, py::array::c_style | py::array::forcecast>,
-               float, int32_t, int32_t, float, float, float, float, bool>(),
+               float, int32_t, int32_t, float, float, float, float, bool, bool,
+               bool>(),
            py::arg("coords"), py::arg("demand"), py::arg("capacity"),
            py::arg("n_ants"), py::arg("cand_list_size") = 0,
            py::arg("decay") = 0.9f, py::arg("alpha") = 1.0f,
            py::arg("beta") = 1.0f, py::arg("p_best") = 0.05f,
-           py::arg("min_max") = true)
+           py::arg("min_max") = true, py::arg("elitist") = false,
+           py::arg("use_local_search") = false)
       .def_property_readonly("n", &PyACO_CVRP::get_n)
       .def_property_readonly("n_ants", &PyACO_CVRP::get_n_ants)
       .def_property_readonly("k", &PyACO_CVRP::get_k)
