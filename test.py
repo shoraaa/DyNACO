@@ -295,9 +295,9 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                 prior_arg = current_prior.cpu().numpy() if (current_prior is not None and torch.is_tensor(current_prior)) else current_prior
 
                 if problem == 'tsp':
-                    costs_t, flats, _, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg)
+                    costs_t, flats, _, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg, parallel_traced=True)
                 else:
-                    costs_t, routes, decoded, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg, return_decoded=return_decoded)
+                    costs_t, routes, decoded, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg, return_decoded=return_decoded, parallel_traced=True)
                     flats = routes
 
                 if do_metrics:
@@ -747,22 +747,22 @@ def main():
     # Baseline cache (heuristic-only MFACO). Reuse across runs for the same dataset+config.
     cached_base_costs = None
     base_cache_path = None
-    if not args.no_baseline:
-        base_cache_path = _base_cache_path(args, len(val_list))
-        if base_cache_path.exists():
-            try:
-                obj = torch.load(base_cache_path, map_location="cpu", weights_only=False)
-                base_arr = obj.get("base_costs", None) if isinstance(obj, dict) else None
-                if base_arr is not None and len(base_arr) == len(val_list):
-                    cached_base_costs = [float(x) for x in base_arr]
-                    print(f"Loaded cached base costs: {base_cache_path} ({len(cached_base_costs)} instances)")
-            except Exception as e:
-                print(f"Warning: failed to load base cache {base_cache_path}: {e}")
+    # if not args.no_baseline:
+    #     base_cache_path = _base_cache_path(args, len(val_list))
+    #     if base_cache_path.exists():
+    #         try:
+    #             obj = torch.load(base_cache_path, map_location="cpu", weights_only=False)
+    #             base_arr = obj.get("base_costs", None) if isinstance(obj, dict) else None
+    #             if base_arr is not None and len(base_arr) == len(val_list):
+    #                 cached_base_costs = [float(x) for x in base_arr]
+    #                 print(f"Loaded cached base costs: {base_cache_path} ({len(cached_base_costs)} instances)")
+    #         except Exception as e:
+    #             print(f"Warning: failed to load base cache {base_cache_path}: {e}")
 
-    if args.iter_log and cached_base_costs is not None:
-        # Can't reconstruct per-iteration traces from cached scalar costs.
-        print("Iter logging enabled: ignoring cached base costs to record per-iteration trace.")
-        cached_base_costs = None
+    # if args.iter_log and cached_base_costs is not None:
+    #     # Can't reconstruct per-iteration traces from cached scalar costs.
+    #     print("Iter logging enabled: ignoring cached base costs to record per-iteration trace.")
+    #     cached_base_costs = None
     
     sample_snapshots = {}
 

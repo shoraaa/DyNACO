@@ -3952,14 +3952,11 @@ float MFACO_CVRP::sample_ant_direct(const float *probmat, int32_t start_node,
   return final_cost;
 }
 
-std::tuple<int32_t, bool, float>
-MFACO_CVRP::select_next_node(int32_t curr, int32_t curr_route,
-                             const float *probmat_row,
-                             const std::vector<uint8_t> &visited,
-                             const std::vector<int32_t> &node_route,
-                             const std::vector<int64_t> &route_loads,
-                             Xoshiro128Plus &rng, int16_t &out_pick_j,
-                             uint64_t &out_valid_mask) {
+std::tuple<int32_t, bool, float> MFACO_CVRP::select_next_node(
+    int32_t curr, int32_t curr_route, const float *probmat_row,
+    const std::vector<uint8_t> &visited, const std::vector<int32_t> &node_route,
+    const std::vector<int64_t> &route_loads, Xoshiro128Plus &rng,
+    int16_t &out_pick_j, uint64_t &out_valid_mask) {
   int32_t c_size = 0;
   float sum_prob = 0.0f;
   out_valid_mask = 0;
@@ -4206,24 +4203,6 @@ float MFACO_CVRP::sample_ant_direct_traced(
     return (src_next[u] == v || src_prev[u] == v);
   };
 
-  auto contains_edge = [&](int32_t u, int32_t v) -> bool {
-    if (u == 0) {
-      for (int r = 0; r < num_routes; ++r) {
-        if (next_node[n + r] == v)
-          return true;
-      }
-      return false;
-    }
-    if (v == 0) {
-      for (int r = 0; r < num_routes; ++r) {
-        if (prev_node[n + r] == u)
-          return true;
-      }
-      return false;
-    }
-    return next_node[u] == v || prev_node[u] == v;
-  };
-
   std::vector<uint8_t> visited(n, 0);
   visited[start_node] = 1;
   int32_t visited_count = 1;
@@ -4264,12 +4243,14 @@ float MFACO_CVRP::sample_ant_direct_traced(
     const float *row_prob = probmat + (size_t)lookup_node * k;
     uint64_t valid_mask = 0;
 
-    int32_t curr_route = (curr > 0 && curr < n) ? node_route[curr] : ((curr >= n) ? (curr - n) : -1);
+    int32_t curr_route = (curr > 0 && curr < n)
+                             ? node_route[curr]
+                             : ((curr >= n) ? (curr - n) : -1);
 
     int16_t pick_j = -1;
-    auto [chosen, is_stoch, log_prob] = select_next_node(
-        curr, curr_route, row_prob, visited, node_route, route_load, rng, pick_j,
-        valid_mask);
+    auto [chosen, is_stoch, log_prob] =
+        select_next_node(curr, curr_route, row_prob, visited, node_route,
+                         route_load, rng, pick_j, valid_mask);
 
     if (chosen == -1)
       break;
@@ -4278,11 +4259,12 @@ float MFACO_CVRP::sample_ant_direct_traced(
       logp_sum += log_prob;
     }
 
-    bool is_new = !contains_edge(curr, chosen);
-
     // Record trace - map depot nodes to 0 for Python compatibility
     int32_t trace_curr = (curr >= n) ? 0 : curr;
     int32_t trace_chosen = (chosen >= n) ? 0 : chosen;
+
+    bool is_new = !is_source_edge(trace_curr, trace_chosen);
+
     trace.curr_nodes.push_back(trace_curr);
     trace.chosen_nodes.push_back(trace_chosen);
     trace.is_stochastic.push_back(is_stoch ? 1 : 0);
