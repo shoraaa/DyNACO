@@ -995,9 +995,9 @@ def train_instance_ppo_grad_accum(
                     total_loss_val_epoch += loss.item()
                 
                 # Backward pass for this chunk with gradient accumulation
-                chunk_loss = torch.stack(chunk_losses).mean()
-                # Scale loss by number of chunks to maintain effective batch size
-                (chunk_loss / num_chunks).backward()
+                chunk_loss_sum = torch.stack(chunk_losses).sum()
+                # Scale loss by total mini_H to equivalent to mean over all mini_H
+                (chunk_loss_sum / args.mini_H).backward()
             
             # Compute gradient variance
             if not args.simple_train:
