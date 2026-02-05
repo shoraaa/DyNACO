@@ -449,12 +449,8 @@ def train_instance_reinforce(
                 )
                 current_prior = prior_old * factor
 
-            if args.problem == 'tsp':
-                res = aco.sample(require_prob=True, prior=current_prior)
-                costs, flats, _, _, traces, costs_raw, flats_raw, new_edges, survival = res
-            else:
-                res = aco.sample(require_prob=True, prior=current_prior)
-                costs, flats, _, _, traces, costs_raw, flats_raw, new_edges, survival = res
+            res = aco.sample(require_prob=True, prior=current_prior, parallel_traced=args.parallel_traced)
+            costs, flats, _, _, traces, costs_raw, flats_raw, new_edges, survival = res
             
             if survival is not None:
                 metrics.add("survival", survival.mean().item())
@@ -630,7 +626,7 @@ def train_instance_ppo(
                 current_prior = prior_old * factor
 
             # Sample from ACO
-            res = aco.sample(require_prob=True, prior=current_prior)
+            res = aco.sample(require_prob=True, prior=current_prior, parallel_traced=args.parallel_traced)
             costs, flats, _, _, traces, costs_raw, flats_raw, new_edges, survival = res
             
             if survival is not None:
@@ -1113,6 +1109,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_smooth_mmas", action="store_true")
     parser.add_argument("--no_extend_ls", action="store_true")
     parser.add_argument("--no_normalized_heuristic", action="store_true")
+
+    # Traced sampling parallelism
+    # CVRP wrapper defaults to parallel_traced=False (single-thread traced sampling) unless passed explicitly.
+    pt_group = parser.add_mutually_exclusive_group()
+    pt_group.add_argument(
+        "--parallel_traced",
+        dest="parallel_traced",
+        action="store_true",
+        help="Parallelize traced sampling across ants (faster; different RNG usage)",
+    )
+    pt_group.add_argument(
+        "--no_parallel_traced",
+        dest="parallel_traced",
+        action="store_false",
+        help="Force single-thread traced sampling (slower; legacy behavior)",
+    )
+    parser.set_defaults(parallel_traced=True)
 
     # Optimization
     parser.add_argument("--grad_checkpoint", action="store_true",
