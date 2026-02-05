@@ -4104,80 +4104,29 @@ float MFACO_CVRP::sample_ant_direct_traced(
     int32_t &new_edges_out, std::vector<int32_t> &checklist, MFACOTrace &trace,
     Xoshiro128Plus &rng, float &logp_sum, float &survival_out,
     const float *prior) {
-  // MFACO-style relocation sampling for CVRP (traced version)
+  // Copy-paste from sample_ant_direct, with tracing added
   trace.clear();
   trace.start_node = start_node;
   trace.reserve(min_new_edges * 2);
 
-  // Copy source route
-  route_out = source_route;
-
-  // Build route structure
-  std::vector<int32_t> node_route(n, -1);
-  std::vector<int64_t> route_load;
-  std::vector<std::vector<int32_t>> routes;
-
-  {
-    std::vector<int32_t> current;
-    int64_t cur_load = 0;
-    for (int32_t x : route_out) {
-      if (x == 0) {
-        if (!current.empty()) {
-          current.push_back(0);
-          routes.push_back(current);
-          route_load.push_back(cur_load);
-          current.clear();
-          cur_load = 0;
-        }
-        if (current.empty()) {
-          current.push_back(0);
-        }
-      } else {
-        current.push_back(x);
-        node_route[x] = (int32_t)routes.size();
-        cur_load += demand_int[x];
-      }
-    }
-    if (current.size() > 1) {
-      current.push_back(0);
-      routes.push_back(current);
-      route_load.push_back(cur_load);
-    }
-  }
-
-  int32_t num_routes = (int32_t)routes.size();
-  // Allow up to n routes (theoretical max)
-  int32_t max_routes = n;
-
-  // Pre-allocate with extra capacity for potential new routes
-  route_load.reserve(max_routes);
-
-  // Build linked list
-  std::vector<int32_t> next_node(n + max_routes);
-  std::vector<int32_t> prev_node(n + max_routes);
-
-  for (int r = 0; r < num_routes; ++r) {
-    const auto &rt = routes[r];
-    int32_t depot = n + r;
-    int32_t prev = depot;
-
-    for (size_t i = 1; i < rt.size() - 1; ++i) {
-      int32_t u = rt[i];
-      next_node[prev] = u;
-      prev_node[u] = prev;
-      prev = u;
-    }
-    next_node[prev] = depot;
-    prev_node[depot] = prev;
-  }
-
-  // Copy initial routes to source_node_route for cross-route check
-  std::vector<int32_t> source_node_route = node_route;
-
-  // Precompute source adjacency for fast "is_new_edge" check
+  // 1. Build Adjacency of Source (for new edge detection)
   std::vector<int32_t> src_prev(n, -1);
   std::vector<int32_t> src_next(n, -1);
   std::vector<uint8_t> src_adj_to_depot(n, 0);
+
+  // Original route IDs for cross-route checks
+  std::vector<int32_t> source_node_route_id(n, -1);
+  int32_t current_route_id = 0;
+  for (size_t i = 0; i < source_route.size(); ++i) {
+    int32_t u = source_route[i];
+    if (u == 0) {
+      if (i > 0 && source_route[i - 1] != 0) {
+        current_route_id++;
+      }
+    } else {
+      source_node_route_id[u] = current_route_id;
+    }
+  }
 
   for (size_t i = 0; i + 1 < source_route.size(); ++i) {
     int32_t u = source_route[i];
@@ -4203,66 +4152,116 @@ float MFACO_CVRP::sample_ant_direct_traced(
     return (src_next[u] == v || src_prev[u] == v);
   };
 
+  // 2. Initialize Linked List from Source Solution
+  // Routes: [0, c1..ck, 0]. In LL: depot_node -> c1 -> ... -> ck -> depot_node
+  std::vector<std::vector<int32_t>> init_routes =
+      initial_routes_from_perm(source_route);
+  int32_t num_routes = (int32_t)init_routes.size();
+  int32_t max_routes = n; // Allow growth
+
+  // Structures
+  std::vector<int32_t> next_node(n + max_routes);
+  std::vector<int32_t> prev_node(n + max_routes);
+  std::vector<int32_t> node_route(n, -1); // Only for customers 1..n-1
+  std::vector<int64_t> route_loads(max_routes, 0);
+
+  for (int r = 0; r < num_routes; ++r) {
+    int32_t depot = n + r;
+    int32_t prev = depot;
+    int64_t load = 0;
+
+    const auto &rt = init_routes[r];
+    // rt is [0, c1...ck, 0]
+    for (size_t i = 1; i < rt.size() - 1; ++i) {
+      int32_t u = rt[i];
+      next_node[prev] = u;
+      prev_node[u] = prev;
+      node_route[u] = r;
+      load += demand_int[u];
+      prev = u;
+    }
+    next_node[prev] = depot;
+    prev_node[depot] = prev;
+    route_loads[r] = load;
+  }
+
+  // 3. Setup Sampling
   std::vector<uint8_t> visited(n, 0);
-  visited[start_node] = 1;
-  int32_t visited_count = 1;
+  int32_t visited_count = 0;
+
+  int32_t curr = start_node;
+  if (curr <= 0 || curr >= n) {
+    // Robust start node selection
+    int attempts = 0;
+    while (attempts < 10) {
+      curr = 1 + (int32_t)rng.next_uint((uint32_t)m);
+      if (curr > 0 && curr < n)
+        break;
+      attempts++;
+    }
+    if (curr <= 0 || curr >= n)
+      curr = 1;
+  }
+
+  visited[curr] = 1;
+  visited_count++;
 
   checklist.clear();
-  checklist.push_back(start_node);
+  checklist.push_back(curr);
   std::vector<uint8_t> in_checklist(n, 0);
-  in_checklist[start_node] = 1;
+  in_checklist[curr] = 1;
 
-  int32_t new_edges = 0;
+  int32_t new_edges_all = 0;
+  int32_t new_edges_cross = 0;
   int32_t steps = 0;
   int32_t max_steps = m * 4;
   if (fixed_steps > 0)
     max_steps = fixed_steps;
-  int32_t curr = start_node;
+
   logp_sum = 0.0f;
 
-  int32_t candidates[MAX_CAND_LIST_SIZE + 1];
-  float probs[MAX_CAND_LIST_SIZE + 1];
-  int16_t j_indices[MAX_CAND_LIST_SIZE + 1];
-
+  // 4. Main Relocation Loop
   while (true) {
+    // Termination Check
     if (fixed_steps > 0) {
       if (steps >= fixed_steps)
         break;
     } else {
-      if (new_edges >= min_new_edges || visited_count >= m)
+      if (new_edges_cross >= min_new_edges || visited_count >= m)
         break;
     }
     if (steps > max_steps)
       break;
 
-    int32_t c_size = 0;
-    float sum_prob = 0.0f;
+    // Determine Current Route info
+    int32_t r_curr;
+    if (curr >= n) {
+      r_curr = curr - n;
+    } else {
+      r_curr = node_route[curr];
+    }
+
+    // Select Next Node 'v'
+    int16_t pick_j = -1;
+    uint64_t valid_mask = 0;
 
     // Map depot nodes to 0 for NN/probmat lookups
     int32_t lookup_node = (curr >= n) ? 0 : curr;
     const float *row_prob = probmat + (size_t)lookup_node * k;
-    uint64_t valid_mask = 0;
 
-    int32_t curr_route = (curr > 0 && curr < n)
-                             ? node_route[curr]
-                             : ((curr >= n) ? (curr - n) : -1);
-
-    int16_t pick_j = -1;
     auto [chosen, is_stoch, log_prob] =
-        select_next_node(curr, curr_route, row_prob, visited, node_route,
-                         route_load, rng, pick_j, valid_mask);
+        select_next_node(curr, r_curr, row_prob, visited, node_route,
+                         route_loads, rng, pick_j, valid_mask);
 
     if (chosen == -1)
       break;
 
-    if (is_stoch) {
+    if (is_stoch)
       logp_sum += log_prob;
-    }
 
-    // Record trace - map depot nodes to 0 for Python compatibility
+    // --- Trace Logic ---
     int32_t trace_curr = (curr >= n) ? 0 : curr;
     int32_t trace_chosen = (chosen >= n) ? 0 : chosen;
-
     bool is_new = !is_source_edge(trace_curr, trace_chosen);
 
     trace.curr_nodes.push_back(trace_curr);
@@ -4271,182 +4270,165 @@ float MFACO_CVRP::sample_ant_direct_traced(
     trace.pick_j.push_back(pick_j);
     trace.valid_mask.push_back(valid_mask);
     trace.is_new_edge.push_back(is_new ? 1 : 0);
+    // -------------------
 
-    // Special case: chosen == 0 means "return to depot" - split the route
+    // Execute Transition
+    // 1. If v == 0: Split / End Route
     if (chosen == 0) {
-      // Can only split if curr is a valid customer in a route
-      if (curr <= 0 || curr >= n || curr_route < 0) {
-        // curr is depot or invalid, just skip
-        steps++;
-        continue;
-      }
+      int32_t next_c = next_node[curr];
 
-      // Check if this is actually a new edge
-      bool is_new_depot = !is_source_edge(curr, 0);
-      if (is_new_depot) {
-        ++new_edges;
-        if (!in_checklist[curr]) {
-          checklist.push_back(curr);
-          in_checklist[curr] = 1;
+      // If curr is already at end of route (next is depot), just step.
+      if (next_c >= n) {
+        // Simply traverse to depot
+        // Stats
+        bool is_cross = true; // depot edge is cross/boundary
+        if (is_cross)
+          new_edges_cross++; // Count moving to depot as perturbation?
+        if (!is_source_edge(curr >= n ? 0 : curr, 0)) {
+          new_edges_all++;
         }
-      }
 
-      // We need to split: curr becomes end of current route, rest becomes
-      // new route
-      int32_t depot_node = n + curr_route;
-      int32_t curr_next = next_node[curr];
-
-      // If curr is already the last customer (next is depot), skip
-      if (curr_next >= n) {
-        // Already at route end, just move to next route
+        curr = next_c;
         steps++;
         continue;
       }
 
-      // Create a new route from curr_next to original end
-      int32_t new_route = num_routes;
-      // Check if we've hit the max routes limit
-      if (new_route >= max_routes) {
-        // No more route slots, skip
-        steps++;
-        continue;
+      // Else: Split.
+      if (num_routes >= max_routes) {
+        break;
       }
-      ++num_routes;
-      int32_t new_depot_node = n + new_route;
 
-      // Find the end of curr_route (node before depot)
-      int32_t route_end = prev_node[depot_node];
+      // Insert new depot after curr
+      int32_t r_new = num_routes++;
+      int32_t new_depot = n + r_new;
+      int32_t old_depot = n + r_curr;
 
-      // Link curr to depot (end current route at curr)
-      next_node[curr] = depot_node;
-      prev_node[depot_node] = curr;
+      // Find end of old route (it connects to old_depot)
+      int32_t route_end = prev_node[old_depot];
 
-      // Link new route: depot_new -> curr_next -> ... -> route_end ->
-      // depot_new
-      next_node[new_depot_node] = curr_next;
-      prev_node[curr_next] = new_depot_node;
-      next_node[route_end] = new_depot_node;
-      prev_node[new_depot_node] = route_end;
+      // Relinking
+      next_node[curr] = old_depot;
+      prev_node[old_depot] = curr;
 
-      // Update route assignments and calculate loads
-      route_load.push_back(0);
-      int32_t walk = curr_next;
+      next_node[new_depot] = next_c;
+      prev_node[next_c] = new_depot;
+
+      next_node[route_end] = new_depot;
+      prev_node[new_depot] = route_end;
+
+      // Update Loads & Route IDs for the new segment
+      int64_t load_shift = 0;
+      int32_t w = next_c;
       int32_t walk_steps = 0;
-      while (walk != new_depot_node && walk < n) {
+      while (w != new_depot && w < n) {
         walk_steps++;
-        if (walk_steps > 2 * n) {
-          // Infinite loop protection
-          break;
+        if (walk_steps > 2 * n)
+          break; // safety
+        node_route[w] = r_new;
+        load_shift += demand_int[w];
+        w = next_node[w];
+      }
+      route_loads[r_curr] -= load_shift;
+      route_loads[r_new] = load_shift;
+
+      // Stats for split edge (curr, 0)
+      if (!is_source_edge(curr >= n ? 0 : curr, 0)) {
+        new_edges_all++;
+        if (!in_checklist[curr >= n ? 0 : curr]) {
+          checklist.push_back(curr >= n ? 0 : curr);
+          in_checklist[curr >= n ? 0 : curr] = 1;
         }
-        route_load[curr_route] -= demand_int[walk];
-        route_load[new_route] += demand_int[walk];
-        node_route[walk] = new_route;
-        walk = next_node[walk];
+        new_edges_cross++;
       }
 
-      // Move to the new depot to continue building
-      curr = new_depot_node;
+      curr = new_depot; // We are now at the start of new route
       steps++;
       continue;
     }
 
-    // Check if cross-route or involves depot
-    int32_t u_idx = (curr >= n) ? 0 : curr;
-    bool in_source = is_source_edge(u_idx, chosen);
-    bool is_cross = (u_idx == 0 || chosen == 0);
-    if (!is_cross) {
-      // If we are just traversing an existing edge on the graph, we might
-      // get a "pass" but if we are creating a new edge (topology change),
-      // we check cross-route.
-      if (source_node_route[u_idx] != source_node_route[chosen]) {
-        is_cross = true;
-      }
+    // 2. If v is Customer: Relocate v after curr
+    int32_t v = chosen;
+    int32_t r_v = node_route[v];
+
+    // Unlink v
+    int32_t prev_v = prev_node[v];
+    int32_t next_v = next_node[v];
+
+    if (prev_v == curr) {
+      // Already after curr? Just Traverse
+      visited[v] = 1;
+      visited_count++;
+      curr = v;
+      steps++;
+      continue;
     }
 
-    if (!in_source && is_cross) {
-      ++new_edges;
+    next_node[prev_v] = next_v;
+    prev_node[next_v] = prev_v;
+
+    // Insert v after curr
+    int32_t next_c = next_node[curr];
+    next_node[curr] = v;
+    prev_node[v] = curr;
+    next_node[v] = next_c;
+    prev_node[next_c] = v;
+
+    // Updates
+    if (r_curr != r_v) {
+      if (r_v != -1) {
+        route_loads[r_v] -= demand_int[v];
+      }
+      route_loads[r_curr] += demand_int[v];
+      node_route[v] = r_curr;
+    }
+
+    // Stats
+    visited[v] = 1;
+    visited_count++;
+
+    int32_t u_idx = (curr >= n) ? 0 : curr;
+    if (!is_source_edge(u_idx, v)) {
+      new_edges_all++;
       if (!in_checklist[u_idx]) {
         checklist.push_back(u_idx);
         in_checklist[u_idx] = 1;
       }
-      if (!in_checklist[chosen]) {
-        checklist.push_back(chosen);
-        in_checklist[chosen] = 1;
+      if (!in_checklist[v]) {
+        checklist.push_back(v);
+        in_checklist[v] = 1;
       }
-      int32_t chosen_pred = prev_node[chosen];
-      if (chosen_pred < n && chosen_pred > 0 && !in_checklist[chosen_pred]) {
-        checklist.push_back(chosen_pred);
-        in_checklist[chosen_pred] = 1;
-      }
+
+      // Cross check
+      bool is_cross = false;
+      if (u_idx == 0)
+        is_cross = true; // Depot->Node is boundary edge
+      else if (source_node_route_id[u_idx] != source_node_route_id[v])
+        is_cross = true;
+
+      if (is_cross)
+        new_edges_cross++;
     }
 
-    // Perform relocation
-    int32_t chosen_route = node_route[chosen];
-
-    int32_t cp = prev_node[chosen];
-    int32_t cn = next_node[chosen];
-    next_node[cp] = cn;
-    prev_node[cn] = cp;
-
-    if (chosen_route >= 0) {
-      route_load[chosen_route] -= demand_int[chosen];
-    }
-
-    int32_t curr_next;
-    if (curr == 0) {
-      int best_r = -1;
-      int64_t best_load = capacity_int + 1;
-      for (int rr = 0; rr < num_routes; ++rr) {
-        if (route_load[rr] + demand_int[chosen] <= capacity_int) {
-          if (route_load[rr] < best_load) {
-            best_load = route_load[rr];
-            best_r = rr;
-          }
-        }
-      }
-      if (best_r < 0)
-        best_r = 0;
-      int32_t depot_node = n + best_r;
-      curr_next = next_node[depot_node];
-      next_node[depot_node] = chosen;
-      prev_node[chosen] = depot_node;
-      next_node[chosen] = curr_next;
-      prev_node[curr_next] = chosen;
-      node_route[chosen] = best_r;
-      route_load[best_r] += demand_int[chosen];
-    } else {
-      curr_next = next_node[curr];
-      next_node[curr] = chosen;
-      prev_node[chosen] = curr;
-      next_node[chosen] = curr_next;
-      prev_node[curr_next] = chosen;
-
-      if (curr_route >= 0) {
-        node_route[chosen] = curr_route;
-        route_load[curr_route] += demand_int[chosen];
-      }
-    }
-
-    visited[chosen] = 1;
-    ++visited_count;
-    ++steps;
-    curr = chosen;
+    curr = v;
+    steps++;
   }
 
-  new_edges_out = new_edges;
+  new_edges_out = new_edges_cross;
 
-  // Reconstruct route
+  // 5. Flatten Routes
   route_out.clear();
   route_out.reserve(m + num_routes + 1);
+
   for (int r = 0; r < num_routes; ++r) {
-    int32_t depot_node = n + r;
-    int32_t c = next_node[depot_node];
-    if (c >= n)
-      continue;
+    int32_t d = n + r;
+    int32_t w = next_node[d];
+    if (w >= n)
+      continue; // Empty
+
     route_out.push_back(0);
-    while (c < n) {
-      route_out.push_back(c);
-      c = next_node[c];
+    while (w < n) {
+      route_out.push_back(w);
+      w = next_node[w];
     }
   }
   if (!route_out.empty() && route_out.back() != 0) {
@@ -4460,21 +4442,24 @@ float MFACO_CVRP::sample_ant_direct_traced(
     cost_raw_out += dist(route_out[i], route_out[i + 1]);
   }
 
-  float cost = cost_raw_out;
-
-  // Apply focused local search
-  intra_route_ls(route_out, checklist);
-
-  std::vector<int32_t> positions(n, -1);
-  inter_route_ls_optimized(route_out, positions, checklist, in_checklist);
-  intra_route_ls(route_out, checklist);
-
-  cost = 0.0f;
-  for (size_t i = 0; i + 1 < route_out.size(); ++i) {
-    cost += dist(route_out[i], route_out[i + 1]);
+  // 6. Apply Local Search
+  if (use_local_search && !checklist.empty()) {
+    // Intra-Route LS (2-opt)
+    intra_route_ls(route_out, checklist);
+    // Inter-Route LS
+    std::vector<int32_t> pos_ls(n, -1);
+    inter_route_ls_optimized(route_out, pos_ls, checklist, in_checklist);
+    // Intra-Route LS (2-opt)
+    intra_route_ls(route_out, checklist);
   }
 
-  return cost;
+  // Calculate final cost
+  float final_cost = 0.0f;
+  for (size_t i = 0; i + 1 < route_out.size(); ++i) {
+    final_cost += dist(route_out[i], route_out[i + 1]);
+  }
+
+  return final_cost;
 }
 
 } // namespace mfaco
