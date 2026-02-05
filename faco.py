@@ -687,9 +687,16 @@ class MFACO_CVRP:
         if prior is not None:
             prior = _as_numpy_f32(prior)
         
-        costs, routes, decoded, logps, traces, costs_raw, routes_raw, new_edges_count, survival = self._cpp.sample(
-            require_prob, prior, parallel_traced, return_decoded, int(route_mode)
-        )
+        try:
+            costs, routes, decoded, logps, traces, costs_raw, routes_raw, new_edges_count, survival = self._cpp.sample(
+                require_prob, prior, parallel_traced, return_decoded, int(route_mode)
+            )
+        except TypeError:
+            # Backward compatibility: older faco_opt builds expose
+            # sample(require_prob, prior, parallel_traced, return_decoded) only.
+            costs, routes, decoded, logps, traces, costs_raw, routes_raw, new_edges_count, survival = self._cpp.sample(
+                require_prob, prior, parallel_traced, return_decoded
+            )
 
         if isinstance(survival, np.ndarray):
             survival = torch.from_numpy(survival).to(self.device)
