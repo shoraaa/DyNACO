@@ -590,6 +590,17 @@ def train_instance_ppo(
     warmup_steps = compute_warmup_steps(args, use_train=True)
 
     for outer in tqdm(range(args.H), desc="Outer", leave=False):
+        do_profile = bool(getattr(args, "profile_outer", False) and outer < int(getattr(args, "profile_outers", 1)))
+        prof = {
+            "t_sample": 0.0,
+            "t_tau": 0.0,
+            "t_replay_old": 0.0,
+            "t_replay_new": 0.0,
+            "t_logprob_old": 0.0,
+            "t_logprob_new": 0.0,
+            "trace_steps": None,
+        }
+
         t0 = time.time()
         pyg_data = build_fn(aco, *pyg_args, dynamic=not args.no_dynamic_feats)
         
@@ -626,7 +637,11 @@ def train_instance_ppo(
                 current_prior = prior_old * factor
 
             # Sample from ACO
+            if do_profile:
+                ts0 = time.perf_counter()
             res = aco.sample(require_prob=True, prior=current_prior, parallel_traced=args.parallel_traced)
+            if do_profile:
+                prof["t_sample"] += time.perf_counter() - ts0
             costs, flats, _, _, traces, costs_raw, flats_raw, new_edges, survival = res
             
             if survival is not None:
@@ -638,15 +653,32 @@ def train_instance_ppo(
             else:
                 costs_raw_t = costs_t
             
+            if do_profile:
+                tt0 = time.perf_counter()
             tau_nk = aco.tau_nk_torch().detach()
+            if do_profile:
+                prof["t_tau"] += time.perf_counter() - tt0
+
+            if do_profile and prof["trace_steps"] is None:
+                try:
+                    prof["trace_steps"] = int(len(traces.curr_nodes))
+                except Exception:
+                    prof["trace_steps"] = None
 
             # Compute old log probabilities
             with torch.no_grad():
+                if do_profile:
+                    tlpo0 = time.perf_counter()
                 log_prob_old = log_prob_sparse_from_tau_eta_prior(
                     tau_nk, eta_nk, current_prior,
                     alpha=args.alpha, beta=args.beta, eps=EPS
                 )
+                if do_profile:
+                    prof["t_logprob_old"] += time.perf_counter() - tlpo0
+                    tr0 = time.perf_counter()
                 logp_old, ndec = replay_logp_from_cpp_batch_trace(traces, log_prob_old)
+                if do_profile:
+                    prof["t_replay_old"] += time.perf_counter() - tr0
                 ndec_f = ndec.to(torch.float32).clamp_min(1.0)
                 logp_old = (logp_old / ndec_f).detach()
 
@@ -710,11 +742,18 @@ def train_instance_ppo(
                 costs_t = costs_list[inner]
                 logp_old = logp_old_list[inner]
                 
+                if do_profile:
+                    tlpn0 = time.perf_counter()
                 log_prob_new = log_prob_sparse_from_tau_eta_prior(
                     tau_nk, eta_nk, current_prior,
                     alpha=args.alpha, beta=args.beta, eps=EPS
                 )
+                if do_profile:
+                    prof["t_logprob_new"] += time.perf_counter() - tlpn0
+                    trn0 = time.perf_counter()
                 logp_new, ndec_new = replay_logp_from_cpp_batch_trace(traces, log_prob_new)
+                if do_profile:
+                    prof["t_replay_new"] += time.perf_counter() - trn0
                 ndec_f = ndec_new.to(torch.float32).clamp_min(1.0)
                 logp_new = logp_new / ndec_f
                 
@@ -763,6 +802,25 @@ def train_instance_ppo(
             metrics.add("loss", total_loss_val_epoch / args.mini_H)
             metrics.add("approx_kl", np.mean(all_param_kl))
             metrics.add("clip_frac", np.mean(all_clip_frac))
+
+        if do_profile:
+            trace_steps_str = str(prof["trace_steps"]) if prof["trace_steps"] is not None else "?"
+            print(
+                "[profile] outer={} mini_H={} ppo_epochs={} parallel_traced={} trace_steps={} | "
+                "sample={:.3f}s tau={:.3f}s logprob_old={:.3f}s replay_old={:.3f}s logprob_new={:.3f}s replay_new={:.3f}s".format(
+                    outer,
+                    int(args.mini_H),
+                    int(args.ppo_epochs),
+                    bool(getattr(args, "parallel_traced", True)),
+                    trace_steps_str,
+                    prof["t_sample"],
+                    prof["t_tau"],
+                    prof["t_logprob_old"],
+                    prof["t_replay_old"],
+                    prof["t_logprob_new"],
+                    prof["t_replay_new"],
+                )
+            )
 
     # Finalize metrics
     out_metrics = metrics.get_all_means()
@@ -1126,6 +1184,19 @@ def parse_args() -> argparse.Namespace:
         help="Force single-thread traced sampling (slower; legacy behavior)",
     )
     parser.set_defaults(parallel_traced=True)
+
+    # Profiling / performance debugging
+    parser.add_argument(
+        "--profile_outer",
+        action="store_true",
+        help="Print per-outer timing breakdown (sampling/replay/etc).",
+    )
+    parser.add_argument(
+        "--profile_outers",
+        type=int,
+        default=1,
+        help="How many outer iterations to profile (default: 1).",
+    )
 
     # Optimization
     parser.add_argument("--grad_checkpoint", action="store_true",
