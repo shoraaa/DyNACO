@@ -1629,21 +1629,14 @@ void MFACO_CVRP::compute_probmat(const float *prior_ptr,
 
 void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
                         SampleResult &result, bool parallel_traced) {
-  auto route_cost_euclid = [&](const std::vector<int32_t> &route) -> float {
-    float c = 0.0f;
-    if (route.size() < 2)
-      return c;
-    for (size_t i = 0; i + 1 < route.size(); ++i)
-      c += dist(route[i], route[i + 1]);
-    return c;
-  };
-
   result.clear();
   result.costs.resize(n_ants);
   // CVRP solutions are represented as full depot-separated routes with
   // multiple 0s (e.g., 0 ... 0 ... 0).
   result.routes.resize(n_ants);
-  result.decoded_routes.resize(n_ants);
+
+  // decoded_routes is legacy-only; bindings use `routes` directly.
+  // Keep it empty to avoid extra copies/allocations.
 
   if (require_prob) {
     result.costs_raw.resize(n_ants);
@@ -1684,8 +1677,6 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
       checklist.reserve(m);
 
       for (int32_t a = 0; a < n_ants; ++a) {
-        // Trace construction into a decoded CVRP route (with depot zeros).
-        result.decoded_routes[a].clear();
         std::vector<int32_t> route_raw_unused;
 
         MFACOTrace trace;
@@ -1695,24 +1686,13 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
         int32_t mne_out = 0;
 
         float surv_out = 0.0f;
-        (void)sample_ant_direct_traced(
-            probmat.data(), start_nodes[a], result.decoded_routes[a],
-            route_raw_unused, result.costs_raw[a], mne_out, checklist, trace,
-            rng_, logp_sum, surv_out, prior_ptr);
+        result.costs[a] = sample_ant_direct_traced(
+            probmat.data(), start_nodes[a], result.routes[a], route_raw_unused,
+            result.costs_raw[a], mne_out, checklist, trace, rng_, logp_sum,
+            surv_out, prior_ptr);
         result.new_edges_count[a] = mne_out;
         result.edge_survival[a] = surv_out;
         result.logps[a] = logp_sum;
-
-        // Canonicalize decoded route (some variants output a permutation only).
-        if (result.decoded_routes[a].empty() ||
-            result.decoded_routes[a].front() != 0)
-          result.decoded_routes[a].insert(result.decoded_routes[a].begin(), 0);
-        if (result.decoded_routes[a].back() != 0)
-          result.decoded_routes[a].push_back(0);
-
-        // Store the full depot-separated route and compute true CVRP cost.
-        result.routes[a] = result.decoded_routes[a];
-        result.costs[a] = route_cost_euclid(result.routes[a]);
 
         result.traces.start_nodes.push_back(trace.start_node);
         for (size_t i = 0; i < trace.curr_nodes.size(); ++i) {
@@ -1746,7 +1726,7 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
           int32_t mne_out = 0;
 
           float surv_out = 0.0f;
-          (void)sample_ant_direct_traced(
+          result.costs[a] = sample_ant_direct_traced(
               probmat.data(), start_nodes[a], result.routes[a],
               result.routes_raw[a], result.costs_raw[a], mne_out, checklist,
               trace, rng_local, logp_sum, surv_out, prior_ptr);
@@ -1754,23 +1734,6 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
           result.new_edges_count[a] = mne_out;
           result.edge_survival[a] = surv_out;
           result.logps[a] = logp_sum;
-
-          // Canonicalize route format to depot-separated representation.
-          if (result.routes[a].empty() || result.routes[a].front() != 0)
-            result.routes[a].insert(result.routes[a].begin(), 0);
-          if (result.routes[a].back() != 0)
-            result.routes[a].push_back(0);
-
-          if (!result.routes_raw[a].empty()) {
-            if (result.routes_raw[a].front() != 0)
-              result.routes_raw[a].insert(result.routes_raw[a].begin(), 0);
-            if (result.routes_raw[a].back() != 0)
-              result.routes_raw[a].push_back(0);
-          }
-
-          // Keep decoded_routes in sync for legacy return_decoded.
-          result.decoded_routes[a] = result.routes[a];
-          result.costs[a] = route_cost_euclid(result.routes[a]);
         }
       }
 
