@@ -151,6 +151,11 @@ def main():
     parser.add_argument("--log", action="store_true", help="Enable logging to file (auto-named)")
     parser.add_argument("--no_baseline", action="store_true", help="Skip pure MFACO baseline calculation")
     parser.add_argument("--rl_data", action="store_true", help="Load TSPLIB/CVRPLIB data instead of standard test set")
+    
+    # Selective method execution
+    parser.add_argument("--run_model_no_anneal", action="store_true", help="Run Model(no_anneal) method")
+    parser.add_argument("--run_mix_no_anneal", action="store_true", help="Run Mix(no_anneal) method")
+    parser.add_argument("--no_model", action="store_true", help="Skip model loading and run only baseline methods")
 
     # Per-iteration logging (H * mini_H rows per run)
     parser.add_argument("--iter_log", action="store_true", help="Log mean/best at every mini-iteration to CSV")
@@ -160,7 +165,29 @@ def main():
 
     # Args setup
     ckpt = None
-    if args.checkpoint != "none":
+    
+    # Auto-load checkpoint if not provided and --no_model not set
+    if args.checkpoint == "none" and not args.no_model:
+        # Build expected checkpoint filename based on current args
+        # Pattern: {problem}_n{n_node}_k{k_sparse}_ants{n_ants}_H{H}_miniH{mini_H}_rho{rho}_mne{min_new_edges}_ppo_lr{lr}_best.pt
+        import glob
+        pretrained_dir = f"pretrained/{args.problem}/n{args.n_node}"
+        if os.path.exists(pretrained_dir):
+            # Try to find a matching checkpoint
+            pattern = f"{args.problem}_n{args.n_node}_*_best.pt"
+            matches = glob.glob(os.path.join(pretrained_dir, pattern))
+            if matches:
+                # Prefer exact match, otherwise use first match
+                args.checkpoint = matches[0]
+                print(f"Auto-detected checkpoint: {args.checkpoint}")
+            else:
+                print(f"Warning: No checkpoints found in {pretrained_dir}, running without model")
+                args.no_model = True
+        else:
+            print(f"Warning: Pretrained directory {pretrained_dir} not found, running without model")
+            args.no_model = True
+    
+    if args.checkpoint != "none" and not args.no_model:
         print(f"Loading {args.checkpoint}...")
         ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
         print("Checkpoint Metadata:")
@@ -418,7 +445,7 @@ def main():
 
     # Model
     model = None
-    if ckpt is not None:
+    if ckpt is not None and not args.no_model:
         state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
         
         # Override args from config logic omitted for brevity, similar to original but using unified flags
@@ -613,149 +640,164 @@ def main():
         mix_best = None
         mix_best_na = None
         if model:
-             # Always report both anneal ON and OFF variants
-             args_anneal = _clone_args(args, no_anneal=False)
-             args_noanneal = _clone_args(args, no_anneal=True)
+              # Determine which methods to run based on problem type and flags
+              # Default: Mix(anneal) for TSP, Model(anneal) for CVRP
+              run_model_anneal = (args.problem == 'cvrp')  # Default for CVRP
+              run_model_no_anneal = args.run_model_no_anneal
+              run_mix_anneal = (args.problem == 'tsp' and args.warmup)  # Default for TSP
+              run_mix_no_anneal = args.run_mix_no_anneal and args.warmup
+              
+              args_anneal = _clone_args(args, no_anneal=False)
+              args_noanneal = _clone_args(args, no_anneal=True)
 
-             # Model (anneal ON) - keep metrics/timings breakdown from this one
-             tm0 = time.time()
-             mod_ret = infer_instance(
-                 args.problem, MFACO, build_fn, model, item,
-                 args.k_sparse, args.n_ants, not args.no_dynamic_feats,
-                 args_anneal,
-                 use_heuristic_only=False,
-                 collect_metrics=args.visualize,
-                 metrics_every_step=args.visualize,
-             )
-             tm1 = time.time()
-             _, model_best, mod_timings, mod_extra = mod_ret
-             model_m = mod_extra.get("metrics")
-             model_iter_stats = mod_extra.get("iter_stats")
-             results["model_cost"].append(model_best)
-             results["model_time"].append(tm1 - tm0)
+              # Model (anneal ON)
+              if run_model_anneal:
+                  tm0 = time.time()
+                  mod_ret = infer_instance(
+                      args.problem, MFACO, build_fn, model, item,
+                      args.k_sparse, args.n_ants, not args.no_dynamic_feats,
+                      args_anneal,
+                      use_heuristic_only=False,
+                      collect_metrics=args.visualize,
+                      metrics_every_step=args.visualize,
+                  )
+                  tm1 = time.time()
+                  _, model_best, mod_timings, mod_extra = mod_ret
+                  model_m = mod_extra.get("metrics")
+                  model_iter_stats = mod_extra.get("iter_stats")
+                  results["model_cost"].append(model_best)
+                  results["model_time"].append(tm1 - tm0)
 
-             if args.iter_log and iter_csv_writer is not None and model_iter_stats is not None:
-                 for st in model_iter_stats:
-                     iter_csv_writer.writerow({
-                         "idx": i,
-                         "name": name,
-                         "method": "Model",
-                         "anneal": "on",
-                         **st,
-                     })
-             if args.iter_print and model_iter_stats is not None:
-                 for st in model_iter_stats:
-                     print(f"{name} Model(anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+                  if args.iter_log and iter_csv_writer is not None and model_iter_stats is not None:
+                      for st in model_iter_stats:
+                          iter_csv_writer.writerow({
+                              "idx": i,
+                              "name": name,
+                              "method": "Model",
+                              "anneal": "on",
+                              **st,
+                          })
+                  if args.iter_print and model_iter_stats is not None:
+                      for st in model_iter_stats:
+                          print(f"{name} Model(anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+                  
+                  if mod_timings:
+                      if "time_neural" in mod_timings: results["model_time_breakdown"]["neural"].append(mod_timings["time_neural"])
+                      if "time_sampling" in mod_timings: results["model_time_breakdown"]["sampling"].append(mod_timings["time_sampling"])
+                      if "time_ls" in mod_timings: results["model_time_breakdown"]["ls"].append(mod_timings["time_ls"])
+                      if "time_update" in mod_timings: results["model_time_breakdown"]["update"].append(mod_timings["time_update"])
+                  
+                  if opt_cost is not None and opt_cost > 1e-6:
+                      gap = (model_best - opt_cost) / opt_cost
+                      results["model_gap"].append(gap)
 
-             # Model (anneal OFF) - no extra metrics
-             tm0 = time.time()
-             mod_ret_na = infer_instance(
-                 args.problem, MFACO, build_fn, model, item,
-                 args.k_sparse, args.n_ants, not args.no_dynamic_feats,
-                 args_noanneal,
-                 use_heuristic_only=False,
-                 collect_metrics=False,
-                 metrics_every_step=False,
-             )
-             tm1 = time.time()
-             _, model_best_na, _, mod_na_extra = mod_ret_na
-             model_na_iter_stats = mod_na_extra.get("iter_stats")
-             results["model_cost_no_anneal"].append(model_best_na)
-             results["model_time_no_anneal"].append(tm1 - tm0)
+              # Model (anneal OFF)
+              if run_model_no_anneal:
+                  tm0 = time.time()
+                  mod_ret_na = infer_instance(
+                      args.problem, MFACO, build_fn, model, item,
+                      args.k_sparse, args.n_ants, not args.no_dynamic_feats,
+                      args_noanneal,
+                      use_heuristic_only=False,
+                      collect_metrics=False,
+                      metrics_every_step=False,
+                  )
+                  tm1 = time.time()
+                  _, model_best_na, _, mod_na_extra = mod_ret_na
+                  model_na_iter_stats = mod_na_extra.get("iter_stats")
+                  results["model_cost_no_anneal"].append(model_best_na)
+                  results["model_time_no_anneal"].append(tm1 - tm0)
 
-             if args.iter_log and iter_csv_writer is not None and model_na_iter_stats is not None:
-                 for st in model_na_iter_stats:
-                     iter_csv_writer.writerow({
-                         "idx": i,
-                         "name": name,
-                         "method": "Model",
-                         "anneal": "off",
-                         **st,
-                     })
-             if args.iter_print and model_na_iter_stats is not None:
-                 for st in model_na_iter_stats:
-                     print(f"{name} Model(no_anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
-             
-             if mod_timings:
-                 if "time_neural" in mod_timings: results["model_time_breakdown"]["neural"].append(mod_timings["time_neural"])
-                 if "time_sampling" in mod_timings: results["model_time_breakdown"]["sampling"].append(mod_timings["time_sampling"])
-                 if "time_ls" in mod_timings: results["model_time_breakdown"]["ls"].append(mod_timings["time_ls"])
-                 if "time_update" in mod_timings: results["model_time_breakdown"]["update"].append(mod_timings["time_update"])
-             
-             if opt_cost is not None and opt_cost > 1e-6:
-                 gap = (model_best - opt_cost) / opt_cost
-                 results["model_gap"].append(gap)
-                 gap_na = (model_best_na - opt_cost) / opt_cost
-                 results["model_gap_no_anneal"].append(gap_na)
-             
-             if args.warmup:
-                 inject_step = int(args.H * args.warmup_ratio)
-                 # Mix (anneal ON) - keep metrics
-                 tmi0 = time.time()
-                 mix_ret = infer_instance(
-                     args.problem, MFACO, build_fn, model, item,
-                     args.k_sparse, args.n_ants, not args.no_dynamic_feats,
-                     args_anneal,
-                     use_heuristic_only=False,
-                     collect_metrics=args.visualize,
-                     metrics_every_step=args.visualize,
-                     inject_step=inject_step,
-                 )
-                 tmi1 = time.time()
-                 _, mix_best, _, mix_extra = mix_ret
-                 mix_m = mix_extra.get("metrics")
-                 mix_iter_stats = mix_extra.get("iter_stats")
-                 results["mix_cost"].append(mix_best)
-                 results["mix_time"].append(tmi1 - tmi0)
+                  if args.iter_log and iter_csv_writer is not None and model_na_iter_stats is not None:
+                      for st in model_na_iter_stats:
+                          iter_csv_writer.writerow({
+                              "idx": i,
+                              "name": name,
+                              "method": "Model",
+                              "anneal": "off",
+                              **st,
+                          })
+                  if args.iter_print and model_na_iter_stats is not None:
+                      for st in model_na_iter_stats:
+                          print(f"{name} Model(no_anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+                  
+                  if opt_cost is not None and opt_cost > 1e-6:
+                      gap_na = (model_best_na - opt_cost) / opt_cost
+                      results["model_gap_no_anneal"].append(gap_na)
+                          # Mix methods (only if warmup is enabled)
+              if args.warmup:
+                  inject_step = int(args.H * args.warmup_ratio)
+                  
+                  # Mix (anneal ON)
+                  if run_mix_anneal:
+                      tmi0 = time.time()
+                      mix_ret = infer_instance(
+                          args.problem, MFACO, build_fn, model, item,
+                          args.k_sparse, args.n_ants, not args.no_dynamic_feats,
+                          args_anneal,
+                          use_heuristic_only=False,
+                          collect_metrics=args.visualize,
+                          metrics_every_step=args.visualize,
+                          inject_step=inject_step,
+                      )
+                      tmi1 = time.time()
+                      _, mix_best, _, mix_extra = mix_ret
+                      mix_m = mix_extra.get("metrics")
+                      mix_iter_stats = mix_extra.get("iter_stats")
+                      results["mix_cost"].append(mix_best)
+                      results["mix_time"].append(tmi1 - tmi0)
 
-                 if args.iter_log and iter_csv_writer is not None and mix_iter_stats is not None:
-                     for st in mix_iter_stats:
-                         iter_csv_writer.writerow({
-                             "idx": i,
-                             "name": name,
-                             "method": "Mix",
-                             "anneal": "on",
-                             **st,
-                         })
-                 if args.iter_print and mix_iter_stats is not None:
-                     for st in mix_iter_stats:
-                         print(f"{name} Mix(anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+                      if args.iter_log and iter_csv_writer is not None and mix_iter_stats is not None:
+                          for st in mix_iter_stats:
+                              iter_csv_writer.writerow({
+                                  "idx": i,
+                                  "name": name,
+                                  "method": "Mix",
+                                  "anneal": "on",
+                                  **st,
+                              })
+                      if args.iter_print and mix_iter_stats is not None:
+                          for st in mix_iter_stats:
+                              print(f"{name} Mix(anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+                      
+                      if opt_cost is not None and opt_cost > 1e-6:
+                          gap = (mix_best - opt_cost) / opt_cost
+                          results["mix_gap"].append(gap)
 
-                 # Mix (anneal OFF) - no extra metrics
-                 tmi0 = time.time()
-                 mix_ret_na = infer_instance(
-                     args.problem, MFACO, build_fn, model, item,
-                     args.k_sparse, args.n_ants, not args.no_dynamic_feats,
-                     args_noanneal,
-                     use_heuristic_only=False,
-                     collect_metrics=False,
-                     metrics_every_step=False,
-                     inject_step=inject_step,
-                 )
-                 tmi1 = time.time()
-                 _, mix_best_na, _, mix_na_extra = mix_ret_na
-                 mix_na_iter_stats = mix_na_extra.get("iter_stats")
-                 results["mix_cost_no_anneal"].append(mix_best_na)
-                 results["mix_time_no_anneal"].append(tmi1 - tmi0)
+                  # Mix (anneal OFF)
+                  if run_mix_no_anneal:
+                      tmi0 = time.time()
+                      mix_ret_na = infer_instance(
+                          args.problem, MFACO, build_fn, model, item,
+                          args.k_sparse, args.n_ants, not args.no_dynamic_feats,
+                          args_noanneal,
+                          use_heuristic_only=False,
+                          collect_metrics=False,
+                          metrics_every_step=False,
+                          inject_step=inject_step,
+                      )
+                      tmi1 = time.time()
+                      _, mix_best_na, _, mix_na_extra = mix_ret_na
+                      mix_na_iter_stats = mix_na_extra.get("iter_stats")
+                      results["mix_cost_no_anneal"].append(mix_best_na)
+                      results["mix_time_no_anneal"].append(tmi1 - tmi0)
 
-                 if args.iter_log and iter_csv_writer is not None and mix_na_iter_stats is not None:
-                     for st in mix_na_iter_stats:
-                         iter_csv_writer.writerow({
-                             "idx": i,
-                             "name": name,
-                             "method": "Mix",
-                             "anneal": "off",
-                             **st,
-                         })
-                 if args.iter_print and mix_na_iter_stats is not None:
-                     for st in mix_na_iter_stats:
-                         print(f"{name} Mix(no_anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
-                 
-                 if opt_cost is not None and opt_cost > 1e-6:
-                     gap = (mix_best - opt_cost) / opt_cost
-                     results["mix_gap"].append(gap)
-                     gap_na = (mix_best_na - opt_cost) / opt_cost
-                     results["mix_gap_no_anneal"].append(gap_na)
+                      if args.iter_log and iter_csv_writer is not None and mix_na_iter_stats is not None:
+                          for st in mix_na_iter_stats:
+                              iter_csv_writer.writerow({
+                                  "idx": i,
+                                  "name": name,
+                                  "method": "Mix",
+                                  "anneal": "off",
+                                  **st,
+                              })
+                      if args.iter_print and mix_na_iter_stats is not None:
+                          for st in mix_na_iter_stats:
+                              print(f"{name} Mix(no_anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+                      
+                      if opt_cost is not None and opt_cost > 1e-6:
+                          gap_na = (mix_best_na - opt_cost) / opt_cost
+                          results["mix_gap_no_anneal"].append(gap_na)
         
         if args.visualize:
             if i == 0:
@@ -806,8 +848,8 @@ def main():
                  if model and model_m and "snapshots" in model_m: sample_snapshots["model"] = model_m["snapshots"]
                  if model and args.warmup and mix_m and "snapshots" in mix_m: sample_snapshots["mix"] = mix_m["snapshots"]
 
-        # Output cost for each test if loading tsplib/dataset
-        if args.dataset:
+        # Output cost for each instance
+        if True:  # Always print per-instance results
              msg = f"{name}:"
              if opt_cost is not None: msg += f" Opt={opt_cost:.4f}"
 
@@ -927,19 +969,19 @@ def main():
             print(f"Base Gap: {np.mean(results['base_gap']) * 100:.4f}%")
         
     # Model
-    if model:
+    if model and results.get("model_cost") and len(results["model_cost"]) > 0:
         model_cost_mean = np.mean(results["model_cost"])
-        model_cost_na_mean = np.mean(results["model_cost_no_anneal"]) if results["model_cost_no_anneal"] else float('nan')
+        model_cost_na_mean = np.mean(results["model_cost_no_anneal"]) if results.get("model_cost_no_anneal") and len(results["model_cost_no_anneal"]) > 0 else float('nan')
         model_time_mean = np.mean(results["model_time"])
         model_time_total = np.sum(results["model_time"])
-        model_time_na_mean = np.mean(results["model_time_no_anneal"]) if results["model_time_no_anneal"] else float('nan')
-        model_time_na_total = np.sum(results["model_time_no_anneal"]) if results["model_time_no_anneal"] else float('nan')
+        model_time_na_mean = np.mean(results["model_time_no_anneal"]) if results.get("model_time_no_anneal") and len(results["model_time_no_anneal"]) > 0 else float('nan')
+        model_time_na_total = np.sum(results["model_time_no_anneal"]) if results.get("model_time_no_anneal") and len(results["model_time_no_anneal"]) > 0 else float('nan')
         print(f"Model Cost (anneal): {model_cost_mean:.4f}, Time: {model_time_mean:.4f}s, Total Time: {model_time_total:.4f}s")
-        if results["model_cost_no_anneal"]:
+        if results.get("model_cost_no_anneal") and len(results["model_cost_no_anneal"]) > 0:
             print(f"Model Cost (no_anneal): {model_cost_na_mean:.4f}, Time: {model_time_na_mean:.4f}s, Total Time: {model_time_na_total:.4f}s")
-        if results["model_gap"]:
+        if results.get("model_gap") and len(results["model_gap"]) > 0:
             print(f"Model Gap (anneal): {np.mean(results['model_gap']) * 100:.4f}%")
-        if results["model_gap_no_anneal"]:
+        if results.get("model_gap_no_anneal") and len(results["model_gap_no_anneal"]) > 0:
             print(f"Model Gap (no_anneal): {np.mean(results['model_gap_no_anneal']) * 100:.4f}%")
         
         # Timing Breakdown
@@ -953,32 +995,32 @@ def main():
              if t_total_calc > 1e-9:
                  print(f"Timing Breakdown: NN: {t_nn/t_total_calc*100:.1f}%, Sampling: {t_samp/t_total_calc*100:.1f}%, LS: {t_ls/t_total_calc*100:.1f}%, Update: {t_upd/t_total_calc*100:.1f}%")
             
-        if args.warmup:
-             mix_cost_mean = np.mean(results["mix_cost"])
-             mix_cost_na_mean = np.mean(results["mix_cost_no_anneal"]) if results["mix_cost_no_anneal"] else float('nan')
-             mix_time_mean = np.mean(results["mix_time"])
-             mix_time_total = np.sum(results["mix_time"])
-             mix_time_na_mean = np.mean(results["mix_time_no_anneal"]) if results["mix_time_no_anneal"] else float('nan')
-             mix_time_na_total = np.sum(results["mix_time_no_anneal"]) if results["mix_time_no_anneal"] else float('nan')
-             print(f"Mix Cost (anneal): {mix_cost_mean:.4f}, Time: {mix_time_mean:.4f}s, Total Time: {mix_time_total:.4f}s")
-             if results["mix_cost_no_anneal"]:
-                 print(f"Mix Cost (no_anneal): {mix_cost_na_mean:.4f}, Time: {mix_time_na_mean:.4f}s, Total Time: {mix_time_na_total:.4f}s")
-             if results["mix_gap"]:
-                 print(f"Mix Gap (anneal): {np.mean(results['mix_gap']) * 100:.4f}%")
-             if results["mix_gap_no_anneal"]:
-                 print(f"Mix Gap (no_anneal): {np.mean(results['mix_gap_no_anneal']) * 100:.4f}%")
+    if model and args.warmup and results.get("mix_cost") and len(results["mix_cost"]) > 0:
+         mix_cost_mean = np.mean(results["mix_cost"])
+         mix_cost_na_mean = np.mean(results["mix_cost_no_anneal"]) if results.get("mix_cost_no_anneal") and len(results["mix_cost_no_anneal"]) > 0 else float('nan')
+         mix_time_mean = np.mean(results["mix_time"])
+         mix_time_total = np.sum(results["mix_time"])
+         mix_time_na_mean = np.mean(results["mix_time_no_anneal"]) if results.get("mix_time_no_anneal") and len(results["mix_time_no_anneal"]) > 0 else float('nan')
+         mix_time_na_total = np.sum(results["mix_time_no_anneal"]) if results.get("mix_time_no_anneal") and len(results["mix_time_no_anneal"]) > 0 else float('nan')
+         print(f"Mix Cost (anneal): {mix_cost_mean:.4f}, Time: {mix_time_mean:.4f}s, Total Time: {mix_time_total:.4f}s")
+         if results.get("mix_cost_no_anneal") and len(results["mix_cost_no_anneal"]) > 0:
+             print(f"Mix Cost (no_anneal): {mix_cost_na_mean:.4f}, Time: {mix_time_na_mean:.4f}s, Total Time: {mix_time_na_total:.4f}s")
+         if results.get("mix_gap") and len(results["mix_gap"]) > 0:
+             print(f"Mix Gap (anneal): {np.mean(results['mix_gap']) * 100:.4f}%")
+         if results.get("mix_gap_no_anneal") and len(results["mix_gap_no_anneal"]) > 0:
+             print(f"Mix Gap (no_anneal): {np.mean(results['mix_gap_no_anneal']) * 100:.4f}%")
 
     if baseline_values is not None:
          print(f"Baseline Cost: {baseline_values.mean():.4f}")
          # Gap to baseline
-         if not args.no_baseline and results["base_cost"]:
+         if not args.no_baseline and results.get("base_cost") and len(results["base_cost"]) > 0:
              base_gap_bl = (np.mean(results["base_cost"]) - baseline_values.mean()) / baseline_values.mean()
              print(f"Base Gap to Baseline: {base_gap_bl * 100:.4f}%")
          
-         if model:
+         if model and results.get("model_cost") and len(results["model_cost"]) > 0:
              mod_gap_bl = (np.mean(results["model_cost"]) - baseline_values.mean()) / baseline_values.mean()
              print(f"Model Gap to Baseline (anneal): {mod_gap_bl * 100:.4f}%")
-             if results["model_cost_no_anneal"]:
+             if results.get("model_cost_no_anneal") and len(results["model_cost_no_anneal"]) > 0:
                  mod_gap_bl_na = (np.mean(results["model_cost_no_anneal"]) - baseline_values.mean()) / baseline_values.mean()
                  print(f"Model Gap to Baseline (no_anneal): {mod_gap_bl_na * 100:.4f}%")
              
@@ -997,14 +1039,14 @@ def main():
     if opt_costs_summary:
         opt_mean, opt_std = _mean_std(opt_costs_summary)
         summary_rows.append([
-            "Opt", _fmt(opt_mean), _fmt(opt_std), "0.00", "opt", "-", ""
+            "Opt", _fmt(opt_mean), _fmt(opt_std), "0.00", "0.00", "opt", "-", ""
         ])
 
     # Baseline solver row (if available)
     if baseline_values is not None:
         bl_mean, bl_std = _mean_std(baseline_values)
         summary_rows.append([
-            "Baseline", _fmt(bl_mean), _fmt(bl_std), "-", "-", "-", ""
+            "Baseline", _fmt(bl_mean), _fmt(bl_std), "-", "-", "-", "-", ""
         ])
 
     def _mean_gap_to_baseline(cost_list, baseline_arr):
@@ -1019,7 +1061,8 @@ def main():
         ok = np.isfinite(c) & np.isfinite(b) & (b > 1e-12)
         if not ok.any():
             return None
-        return float(np.mean((c[ok] - b[ok]) / b[ok]))
+        gaps = (c[ok] - b[ok]) / b[ok]
+        return gaps
 
     def _add_method_row(name, cost_list, time_list, gap_list=None):
         m, s = _mean_std(cost_list)
@@ -1028,20 +1071,27 @@ def main():
         # Prefer gap to Opt (from txt dataset optimal values) when available.
         gap_ref = "-"
         gap_val = None
+        gap_std = None
+        
         if gap_list is not None and len(gap_list) > 0:
-            gap_val = float(np.mean(gap_list))
+            gap_arr = np.array(gap_list) * 100.0
+            gap_val = float(np.mean(gap_arr))
+            gap_std = float(np.std(gap_arr))
             gap_ref = "opt"
         else:
-            gbl = _mean_gap_to_baseline(cost_list, baseline_values)
-            if gbl is not None:
-                gap_val = gbl
+            gaps = _mean_gap_to_baseline(cost_list, baseline_values)
+            if gaps is not None:
+                gap_arr = gaps * 100.0
+                gap_val = float(np.mean(gap_arr))
+                gap_std = float(np.std(gap_arr))
                 gap_ref = "bl"
 
         summary_rows.append([
             name,
             _fmt(m),
             _fmt(s),
-            _fmt(None if gap_val is None else gap_val * 100.0, nd=2),
+            _fmt(gap_val, nd=2),
+            _fmt(gap_std, nd=2),
             gap_ref,
             _fmt(tm),
             "",
@@ -1053,14 +1103,19 @@ def main():
         _add_method_row("Base", results["base_cost"], results.get("base_time", []), results.get("base_gap", []))
 
     if model:
-        _add_method_row("Model(anneal)", results.get("model_cost", []), results.get("model_time", []), results.get("model_gap", []))
+        # Only add rows for methods that were actually executed (non-empty results)
+        if results.get("model_cost") and len(results["model_cost"]) > 0:
+            _add_method_row("Model(anneal)", results["model_cost"], results.get("model_time", []), results.get("model_gap", []))
 
-        _add_method_row("Model(no_anneal)", results.get("model_cost_no_anneal", []), results.get("model_time_no_anneal", []), results.get("model_gap_no_anneal", []))
+        if results.get("model_cost_no_anneal") and len(results["model_cost_no_anneal"]) > 0:
+            _add_method_row("Model(no_anneal)", results["model_cost_no_anneal"], results.get("model_time_no_anneal", []), results.get("model_gap_no_anneal", []))
 
         if args.warmup:
-            _add_method_row("Mix(anneal)", results.get("mix_cost", []), results.get("mix_time", []), results.get("mix_gap", []))
+            if results.get("mix_cost") and len(results["mix_cost"]) > 0:
+                _add_method_row("Mix(anneal)", results["mix_cost"], results.get("mix_time", []), results.get("mix_gap", []))
 
-            _add_method_row("Mix(no_anneal)", results.get("mix_cost_no_anneal", []), results.get("mix_time_no_anneal", []), results.get("mix_gap_no_anneal", []))
+            if results.get("mix_cost_no_anneal") and len(results["mix_cost_no_anneal"]) > 0:
+                _add_method_row("Mix(no_anneal)", results["mix_cost_no_anneal"], results.get("mix_time_no_anneal", []), results.get("mix_gap_no_anneal", []))
 
     if summary_rows:
         best_name = min(candidates, key=lambda x: x[0])[1] if candidates else None
@@ -1073,7 +1128,7 @@ def main():
         print("\n--- Summary (mean over instances) ---")
         _print_table(
             summary_rows,
-            headers=["Method", "MeanCost", "StdCost", "Gap%", "GapRef", "MeanTime", "Best"],
+            headers=["Method", "MeanCost", "StdCost", "Gap%", "StdGap%", "GapRef", "MeanTime", "Best"],
         )
 
         # CSV summary logging
@@ -1087,7 +1142,7 @@ def main():
                     writer.writerow(["dataset", args.dataset])
                     writer.writerow(["seed", args.seed])
                     writer.writerow([])
-                    writer.writerow(["Method", "MeanCost", "StdCost", "Gap%", "GapRef", "MeanTime", "Best"])
+                    writer.writerow(["Method", "MeanCost", "StdCost", "Gap%", "StdGap%", "GapRef", "MeanTime", "Best"])
                     for r in summary_rows:
                         writer.writerow(r)
             except Exception as e:
