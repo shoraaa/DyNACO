@@ -937,6 +937,10 @@ def train_instance_ppo_grad_accum(
             
             optimizer.zero_grad(set_to_none=True)
             
+            # Create detached prior to accumulate gradients without retaining model graph
+            prior_work = prior_new.detach()
+            prior_work.requires_grad = True
+            
             for chunk_idx in range(num_chunks):
                 start_idx = chunk_idx * accum_steps
                 end_idx = min(start_idx + accum_steps, args.mini_H)
@@ -945,12 +949,12 @@ def train_instance_ppo_grad_accum(
                 chunk_losses = []
                 
                 for inner in range(start_idx, end_idx):
-                    current_prior = prior_new
+                    current_prior = prior_work
                     if args.train_anneal:
                         factor = compute_annealing_factor(
                             inner, args.mini_H, args.gamma, args.min_gamma
                         )
-                        current_prior = prior_new * factor
+                        current_prior = prior_work * factor
                     
                     tau_nk = tau_list[inner]
                     traces = traces_list[inner]
@@ -994,10 +998,14 @@ def train_instance_ppo_grad_accum(
                     chunk_losses.append(loss)
                     total_loss_val_epoch += loss.item()
                 
-                # Backward pass for this chunk with gradient accumulation
+                # Backward pass for this chunk w.r.t detached prior
                 chunk_loss_sum = torch.stack(chunk_losses).sum()
-                # Scale loss by total mini_H to equivalent to mean over all mini_H
+                # Scale loss by total mini_H
                 (chunk_loss_sum / args.mini_H).backward()
+            
+            # Now propagate accumulated gradients from detached prior to model
+            if prior_work.grad is not None:
+                prior_new.backward(gradient=prior_work.grad)
             
             # Compute gradient variance
             if not args.simple_train:
