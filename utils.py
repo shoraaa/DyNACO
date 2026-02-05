@@ -442,28 +442,69 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
     # Build directed edge matrices from route
     # forward_edge[u,v] = True if (u→v) is in route
     # backward_edge[u,v] = True if (v→u) is in route (i.e., u is successor of v)
-    forward_edge = torch.zeros((n, n), device=device, dtype=torch.bool)
-    backward_edge = torch.zeros((n, n), device=device, dtype=torch.bool)
+    # Sparse implementation for N=100k scaling
+    # We only need to check is_source_succ for edges in (src, dst)
+    # is_source_succ[e] = True if edge (src[e], dst[e]) is in route
+    
+    is_source_succ = torch.zeros((E, 1), device=device, dtype=torch.float32)
+    is_source_pred = torch.zeros((E, 1), device=device, dtype=torch.float32)
     
     if src_route.numel() > 1:
-        route_u = src_route[:-1]  # All but last
-        route_v = src_route[1:]   # All but first
-        # Mark directed edges: u → v means v is successor of u
-        forward_edge[route_u, route_v] = True
-        backward_edge[route_v, route_u] = True  # v → u means u is predecessor of v
-    
-    # is_source_succ[e]: for edge (src[e], dst[e]), is dst the successor of src in route?
-    # This correctly handles depot having multiple successors (first customer of each vehicle)
-    is_source_succ = forward_edge[src, dst].to(torch.float32).view(E, 1)
-    
-    # is_source_pred[e]: for edge (src[e], dst[e]), is dst the predecessor of src in route?
-    # This correctly handles depot having multiple predecessors (last customer of each vehicle)  
-    is_source_pred = backward_edge[src, dst].to(torch.float32).view(E, 1)
+        route_u = src_route[:-1]
+        route_v = src_route[1:]
+        
+        # Optimized for N=100k using simple array lookups (O(1)) instead of hashing
+        # succ[u] = v implies u->v exists in route.
+        # Since customers have unique successor, we can use an array.
+        # Depot (0) has multiple successors, handled separately.
+        
+        # Initialize arrays with -1
+        succ_arr = torch.full((n,), -1, device=device, dtype=torch.long)
+        pred_arr = torch.full((n,), -1, device=device, dtype=torch.long)
+        
+        # Fill for non-depot nodes (customers have unique succ/pred)
+        # Note: In CVRP, route is 0 -> c1 ... -> 0 -> c2 ...
+        # For u!=0, u->v is unique.
+        mask_cust_u = (route_u != 0)
+        succ_arr[route_u[mask_cust_u]] = route_v[mask_cust_u]
+        
+        mask_cust_v = (route_v != 0)
+        pred_arr[route_v[mask_cust_v]] = route_u[mask_cust_v]
+        
+        # Identify depot connections
+        depot_succs = route_v[route_u == 0] # Nodes v where 0->v
+        depot_preds = route_u[route_v == 0] # Nodes u where u->0
+        
+        # 1. Check Successors: is dst == succ[src]?
+        # Case A: src != 0 (Customer)
+        mask_src_cust = (src != 0)
+        # Check against array. Note: if succ_arr is -1, it won't match valid dst (>=0)
+        is_source_succ[mask_src_cust] = (dst[mask_src_cust] == succ_arr[src[mask_src_cust]]).float().view(-1, 1)
+        
+        # Case B: src == 0 (Depot)
+        mask_src_depot = (src == 0)
+        if mask_src_depot.any():
+            # Check if dst is in the set of depot successors
+            is_match = torch.isin(dst[mask_src_depot], depot_succs)
+            is_source_succ[mask_src_depot] = is_match.float().view(-1, 1)
+            
+        # 2. Check Predecessors: is dst == pred[src]? (meaning dst->src in route)
+        # Case A: src != 0 (Customer)
+        # Note: mask_src_cust is same
+        is_source_pred[mask_src_cust] = (dst[mask_src_cust] == pred_arr[src[mask_src_cust]]).float().view(-1, 1)
+        
+        # Case B: src == 0 (Depot)
+        if mask_src_depot.any():
+            # Check if dst is in the set of depot predecessors
+            is_match = torch.isin(dst[mask_src_depot], depot_preds)
+            is_source_pred[mask_src_depot] = is_match.float().view(-1, 1)  
+    # Remove redundant assignment (which referred to removed backward_edge)
+    # is_source_pred = backward_edge[src, dst].to(torch.float32).view(E, 1) # REMOVED
     
     # is_new_edge: edge not in current route (either direction)
-    is_adjacent = forward_edge | backward_edge.T  # Undirected adjacency
-    edge_in_route = is_adjacent[src, dst]
-    is_new_edge = (~edge_in_route).to(torch.float32).view(E, 1)
+    # Edge is in route if it is a successor OR predecessor edge (undirected check)
+    is_in_route = (is_source_succ > 0.5) | (is_source_pred > 0.5)
+    is_new_edge = (~is_in_route).to(torch.float32).view(E, 1)
 
     edge_attr = torch.cat(
         [dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
