@@ -557,38 +557,38 @@ def load_auto_dataset(n, problem='tsp', data_source='test_set', rl_data=False, d
 
     else:
         # Standard Test Set (MCTS / HGS / LKH generated)
-        # N=1000 -> MCTS_tsp1000... (User request)
-        # N=10000 -> test_tsp10000... (seen in file list) or MCTS_tsp10000...
+        # Strictly hardcoded maps to avoid substring matching issues (e.g. 1000 matching 10000)
         
         if problem == 'tsp':
             # Priority: MCTS_{problem}{n} -> test_{problem}{n}
-            
-            # 1. MCTS
-            pat_mcts = f"MCTS_tsp{n}"
-            # 2. test
-            pat_test = f"test_tsp{n}"
-
-            # Scan candidates
-            # Prefer MCTS
-            for f in candidates:
-                if pat_mcts in f.name:
-                     target_filename = f.name
-                     break
-            
-            if target_filename is None:
-                for f in candidates:
-                    if pat_test in f.name:
-                        target_filename = f.name
-                        break
+            if n == 10000:
+                 target_filename = "MCTS_tsp10000_test_concorde.txt"
+            elif n == 50000:
+                 target_filename = "test_tsp50000_lkh3_n16.txt"
+            elif n == 100000:
+                 target_filename = "test_tsp100000_lkh3_n16.txt"
+            elif n == 5000:
+                 target_filename = "test_tsp5000_lkh3_n16.txt"
+            elif n == 100:
+                 target_filename = "test_tsp100_concorde_n10000.txt"
+            elif n == 1000:
+                 target_filename = "MCTS_tsp1000_test_concorde.txt"
         
         elif problem == 'cvrp':
-             # Pattern seen: test_cvrp{n}_hgs...
-             # Maybe MCTS exists?
-             pat_test = f"test_cvrp{n}"
-             for f in candidates:
-                 if pat_test in f.name:
-                     target_filename = f.name
-                     break
+             # Explicit mapping based on file inspection
+             if n == 100:
+                 target_filename = "test_cvrp100_hgs_n10000_C50.txt"
+             elif n == 1000:
+                 target_filename = "test_cvrp1000_hgs_n128_C250.txt"
+             elif n == 5000:
+                 target_filename = "test_cvrp5000_hgs_n16_C500.txt"
+             elif n == 10000:
+                 target_filename = "test_cvrp10000_hgs_n16_C1000.txt"
+             elif n == 50000:
+                 target_filename = "test_cvrp50000_hgs_n16_C2000.txt"
+             elif n == 100000:
+                 target_filename = "test_cvrp100000_hgs_n16_C2000.txt"
+
 
     # 3. Load if found
     if target_filename:

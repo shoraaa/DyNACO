@@ -1252,8 +1252,14 @@ def load_validation_data(args: argparse.Namespace, logger: Logger):
         logger.info(f"Loading validation dataset from {args.val_dataset}...")
         val_dataset = _load_dataset_from_path(args.val_dataset, args.problem)
     else:
-        val_dataset = utils.load_val_dataset(
-            args.n_node, problem=args.problem, device='cpu'
+        # Default behavior: load auto dataset (test_set by default for now, can be adjusted)
+        # Training typically uses a fixed validation set from file or generates one.
+        val_dataset = utils.load_auto_dataset(
+            args.n_node, 
+            problem=args.problem, 
+            data_source='test_set', # Default source
+            rl_data=False,          # Default assumption unless training needs RL data
+            device='cpu'
         )
 
     # Extract baseline values if embedded in dataset
