@@ -1194,6 +1194,10 @@ def parse_args() -> argparse.Namespace:
                         help="Disable pheromone updates during training")
     parser.add_argument("--resume", type=str, nargs="?", const="auto", default=None,
                         help="Resume from checkpoint. Use without path for auto-detection based on config.")
+    parser.add_argument("--grad_accum", action="store_true",
+                        help="Use gradient accumulation for PPO training")
+    parser.add_argument("--grad_accum_steps", type=int, default=50,
+                        help="Number of mini_H iterations per gradient accumulation batch")
     
     return parser.parse_args()
 
