@@ -1332,6 +1332,13 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
     collect_iter_stats = bool(getattr(args, "iter_log", False) or getattr(args, "iter_print", False))
     iter_stats = [] if collect_iter_stats else None
     
+    # Setup tqdm bar if iter_print is requested
+    pbar = None
+    if getattr(args, "iter_print", False):
+         from tqdm import tqdm
+         total_iters = args.H * args.mini_H
+         pbar = tqdm(total=total_iters, desc="Inference", leave=False)
+    
     with torch.no_grad():
         for t in range(args.H):
             do_metrics = collect_metrics and (metrics_every_step or t == args.H - 1)
@@ -1415,6 +1422,14 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                 else:
                     aco.update_pheromone(flats[best_idx], best_cost)
 
+                # Update progress bar
+                if pbar is not None:
+                    pbar.set_postfix({
+                        "best": f"{best_seen:.4f}", 
+                        "mean": f"{avg_last:.4f}"
+                    })
+                    pbar.update(1)
+
             if do_metrics:
                 metrics_log["cost"].append(best_seen)
                 is_prior_avail = (len(priors) > 0)
@@ -1453,6 +1468,8 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                      "neural_prior": neural_prior
                  })
 
+    if pbar is not None:
+        pbar.close()
 
     timings = {}
     if hasattr(aco, 'get_timings') and args.timed:

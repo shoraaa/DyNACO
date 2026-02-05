@@ -782,261 +782,7 @@ def train_instance_ppo(
 
     return avg_cost_last, best_seen, out_metrics
 
-def train_instance_ppo_grad_accum(
-    model: Net,
-    optimizer: torch.optim.Optimizer,
-    instance_data: Any,
-    args: argparse.Namespace,
-    accum_steps: int = 50
-) -> Tuple[float, float, Dict[str, float]]:
-    """
-    Train on a single instance using PPO algorithm with gradient accumulation.
-    
-    This version chunks mini_H iterations into smaller batches to reduce memory usage
-    by accumulating gradients over multiple backward passes instead of one large pass.
-    
-    Args:
-        model: Neural network model
-        optimizer: Optimizer
-        instance_data: Problem instance
-        args: Training arguments
-        accum_steps: Number of mini_H iterations per gradient accumulation batch (default: 50)
-    
-    Returns:
-        Tuple of (avg_cost, best_cost, metrics_dict)
-    """
-    model.train()
-    
-    aco, pyg_args = setup_aco(args, instance_data, args.problem)
-    eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
-    build_fn = (utils.build_pyg_data_tsp if args.problem == 'tsp' 
-                else utils.build_pyg_data_cvrp)
 
-    best_seen = float("inf")
-    avg_cost_last = None
-    
-    metrics = MetricsCollector()
-    prior_prev_cpu = None
-    
-    # Timing accumulators
-    t_neural_total = 0.0
-    t_aco_sampling = 0.0
-    t_aco_ls = 0.0
-    t_aco_update = 0.0
-    t_aco_total = 0.0
-    
-    warmup_steps = compute_warmup_steps(args, use_train=True)
-
-    for outer in tqdm(range(args.H), desc="Outer", leave=False):
-        t0 = time.time()
-        pyg_data = build_fn(aco, *pyg_args, dynamic=not args.no_dynamic_feats)
-        
-        prior_old = None
-        if outer >= warmup_steps:
-            with torch.no_grad():
-                prior_old = model(pyg_data).view(-1).view(aco.n, aco.k)
-                t_neural_total += time.time() - t0
-                
-                prior_prev_cpu = _collect_prior_metrics(
-                    metrics, prior_old, prior_prev_cpu, eta_nk, args.simple_train
-                )
-
-        # Storage for PPO update
-        traces_list = []
-        flats_list = []
-        costs_list = []
-        logp_old_list = []
-        ndec_list = []
-        tau_list = []
-        costs_raw_t = None
-        
-        if hasattr(aco, "reset_timings"):
-            aco.reset_timings()
-
-        t_aco_start_outer = time.time()
-
-        for inner in range(args.mini_H):
-            current_prior = prior_old
-            if prior_old is not None and args.train_anneal:
-                factor = compute_annealing_factor(
-                    inner, args.mini_H, args.gamma, args.min_gamma
-                )
-                current_prior = prior_old * factor
-
-            # Sample from ACO
-            res = aco.sample(require_prob=True, prior=current_prior, parallel_traced=args.parallel_traced)
-            costs, flats, _, _, traces, costs_raw, flats_raw, new_edges, survival = res
-            
-            if survival is not None:
-                metrics.add("survival", survival.mean().item())
-
-            costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
-            if costs_raw is not None:
-                costs_raw_t = torch.as_tensor(costs_raw, device=args.device, dtype=torch.float32)
-            else:
-                costs_raw_t = costs_t
-            
-            tau_nk = aco.tau_nk_torch().detach()
-
-            # Compute old log probabilities
-            with torch.no_grad():
-                log_prob_old = log_prob_sparse_from_tau_eta_prior(
-                    tau_nk, eta_nk, current_prior,
-                    alpha=args.alpha, beta=args.beta, eps=EPS
-                )
-                logp_old, ndec = replay_logp_from_cpp_batch_trace(traces, log_prob_old)
-                ndec_f = ndec.to(torch.float32).clamp_min(1.0)
-                logp_old = (logp_old / ndec_f).detach()
-
-            # Store for PPO update
-            tau_list.append(tau_nk.detach())
-            traces_list.append(traces)
-            flats_list.append(None)
-            costs_list.append(costs_t.detach())
-            logp_old_list.append(logp_old)
-            ndec_list.append(ndec.detach())
-            
-            if new_edges is not None:
-                metrics.add("new_edges", new_edges.astype(np.float32).mean())
-
-            metrics.add("ndec", ndec.float().mean().item())
-            entropy = (-logp_old / ndec.float().clamp_min(1.0)).mean().item()
-            metrics.add("entropy", entropy)
-
-            best_idx = int(costs_t.argmin().item())
-            best_cost_iter = float(costs[best_idx])
-            best_seen = min(best_seen, best_cost_iter)
-            
-            if not args.train_deepaco:
-                with torch.no_grad():
-                    aco.update_pheromone(flats[best_idx], best_cost_iter)
-
-            avg_cost_last = float(costs_t.mean().item())
-
-        t_aco_total += time.time() - t_aco_start_outer
-        t_aco_sampling, t_aco_ls, t_aco_update = _update_aco_timings(
-            metrics, aco, t_aco_sampling, t_aco_ls, t_aco_update
-        )
-
-        # Skip PPO update during warmup
-        if outer < warmup_steps:
-            continue
-
-        # PPO Update loop with gradient accumulation
-        for _ in range(args.ppo_epochs):
-            t0 = time.time()
-            prior_new = model(pyg_data).view(-1).view(aco.n, aco.k)
-            t_neural_total += time.time() - t0
-            
-            all_param_kl = []
-            all_clip_frac = []
-            total_loss_val_epoch = 0.0
-            
-            # Calculate number of chunks
-            num_chunks = (args.mini_H + accum_steps - 1) // accum_steps  # Ceiling division
-            
-            optimizer.zero_grad(set_to_none=True)
-            
-            # Create detached prior to accumulate gradients without retaining model graph
-            prior_work = prior_new.detach()
-            prior_work.requires_grad = True
-            
-            for chunk_idx in range(num_chunks):
-                start_idx = chunk_idx * accum_steps
-                end_idx = min(start_idx + accum_steps, args.mini_H)
-                chunk_size = end_idx - start_idx
-                
-                chunk_losses = []
-                
-                for inner in range(start_idx, end_idx):
-                    current_prior = prior_work
-                    if args.train_anneal:
-                        factor = compute_annealing_factor(
-                            inner, args.mini_H, args.gamma, args.min_gamma
-                        )
-                        current_prior = prior_work * factor
-                    
-                    tau_nk = tau_list[inner]
-                    traces = traces_list[inner]
-                    costs_t = costs_list[inner]
-                    logp_old = logp_old_list[inner]
-                    
-                    log_prob_new = log_prob_sparse_from_tau_eta_prior(
-                        tau_nk, eta_nk, current_prior,
-                        alpha=args.alpha, beta=args.beta, eps=EPS
-                    )
-                    logp_new, ndec_new = replay_logp_from_cpp_batch_trace(traces, log_prob_new)
-                    ndec_f = ndec_new.to(torch.float32).clamp_min(1.0)
-                    logp_new = logp_new / ndec_f
-                    
-                    ratio = torch.exp(logp_new - logp_old)
-                    
-                    log_ratio = logp_new - logp_old
-                    approx_kl = (log_ratio.pow(2) * 0.5).mean()
-                    all_param_kl.append(approx_kl.detach().item())
-                    
-                    clipped = (ratio > 1 + args.ppo_clip) | (ratio < 1 - args.ppo_clip)
-                    clip_frac = clipped.float().mean()
-                    all_clip_frac.append(clip_frac.detach().item())
-                    
-                    # Advantage calculation
-                    if args.nls and costs_raw_t is not None:
-                        cost_combined = args.nls_beta * costs_t + (1.0 - args.nls_beta) * costs_raw_t
-                        baseline = cost_combined.mean()
-                        adv = (baseline - cost_combined).detach()
-                    else:
-                        baseline = costs_t.mean()
-                        adv = (baseline - costs_t).detach()
-                    
-                    if not args.no_adv_norm:
-                        adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
-                    
-                    surr1 = ratio * adv
-                    surr2 = torch.clamp(ratio, 1 - args.ppo_clip, 1 + args.ppo_clip) * adv
-                    loss = -torch.mean(torch.min(surr1, surr2))
-                    
-                    chunk_losses.append(loss)
-                    total_loss_val_epoch += loss.item()
-                
-                # Backward pass for this chunk w.r.t detached prior
-                chunk_loss_sum = torch.stack(chunk_losses).sum()
-                # Scale loss by total mini_H
-                (chunk_loss_sum / args.mini_H).backward()
-            
-            # Now propagate accumulated gradients from detached prior to model
-            if prior_work.grad is not None:
-                prior_new.backward(gradient=prior_work.grad)
-            
-            # Compute gradient variance
-            if not args.simple_train:
-                grad_norms = [p.grad.norm().item() for p in model.parameters() if p.grad is not None]
-                if grad_norms:
-                    metrics.add("grad_var", np.var(grad_norms))
-            
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            
-            metrics.add("loss", total_loss_val_epoch / args.mini_H)
-            metrics.add("approx_kl", np.mean(all_param_kl))
-            metrics.add("clip_frac", np.mean(all_clip_frac))
-
-    # Finalize metrics
-    out_metrics = metrics.get_all_means()
-    out_metrics["time_neural"] = t_neural_total
-    out_metrics["time_aco"] = t_aco_total
-    if t_aco_sampling > 0:
-        out_metrics["time_sampling"] = t_aco_sampling
-    if t_aco_ls > 0:
-        out_metrics["time_ls"] = t_aco_ls
-    if t_aco_update > 0:
-        out_metrics["time_update"] = t_aco_update
-
-    # Cleanup
-    del traces_list, flats_list, tau_list, logp_old_list, ndec_list, costs_list
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    return avg_cost_last, best_seen, out_metrics
 
 
 # =============================================================================
@@ -1090,14 +836,9 @@ def train_epoch(
         # Train on instance
         t_start_instance = time.time()
         if args.algo == 'ppo':
-            if args.grad_accum:
-                avg_cost, best_cost, metrics = train_instance_ppo_grad_accum(
-                    net, optimizer, instance_data, args, accum_steps=args.grad_accum_steps
-                )
-            else:
-                avg_cost, best_cost, metrics = train_instance_ppo(
-                    net, optimizer, instance_data, args
-                )
+            avg_cost, best_cost, metrics = train_instance_ppo(
+                net, optimizer, instance_data, args
+            )
         else:
             avg_cost, best_cost, metrics = train_instance_reinforce(
                 net, optimizer, instance_data, args
@@ -1390,8 +1131,7 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(parallel_traced=True)
 
     # Optimization
-    parser.add_argument("--grad_checkpoint", action="store_true",
-                        help="Enable gradient checkpointing for GNN")
+
     
     # Neural Local Search
     parser.add_argument("--nls", action="store_true",
@@ -1451,10 +1191,7 @@ def parse_args() -> argparse.Namespace:
                         help="Disable pheromone updates during training")
     parser.add_argument("--resume", type=str, nargs="?", const="auto", default=None,
                         help="Resume from checkpoint. Use without path for auto-detection based on config.")
-    parser.add_argument("--grad_accum", action="store_true",
-                        help="Use gradient accumulation for PPO training")
-    parser.add_argument("--grad_accum_steps", type=int, default=50,
-                        help="Number of mini_H iterations per gradient accumulation batch")
+
     
     return parser.parse_args()
 
@@ -1705,7 +1442,7 @@ def main():
     net_model = Net(
         feats=feats,
         logit_net=not args.no_logit_net,
-        grad_checkpointing=args.grad_checkpoint
+
     ).to(args.device)
     
     optimizer = torch.optim.AdamW(net_model.parameters(), lr=args.lr)

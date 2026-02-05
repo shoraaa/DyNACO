@@ -153,6 +153,8 @@ def main():
     parser.add_argument("--rl_data", action="store_true", help="Load TSPLIB/CVRPLIB data instead of standard test set")
     
     # Selective method execution
+    parser.add_argument("--run_model_anneal", action="store_true", help="Run Model(anneal) method")
+    parser.add_argument("--run_mix_anneal", action="store_true", help="Run Mix(anneal) method")
     parser.add_argument("--run_model_no_anneal", action="store_true", help="Run Model(no_anneal) method")
     parser.add_argument("--run_mix_no_anneal", action="store_true", help="Run Mix(no_anneal) method")
     parser.add_argument("--no_model", action="store_true", help="Skip model loading and run only baseline methods")
@@ -625,9 +627,9 @@ def main():
                             "anneal": "-",
                             **st,
                         })
-                if args.iter_print and base_iter_stats is not None:
-                    for st in base_iter_stats:
-                        print(f"{name} Base iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+                # if args.iter_print and base_iter_stats is not None:
+                #     for st in base_iter_stats:
+                #         print(f"{name} Base iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
             
             if opt_cost is not None and opt_cost > 1e-6:
                  gap = (base_best - opt_cost) / opt_cost
@@ -642,10 +644,16 @@ def main():
         if model:
               # Determine which methods to run based on problem type and flags
               # Default: Mix(anneal) for TSP, Model(anneal) for CVRP
-              run_model_anneal = (args.problem == 'cvrp')  # Default for CVRP
+              run_model_anneal = args.run_model_anneal
               run_model_no_anneal = args.run_model_no_anneal
-              run_mix_anneal = (args.problem == 'tsp' and args.warmup)  # Default for TSP
+              run_mix_anneal = args.run_mix_anneal and args.warmup
               run_mix_no_anneal = args.run_mix_no_anneal and args.warmup
+
+              if not run_model_anneal and not run_model_no_anneal and not run_mix_anneal and not run_mix_no_anneal:
+                  if args.problem == 'tsp':
+                      run_mix_anneal = True
+                  else:
+                      run_model_anneal = True
               
               args_anneal = _clone_args(args, no_anneal=False)
               args_noanneal = _clone_args(args, no_anneal=True)
@@ -677,9 +685,9 @@ def main():
                               "anneal": "on",
                               **st,
                           })
-                  if args.iter_print and model_iter_stats is not None:
-                      for st in model_iter_stats:
-                          print(f"{name} Model(anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+                  # if args.iter_print and model_iter_stats is not None:
+                  #     for st in model_iter_stats:
+                  #         print(f"{name} Model(anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
                   
                   if mod_timings:
                       if "time_neural" in mod_timings: results["model_time_breakdown"]["neural"].append(mod_timings["time_neural"])
@@ -717,9 +725,9 @@ def main():
                               "anneal": "off",
                               **st,
                           })
-                  if args.iter_print and model_na_iter_stats is not None:
-                      for st in model_na_iter_stats:
-                          print(f"{name} Model(no_anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+                  # if args.iter_print and model_na_iter_stats is not None:
+                  #     for st in model_na_iter_stats:
+                  #         print(f"{name} Model(no_anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
                   
                   if opt_cost is not None and opt_cost > 1e-6:
                       gap_na = (model_best_na - opt_cost) / opt_cost
@@ -756,9 +764,9 @@ def main():
                                   "anneal": "on",
                                   **st,
                               })
-                      if args.iter_print and mix_iter_stats is not None:
-                          for st in mix_iter_stats:
-                              print(f"{name} Mix(anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+                      # if args.iter_print and mix_iter_stats is not None:
+                      #     for st in mix_iter_stats:
+                      #         print(f"{name} Mix(anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
                       
                       if opt_cost is not None and opt_cost > 1e-6:
                           gap = (mix_best - opt_cost) / opt_cost
@@ -791,9 +799,9 @@ def main():
                                   "anneal": "off",
                                   **st,
                               })
-                      if args.iter_print and mix_na_iter_stats is not None:
-                          for st in mix_na_iter_stats:
-                              print(f"{name} Mix(no_anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+                      # if args.iter_print and mix_na_iter_stats is not None:
+                      #     for st in mix_na_iter_stats:
+                      #         print(f"{name} Mix(no_anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
                       
                       if opt_cost is not None and opt_cost > 1e-6:
                           gap_na = (mix_best_na - opt_cost) / opt_cost
