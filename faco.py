@@ -674,6 +674,7 @@ class MFACO_CVRP:
         prior: Optional[Any] = None,
         parallel_traced: bool = False,
         return_decoded: bool = False,
+        route_mode: int = 2,
     ):
         """
         Sample from C++ backend.
@@ -687,7 +688,7 @@ class MFACO_CVRP:
             prior = _as_numpy_f32(prior)
         
         costs, routes, decoded, logps, traces, costs_raw, routes_raw, new_edges_count, survival = self._cpp.sample(
-            require_prob, prior, parallel_traced, return_decoded
+            require_prob, prior, parallel_traced, return_decoded, int(route_mode)
         )
 
         if isinstance(survival, np.ndarray):

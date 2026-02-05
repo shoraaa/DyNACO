@@ -418,7 +418,8 @@ public:
   void seed_rng(uint64_t seed) { solver->seed_rng(seed); }
 
   py::tuple sample(bool require_prob = false, py::object prior = py::none(),
-                   bool parallel_traced = false, bool return_decoded = false) {
+                   bool parallel_traced = false, bool return_decoded = false,
+                   int route_mode = 2) {
     const float *prior_ptr = nullptr;
     py::array_t<float> prior_arr;
 
@@ -444,14 +445,51 @@ public:
     for (int32_t a = 0; a < solver->n_ants; ++a)
       cb(a) = result.costs[a];
 
-    py::list routes;
-    for (int32_t a = 0; a < solver->n_ants; ++a) {
-      const auto &r = result.routes[a];
-      py::array_t<int32_t> r_arr((py::ssize_t)r.size());
-      auto rb = r_arr.mutable_unchecked<1>();
-      for (size_t i = 0; i < r.size(); ++i)
-        rb(i) = r[i];
-      routes.append(r_arr);
+    // route_mode:
+    //   0 = do not return routes
+    //   1 = return only best route; others are None (keeps list length = n_ants)
+    //   2 = return all routes (default; backward compatible)
+    if (route_mode < 0 || route_mode > 2) {
+      throw std::runtime_error("route_mode must be 0, 1, or 2");
+    }
+    int32_t best_a = 0;
+    if (!result.costs.empty()) {
+      float best_c = result.costs[0];
+      for (int32_t a = 1; a < solver->n_ants; ++a) {
+        if (result.costs[a] < best_c) {
+          best_c = result.costs[a];
+          best_a = a;
+        }
+      }
+    }
+
+    py::object routes = py::none();
+    if (route_mode == 2) {
+      py::list routes_list;
+      for (int32_t a = 0; a < solver->n_ants; ++a) {
+        const auto &r = result.routes[a];
+        py::array_t<int32_t> r_arr((py::ssize_t)r.size());
+        auto rb = r_arr.mutable_unchecked<1>();
+        for (size_t i = 0; i < r.size(); ++i)
+          rb(i) = r[i];
+        routes_list.append(r_arr);
+      }
+      routes = routes_list;
+    } else if (route_mode == 1) {
+      py::list routes_list;
+      for (int32_t a = 0; a < solver->n_ants; ++a) {
+        if (a != best_a) {
+          routes_list.append(py::none());
+          continue;
+        }
+        const auto &r = result.routes[a];
+        py::array_t<int32_t> r_arr((py::ssize_t)r.size());
+        auto rb = r_arr.mutable_unchecked<1>();
+        for (size_t i = 0; i < r.size(); ++i)
+          rb(i) = r[i];
+        routes_list.append(r_arr);
+      }
+      routes = routes_list;
     }
 
     py::object decoded_obj = py::none();
@@ -474,8 +512,10 @@ public:
         cb(a) = result.costs_raw[a];
     }
 
-    py::list perms_raw;
-    if (!result.routes_raw.empty()) {
+    // routes_raw can be huge; only materialize it when returning all routes.
+    py::object perms_raw = py::none();
+    if (route_mode == 2 && !result.routes_raw.empty()) {
+      py::list perms_raw_list;
       for (int32_t a = 0; a < solver->n_ants; ++a) {
         if (!result.routes_raw[a].empty()) {
           const auto &r = result.routes_raw[a];
@@ -483,11 +523,12 @@ public:
           auto rb = r_arr.mutable_unchecked<1>();
           for (size_t i = 0; i < r.size(); ++i)
             rb(i) = r[i];
-          perms_raw.append(r_arr);
+          perms_raw_list.append(r_arr);
         } else {
-          perms_raw.append(py::none());
+          perms_raw_list.append(py::none());
         }
       }
+      perms_raw = perms_raw_list;
     }
 
     py::array_t<float> logps_arr(solver->n_ants);
@@ -520,7 +561,7 @@ public:
     }
 
     return py::make_tuple(costs, routes, decoded_obj, logps_arr, traces_obj,
-                          costs_raw, perms_raw, new_edges_arr, survival_arr);
+                costs_raw, perms_raw, new_edges_arr, survival_arr);
   }
 
   void update_pheromone_from_route(
@@ -964,7 +1005,7 @@ PYBIND11_MODULE(faco_opt, m) {
       .def("seed_rng", &PyMFACO_CVRP::seed_rng)
       .def("sample", &PyMFACO_CVRP::sample, py::arg("require_prob") = false,
            py::arg("prior") = py::none(), py::arg("parallel_traced") = false,
-           py::arg("return_decoded") = false)
+         py::arg("return_decoded") = false, py::arg("route_mode") = 2)
       .def("update_pheromone_from_route",
            &PyMFACO_CVRP::update_pheromone_from_route)
       .def_property(

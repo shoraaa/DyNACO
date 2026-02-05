@@ -449,7 +449,17 @@ def train_instance_reinforce(
                 )
                 current_prior = prior_old * factor
 
-            res = aco.sample(require_prob=True, prior=current_prior, parallel_traced=args.parallel_traced)
+            sample_kwargs = {}
+            if args.problem == "cvrp":
+                # Returning all routes (n_ants * O(n)) is extremely expensive for n=5000.
+                # Training only needs the best route for pheromone update (or none when deepaco).
+                sample_kwargs["route_mode"] = 0 if args.train_deepaco else 1
+            res = aco.sample(
+                require_prob=True,
+                prior=current_prior,
+                parallel_traced=args.parallel_traced,
+                **sample_kwargs,
+            )
             costs, flats, _, _, traces, costs_raw, flats_raw, new_edges, survival = res
             
             if survival is not None:
@@ -471,7 +481,10 @@ def train_instance_reinforce(
             
             if not args.train_deepaco:
                 with torch.no_grad():
-                    aco.update_pheromone(flats[best_idx], best_cost_iter)
+                    best_flat = flats[best_idx]
+                    if best_flat is None and args.problem == "cvrp":
+                        best_flat = np.asarray(aco._cpp.best_route, dtype=np.int32)
+                    aco.update_pheromone(best_flat, best_cost_iter)
 
             avg_cost_last = float(costs_t.mean().item())
 
@@ -639,7 +652,15 @@ def train_instance_ppo(
             # Sample from ACO
             if do_profile:
                 ts0 = time.perf_counter()
-            res = aco.sample(require_prob=True, prior=current_prior, parallel_traced=args.parallel_traced)
+            sample_kwargs = {}
+            if args.problem == "cvrp":
+                sample_kwargs["route_mode"] = 0 if args.train_deepaco else 1
+            res = aco.sample(
+                require_prob=True,
+                prior=current_prior,
+                parallel_traced=args.parallel_traced,
+                **sample_kwargs,
+            )
             if do_profile:
                 prof["t_sample"] += time.perf_counter() - ts0
             costs, flats, _, _, traces, costs_raw, flats_raw, new_edges, survival = res
@@ -703,7 +724,10 @@ def train_instance_ppo(
             
             if not args.train_deepaco:
                 with torch.no_grad():
-                    aco.update_pheromone(flats[best_idx], best_cost_iter)
+                    best_flat = flats[best_idx]
+                    if best_flat is None and args.problem == "cvrp":
+                        best_flat = np.asarray(aco._cpp.best_route, dtype=np.int32)
+                    aco.update_pheromone(best_flat, best_cost_iter)
 
             avg_cost_last = float(costs_t.mean().item())
 
