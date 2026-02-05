@@ -29,7 +29,7 @@ from baselines import get_baseline
 # Import metric helpers from utils
 from utils import (
     row_softmax, mean_row_kl, rel_l2_drift, top_set, top_turnover,
-    top1_flip_rate, safe_corr, top_overlap_frac, row_top1_match_rate, EPS
+    top1_flip_rate, safe_corr, top_overlap_frac, row_top1_match_rate, EPS, infer_instance
 )
 
 class Logger(object):
@@ -103,289 +103,6 @@ def _base_cache_path(args: argparse.Namespace, val_list_len: int) -> Path:
     return cache_dir / f"base_{args.problem}_{digest}.pt"
 
 
-def verify_solution_cvrp(coords, demand, capacity, cost, route0):
-    DEMAND_SCALE = 100000
-    n = len(demand)
-    visited = set()
-    total_dist = 0.0
-    cap_int = int(round(capacity * DEMAND_SCALE))
-    demand_int = [int(round(d * DEMAND_SCALE)) for d in demand]
-    current_load_int = 0
-    for i in range(len(route0) - 1):
-        u, v = int(route0[i]), int(route0[i+1])
-        du = coords[u]
-        dv = coords[v]
-        d = np.sqrt(((du - dv)**2).sum())
-        total_dist += d
-        if v == 0:
-            if current_load_int > cap_int:
-                raise ValueError(f"Capacity violation: {current_load_int/DEMAND_SCALE} > {capacity}")
-            current_load_int = 0
-        else:
-            if v in visited:
-                raise ValueError(f"Node {v} visited more than once")
-            visited.add(v)
-            current_load_int += demand_int[v]
-    if len(visited) != n - 1:
-        missing = set(range(1, n)) - visited
-        raise ValueError(f"Missing customers: {missing}")
-    if abs(total_dist - cost) > 1e-3:
-        raise ValueError(f"Cost mismatch: recalculated {total_dist:.6f} vs reported {cost:.6f}")
-    return True
-
-
-
-
-def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=True, inject_step=None):
-    if model is not None:
-        model.eval()
-
-    disable_heuristic_arg = args.disable_heuristic
-    if use_heuristic_only:
-        disable_heuristic_arg = False 
-
-    # Determine instance args
-    if problem == 'tsp':
-        coords = instance_data
-        n = len(coords)
-        if n_ants is None:
-             n_ants = int(math.ceil(4 * math.sqrt(n) / 64) * 64)
-             
-        kwargs = {
-            'n_ants': n_ants,
-            'coords': coords,
-            'cand_list_size': k_sparse,
-            'backup_list_size': k_sparse,
-            'disable_heuristic': disable_heuristic_arg,
-            'use_local_search': not args.no_local_search,
-            'decay': args.rho,
-            'device': args.device,
-            'enable_torch_sync': True,
-            'smooth_mmas': not args.no_smooth_mmas,
-            'min_new_edges': args.min_new_edges,
-            'extend_ls': not args.no_extend_ls,
-            'normalized_heuristic': not args.no_normalized_heuristic,
-            'fixed_steps': args.L
-        }
-    else:
-        coords, demand, capacity = instance_data
-        n = len(coords) - 1 # n customers
-        if n_ants is None:
-             n_ants = int(math.ceil(4 * math.sqrt(n) / 64) * 64)
-
-        kwargs = {
-            'coords': coords,
-            'demand': demand,
-            'capacity': float(capacity),
-            'n_ants': n_ants,
-            'cand_list_size': k_sparse,
-            'backup_list_size': max(k_sparse, 64),
-            'min_new_edges': args.min_new_edges,
-            'decay': args.rho,
-            'p_best': 0.05,
-            'use_local_search': not args.no_local_search,
-            'disable_heuristic': disable_heuristic_arg,
-            'extend_ls': not args.no_extend_ls, 
-            'smooth_mmas': not args.no_smooth_mmas,
-            'device': args.device,
-            'enable_torch_sync': True,
-            'normalized_heuristic': not args.no_normalized_heuristic,
-            'fixed_steps': args.L
-        }
-
-    # Normalize coordinates for model input (scale to [0, 1] while preserving aspect ratio)
-    norm_coords = coords
-    if model is not None:
-        if torch.is_tensor(coords):
-             c_min = coords.min(dim=0)[0]
-             c_max = coords.max(dim=0)[0]
-             c_diff = c_max - c_min
-             scale = c_diff.max()
-             if scale < 1e-6: scale = 1.0
-             norm_coords = (coords - c_min) / scale
-        else:
-             c_min = coords.min(axis=0)
-             c_max = coords.max(axis=0)
-             c_diff = c_max - c_min
-             scale = c_diff.max()
-             if scale < 1e-6: scale = 1.0
-             norm_coords = (coords - c_min) / scale
-
-    
-    # Filter kwargs for MMAS classes
-    is_mmas = (aco_class == faco.ACO_TSP or aco_class == faco.ACO_CVRP)
-    if is_mmas:
-        # MMAS classes don't accept these MFACO-specific parameters
-        mmas_kwargs = {
-            'coords': kwargs['coords'],
-            'n_ants': kwargs['n_ants'],
-            'cand_list_size': kwargs['cand_list_size'],
-            'decay': kwargs['decay'],
-            'p_best': kwargs.get('p_best', 0.05),
-            'device': kwargs['device'],
-            'enable_torch_sync': kwargs['enable_torch_sync'],
-        }
-        # Add alpha, beta if available
-        if hasattr(args, 'alpha'):
-            mmas_kwargs['alpha'] = args.alpha
-        if hasattr(args, 'beta'):
-            mmas_kwargs['beta'] = args.beta
-        # CVRP-specific
-        if problem == 'cvrp':
-            mmas_kwargs['demand'] = kwargs['demand']
-            mmas_kwargs['capacity'] = kwargs['capacity']
-        kwargs = mmas_kwargs
-    
-    aco = aco_class(**kwargs)
-    if hasattr(aco, 'reset_timings'): aco.reset_timings()
-
-    best_seen = float("inf")
-    avg_last = None
-    t_neural_total = 0.0
-    priors, pher_before = [], []
-    metrics_log = {k: [] for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match", "survival"]}
-    metrics_log["snapshots"] = []
-
-    collect_iter_stats = bool(getattr(args, "iter_log", False) or getattr(args, "iter_print", False))
-    iter_stats = [] if collect_iter_stats else None
-    
-    with torch.no_grad():
-        for t in range(args.H):
-            do_metrics = collect_metrics and (metrics_every_step or t == args.H - 1)
-            
-            prior_mat = None
-            if do_metrics:
-                pher_before.append(aco.pheromone_sparse.detach().cpu().clone())
-
-            if model is not None and not use_heuristic_only:
-                # If inject_step is set, only use model if t >= inject_step
-                use_model = True
-                if inject_step is not None and t < inject_step:
-                    use_model = False
-                
-                if use_model:
-                    if problem == 'tsp':
-                        pyg_data = build_fn(aco, norm_coords, args.device, dynamic=dynamic)
-                    else:
-                        pyg_data = build_fn(aco, norm_coords, demand, args.device, dynamic=dynamic)
-                    
-                    t_neural_start = time.time()
-                    heu_vec = model(pyg_data).view(-1)
-                    t_neural_total += time.time() - t_neural_start
-                    
-                    prior_mat = heu_vec.view(aco.n, aco.k)
-                    
-                    if do_metrics:
-                        priors.append(prior_mat.detach().cpu().clone())
-
-            for mini_t in range(args.mini_H):
-                # Annealing
-                current_prior = prior_mat
-                if not args.no_anneal and prior_mat is not None:
-                     if args.mini_H > 1:
-                        ratio = mini_t / (args.mini_H - 1)
-                        factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
-                     else:
-                        factor = args.gamma
-                     current_prior = prior_mat * factor
-
-                # Sample
-                return_decoded = getattr(args, 'verify', False) and (problem == 'cvrp')
-                
-                prior_arg = current_prior.cpu().numpy() if (current_prior is not None and torch.is_tensor(current_prior)) else current_prior
-
-                if problem == 'tsp':
-                    costs_t, flats, _, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg, parallel_traced=True)
-                else:
-                    costs_t, routes, decoded, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg, return_decoded=return_decoded, parallel_traced=True)
-                    flats = routes
-
-                if do_metrics:
-                    metrics_log["survival"].append(survival.mean().item())
-
-                if return_decoded and problem == 'cvrp':
-                     best_idx_t = int(costs_t.argmin().item())
-                     try:
-                         rt = decoded[best_idx_t] if decoded is not None else flats[best_idx_t]
-                         verify_solution_cvrp(coords, demand, capacity, float(costs_t[best_idx_t]), rt)
-                     except ValueError as e:
-                         print(f"Verification failed: {e}")
-                         sys.exit(1)
-
-                avg_last = float(costs_t.mean().item())
-                best_idx = int(costs_t.argmin().item())
-                best_cost = float(costs_t[best_idx].item())
-                best_seen = min(best_seen, best_cost)
-
-                if collect_iter_stats:
-                    iter_idx = t * int(args.mini_H) + int(mini_t)
-                    iter_stats.append({
-                        "iter": int(iter_idx),
-                        "t": int(t),
-                        "mini_t": int(mini_t),
-                        "mean": float(avg_last),
-                        "best": float(best_seen),
-                    })
-                
-                if problem == 'tsp':
-                    aco._update_pheromone_from_flat(flats[best_idx], best_cost)
-                else:
-                    aco.update_pheromone(flats[best_idx], best_cost)
-
-            if do_metrics:
-                metrics_log["cost"].append(best_seen)
-                is_prior_avail = (len(priors) > 0)
-                
-                if is_prior_avail and len(priors) > 1:
-                     P_prev, P_cur = priors[-2], priors[-1]
-                     metrics_log["l2"].append(rel_l2_drift(P_prev, P_cur))
-                     metrics_log["kl"].append(mean_row_kl(P_prev, P_cur))
-                     metrics_log["turnover"].append(top_turnover(P_prev, P_cur))
-                     metrics_log["flip"].append(top1_flip_rate(P_prev, P_cur))
-                else:
-                     for k in ["l2", "kl", "turnover", "flip"]: metrics_log[k].append(0.0)
-
-                if is_prior_avail:
-                    tau = pher_before[-1] # Match last captured
-                    pr = priors[-1]
-                    metrics_log["corr"].append(safe_corr(tau, pr))
-                    metrics_log["ov"].append(top_overlap_frac(tau, pr))
-                    metrics_log["row_match"].append(row_top1_match_rate(tau, pr))
-                else:
-                    for k in ["corr", "ov", "row_match"]: metrics_log[k].append(0.0)
-            
-            # Capture snapshots at H/2
-            if collect_metrics and t == (args.H // 2):
-                 # Pheromone
-                 pher = aco.pheromone_sparse.detach().cpu()
-                 
-                 # Neural Prior (Model Output)
-                 neural_prior = None
-                 if 'prior_mat' in locals() and prior_mat is not None:
-                      neural_prior = prior_mat.detach().cpu()
-
-                 metrics_log["snapshots"].append({
-                     "t": t,
-                     "pheromone": pher,
-                     "neural_prior": neural_prior
-                 })
-
-
-    timings = {}
-    if hasattr(aco, 'get_timings') and args.timed:
-        t = aco.get_timings()
-        timings = {k: v/1000.0 for k, v in t.items()} # ms to s
-    
-    if args.timed:
-        timings["time_neural"] = t_neural_total
-    
-    extra = {}
-    if collect_metrics:
-        extra["metrics"] = metrics_log
-    if collect_iter_stats:
-        extra["iter_stats"] = iter_stats
-    return avg_last, best_seen, timings, extra
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--problem", type=str, default=None, choices=['tsp', 'cvrp'])
@@ -394,7 +111,7 @@ def main():
     parser.add_argument("--alg", choices=["faco", "mmas"], default="faco", help="Algorithm type")
     parser.add_argument("--dataset", type=str, default=None)
     parser.add_argument("--checkpoint", type=str, default="none")
-    parser.add_argument("--n_ants", type=int, default=None)
+    parser.add_argument("--n_ants", type=int, default=100)
     parser.add_argument("--H", type=int, default=10)
     parser.add_argument("--mini_H", type=int, default=100)
     
@@ -433,6 +150,7 @@ def main():
     parser.add_argument("--val_size", type=int, default=None, help="Limit validation set size")
     parser.add_argument("--log", action="store_true", help="Enable logging to file (auto-named)")
     parser.add_argument("--no_baseline", action="store_true", help="Skip pure MFACO baseline calculation")
+    parser.add_argument("--rl_data", action="store_true", help="Load TSPLIB/CVRPLIB data instead of standard test set")
 
     # Per-iteration logging (H * mini_H rows per run)
     parser.add_argument("--iter_log", action="store_true", help="Log mean/best at every mini-iteration to CSV")
@@ -598,7 +316,12 @@ def main():
                 val_list = data
     else:
         print("Loading validation dataset...")
-        val_list = utils.load_val_dataset(args.n_node, problem=args.problem, device='cpu')
+        val_list = utils.load_auto_dataset(
+            args.n_node, 
+            problem=args.problem, 
+            rl_data=args.rl_data,
+            device='cpu'
+        )
         
         if val_list is None:
             print("Generating data...")
@@ -747,22 +470,22 @@ def main():
     # Baseline cache (heuristic-only MFACO). Reuse across runs for the same dataset+config.
     cached_base_costs = None
     base_cache_path = None
-    # if not args.no_baseline:
-    #     base_cache_path = _base_cache_path(args, len(val_list))
-    #     if base_cache_path.exists():
-    #         try:
-    #             obj = torch.load(base_cache_path, map_location="cpu", weights_only=False)
-    #             base_arr = obj.get("base_costs", None) if isinstance(obj, dict) else None
-    #             if base_arr is not None and len(base_arr) == len(val_list):
-    #                 cached_base_costs = [float(x) for x in base_arr]
-    #                 print(f"Loaded cached base costs: {base_cache_path} ({len(cached_base_costs)} instances)")
-    #         except Exception as e:
-    #             print(f"Warning: failed to load base cache {base_cache_path}: {e}")
+    if not args.no_baseline:
+        base_cache_path = _base_cache_path(args, len(val_list))
+        if base_cache_path.exists():
+            try:
+                obj = torch.load(base_cache_path, map_location="cpu", weights_only=False)
+                base_arr = obj.get("base_costs", None) if isinstance(obj, dict) else None
+                if base_arr is not None and len(base_arr) == len(val_list):
+                    cached_base_costs = [float(x) for x in base_arr]
+                    print(f"Loaded cached base costs: {base_cache_path} ({len(cached_base_costs)} instances)")
+            except Exception as e:
+                print(f"Warning: failed to load base cache {base_cache_path}: {e}")
 
-    # if args.iter_log and cached_base_costs is not None:
-    #     # Can't reconstruct per-iteration traces from cached scalar costs.
-    #     print("Iter logging enabled: ignoring cached base costs to record per-iteration trace.")
-    #     cached_base_costs = None
+    if args.iter_log and cached_base_costs is not None:
+        # Can't reconstruct per-iteration traces from cached scalar costs.
+        print("Iter logging enabled: ignoring cached base costs to record per-iteration trace.")
+        cached_base_costs = None
     
     sample_snapshots = {}
 

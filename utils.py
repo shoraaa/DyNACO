@@ -8,6 +8,9 @@ import logging
 import sys
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field
+import time
+import math
+import faco
 
 _THIS_DIR = Path(__file__).resolve().parent
 DATA_DIR = (_THIS_DIR / "data").resolve()
@@ -476,43 +479,152 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
 
 # ----------------- Shared/Dataset -----------------
 
-def load_val_dataset(n, problem='tsp', device='cpu'):
-    # Priority 1: Check for text datasets in data/{PROBLEM}/data/validation_set/
-    # e.g., tsp100 in val_tsp100_concorde(n10000?).txt
-    val_set_dir = DATA_DIR / problem.upper() / "data" / "validation_set"
+def load_auto_dataset(n, problem='tsp', data_source='test_set', rl_data=False, device='cpu'):
+    """
+    Load dataset automatically based on problem size (n) and source/mode.
+    defaults to data/{problem}/data/test_set
+    python test.py --n_node 1000 --rl_data -> loads TSPlib_1K.txt
+    python test.py --n_node 1000           -> loads MCTS_tsp1000... or test_tsp1000...
+    """
+    # 1. Base Directory
+    # Default to test_set
+    base_dir = DATA_DIR / problem.upper() / "data" / data_source
+    if not base_dir.exists():
+        # Fallback to validation_set if test_set not found (legacy behavior?)
+        # Or just fail? Let's try validation_set as fallback if default 'test_set' missing
+        if data_source == 'test_set':
+             alt_dir = DATA_DIR / problem.upper() / "data" / "validation_set"
+             if alt_dir.exists():
+                 print(f"Warning: {base_dir} not found, falling back to {alt_dir}")
+                 base_dir = alt_dir
+             else:
+                 print(f"Dataset directory {base_dir} not found.")
+                 return None
+        else:
+             print(f"Dataset directory {base_dir} not found.")
+             return None
+
+    # 2. Hardcoded File Search
+    target_filename = None
     
-    if val_set_dir.exists():
-        # Find file matching pattern
-        candidates = list(val_set_dir.glob("*.txt"))
-        target_file = None
+    # helper for approximate search
+    candidates = list(base_dir.glob("*.txt"))
+    candidates_names = [f.name for f in candidates]
+
+    # RL Data (TSPlib / CVRPlib)
+    if rl_data:
+        # Map N to suffix
+        # 1000 -> 1K
+        # 10000 -> 10K
+        # 50000 -> 50K
+        # 100000 -> 100K
+        suffix = None
+        if n == 1000: suffix = "1K"
+        elif n == 5000: suffix = "5K"
+        elif n == 10000: suffix = "10K"
+        elif n == 50000: suffix = "50K"
+        elif n == 100000: suffix = "100K"
         
-        # Simple heuristic: filename contains "{problem}{n}" (e.g. tsp100)
-        # We search specifically for the number to avoid partial matches (like tsp10 matching tsp100)
-        # But given standard names (tsp100, tsp1000), "tsp{n}" usually distinct enough if n is distinct.
-        # Let's try to match `{problem}{n}_` or `{problem}{n}` inside name
+        if problem == 'tsp':
+            if suffix:
+                pat = f"TSPlib_{suffix}.txt" 
+                # Verify existence? Or find match
+                # Some files might be slightly different named?
+                # Check exact match first
+                if pat in candidates_names:
+                    target_filename = pat
+            
+            # Fallback scan:
+            if target_filename is None:
+                 # Try to find *TSPlib*
+                 # Filter by N maybe? 
+                 # Just returning first TSPlib related?
+                 matches = [f for f in candidates if "TSPlib" in f.name]
+                 # If we have matches, maybe try to match numeric? 
+                 # For now just pick one?
+                 # If N provided, filtering by N is better.
+                 # Re-scan for pattern like "{n}K" or "{n}"?
+                 pass
+
+        elif problem == 'cvrp':
+            if suffix:
+                pat = f"CVRPlib_{suffix}.txt"
+                if pat in candidates_names:
+                    target_filename = pat
+            if target_filename is None:
+                # CVRPlib fallback
+                pass
+
+    else:
+        # Standard Test Set (MCTS / HGS / LKH generated)
+        # N=1000 -> MCTS_tsp1000... (User request)
+        # N=10000 -> test_tsp10000... (seen in file list) or MCTS_tsp10000...
+        
+        if problem == 'tsp':
+            # Priority: MCTS_{problem}{n} -> test_{problem}{n}
+            
+            # 1. MCTS
+            pat_mcts = f"MCTS_tsp{n}"
+            # 2. test
+            pat_test = f"test_tsp{n}"
+
+            # Scan candidates
+            # Prefer MCTS
+            for f in candidates:
+                if pat_mcts in f.name:
+                     target_filename = f.name
+                     break
+            
+            if target_filename is None:
+                for f in candidates:
+                    if pat_test in f.name:
+                        target_filename = f.name
+                        break
+        
+        elif problem == 'cvrp':
+             # Pattern seen: test_cvrp{n}_hgs...
+             # Maybe MCTS exists?
+             pat_test = f"test_cvrp{n}"
+             for f in candidates:
+                 if pat_test in f.name:
+                     target_filename = f.name
+                     break
+
+    # 3. Load if found
+    if target_filename:
+        full_path = base_dir / target_filename
+        print(f"Auto-detected dataset: {full_path}")
+        if problem == 'tsp':
+            return load_tsp_txt_dataset(str(full_path))
+        else:
+            return load_cvrp_txt_dataset(str(full_path))
+    else:
+        # Fallback to old heuristic scanning if hardcode didn't match
+        # (Original logic roughly)
+        print(f"No strict match for N={n} (rl_data={rl_data}). Scanning for partial match...")
+        
+        # Original scanning logic adapted
         pattern = f"{problem.lower()}{n}"
-        
+        best_cand = None
         for f in candidates:
-             if pattern in f.name.lower():
-                 # Avoid matching tsp100 inside tsp1000 by checking next char is not digit?
-                 # e.g. "tsp100_" vs "tsp1000_"
-                 # Find where pattern starts
-                 name = f.name.lower()
+             name = f.name.lower()
+             if pattern in name:
+                 # check digit boundary?
                  idx = name.find(pattern)
                  if idx != -1:
                      after = name[idx+len(pattern):]
                      if not after or not after[0].isdigit():
-                         target_file = f
+                         best_cand = f
                          break
         
-        if target_file:
-            print(f"Auto-detected validation set: {target_file}")
+        if best_cand:
+            print(f"Fallback detected: {best_cand}")
             if problem == 'tsp':
-                return load_tsp_txt_dataset(str(target_file))
+                return load_tsp_txt_dataset(str(best_cand))
             else:
-                return load_cvrp_txt_dataset(str(target_file))
+                return load_cvrp_txt_dataset(str(best_cand))
 
-    # Priority 2: Fallback to .pt file
+    # Priority 2: Fallback to .pt file (unchanged)
     path = f'{DATA_DIR}/{problem}/valDataset-{n}.pt'
     if not Path(path).exists():
         return None
@@ -1034,3 +1146,284 @@ def generate_and_save_dataset(problem, n_node, n_instances, save_path, baseline_
         
     return dataset
 
+
+def verify_solution_cvrp(coords, demand, capacity, cost, route0):
+    DEMAND_SCALE = 100000
+    n = len(demand)
+    visited = set()
+    total_dist = 0.0
+    cap_int = int(round(capacity * DEMAND_SCALE))
+    demand_int = [int(round(d * DEMAND_SCALE)) for d in demand]
+    current_load_int = 0
+    for i in range(len(route0) - 1):
+        u, v = int(route0[i]), int(route0[i+1])
+        du = coords[u]
+        dv = coords[v]
+        d = np.sqrt(((du - dv)**2).sum())
+        total_dist += d
+        if v == 0:
+            if current_load_int > cap_int:
+                raise ValueError(f"Capacity violation: {current_load_int/DEMAND_SCALE} > {capacity}")
+            current_load_int = 0
+        else:
+            if v in visited:
+                raise ValueError(f"Node {v} visited more than once")
+            visited.add(v)
+            current_load_int += demand_int[v]
+    if len(visited) != n - 1:
+        missing = set(range(1, n)) - visited
+        raise ValueError(f"Missing customers: {missing}")
+    if abs(total_dist - cost) > 1e-3:
+        raise ValueError(f"Cost mismatch: recalculated {total_dist:.6f} vs reported {cost:.6f}")
+    return True
+
+
+def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=True, inject_step=None):
+    if model is not None:
+        model.eval()
+
+    disable_heuristic_arg = args.disable_heuristic
+    if use_heuristic_only:
+        disable_heuristic_arg = False 
+
+    # Determine instance args
+    if problem == 'tsp':
+        coords = instance_data
+        n = len(coords)
+        if n_ants is None:
+             n_ants = int(math.ceil(4 * math.sqrt(n) / 64) * 64)
+             
+        kwargs = {
+            'n_ants': n_ants,
+            'coords': coords,
+            'cand_list_size': k_sparse,
+            'backup_list_size': k_sparse,
+            'disable_heuristic': disable_heuristic_arg,
+            'use_local_search': not args.no_local_search,
+            'decay': args.rho,
+            'device': args.device,
+            'enable_torch_sync': True,
+            'smooth_mmas': not args.no_smooth_mmas,
+            'min_new_edges': args.min_new_edges,
+            'extend_ls': not args.no_extend_ls,
+            'normalized_heuristic': not args.no_normalized_heuristic,
+            'fixed_steps': args.L
+        }
+    else:
+        coords, demand, capacity = instance_data
+        n = len(coords) - 1 # n customers
+        if n_ants is None:
+             n_ants = int(math.ceil(4 * math.sqrt(n) / 64) * 64)
+
+        kwargs = {
+            'coords': coords,
+            'demand': demand,
+            'capacity': float(capacity),
+            'n_ants': n_ants,
+            'cand_list_size': k_sparse,
+            'backup_list_size': max(k_sparse, 64),
+            'min_new_edges': args.min_new_edges,
+            'decay': args.rho,
+            'p_best': 0.05,
+            'use_local_search': not args.no_local_search,
+            'disable_heuristic': disable_heuristic_arg,
+            'extend_ls': not args.no_extend_ls, 
+            'smooth_mmas': not args.no_smooth_mmas,
+            'device': args.device,
+            'enable_torch_sync': True,
+            'normalized_heuristic': not args.no_normalized_heuristic,
+            'fixed_steps': args.L
+        }
+
+    # Normalize coordinates for model input (scale to [0, 1] while preserving aspect ratio)
+    norm_coords = coords
+    if model is not None:
+        if torch.is_tensor(coords):
+             c_min = coords.min(dim=0)[0]
+             c_max = coords.max(dim=0)[0]
+             c_diff = c_max - c_min
+             scale = c_diff.max()
+             if scale < 1e-6: scale = 1.0
+             norm_coords = (coords - c_min) / scale
+        else:
+             c_min = coords.min(axis=0)
+             c_max = coords.max(axis=0)
+             c_diff = c_max - c_min
+             scale = c_diff.max()
+             if scale < 1e-6: scale = 1.0
+             norm_coords = (coords - c_min) / scale
+
+    
+    # Filter kwargs for MMAS classes
+    is_mmas = (aco_class == faco.ACO_TSP or aco_class == faco.ACO_CVRP)
+    if is_mmas:
+        # MMAS classes don't accept these MFACO-specific parameters
+        mmas_kwargs = {
+            'coords': kwargs['coords'],
+            'n_ants': kwargs['n_ants'],
+            'cand_list_size': kwargs['cand_list_size'],
+            'decay': kwargs['decay'],
+            'p_best': kwargs.get('p_best', 0.05),
+            'device': kwargs['device'],
+            'enable_torch_sync': kwargs['enable_torch_sync'],
+        }
+        # Add alpha, beta if available
+        if hasattr(args, 'alpha'):
+            mmas_kwargs['alpha'] = args.alpha
+        if hasattr(args, 'beta'):
+            mmas_kwargs['beta'] = args.beta
+        # CVRP-specific
+        if problem == 'cvrp':
+            mmas_kwargs['demand'] = kwargs['demand']
+            mmas_kwargs['capacity'] = kwargs['capacity']
+        kwargs = mmas_kwargs
+    
+    aco = aco_class(**kwargs)
+    if hasattr(aco, 'reset_timings'): aco.reset_timings()
+
+    best_seen = float("inf")
+    avg_last = None
+    t_neural_total = 0.0
+    priors, pher_before = [], []
+    metrics_log = {k: [] for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match", "survival"]}
+    metrics_log["snapshots"] = []
+
+    collect_iter_stats = bool(getattr(args, "iter_log", False) or getattr(args, "iter_print", False))
+    iter_stats = [] if collect_iter_stats else None
+    
+    with torch.no_grad():
+        for t in range(args.H):
+            do_metrics = collect_metrics and (metrics_every_step or t == args.H - 1)
+            
+            prior_mat = None
+            if do_metrics:
+                pher_before.append(aco.pheromone_sparse.detach().cpu().clone())
+
+            if model is not None and not use_heuristic_only:
+                # If inject_step is set, only use model if t >= inject_step
+                use_model = True
+                if inject_step is not None and t < inject_step:
+                    use_model = False
+                
+                if use_model:
+                    if problem == 'tsp':
+                        pyg_data = build_fn(aco, norm_coords, args.device, dynamic=dynamic)
+                    else:
+                        pyg_data = build_fn(aco, norm_coords, demand, args.device, dynamic=dynamic)
+                    
+                    t_neural_start = time.time()
+                    heu_vec = model(pyg_data).view(-1)
+                    t_neural_total += time.time() - t_neural_start
+                    
+                    prior_mat = heu_vec.view(aco.n, aco.k)
+                    
+                    if do_metrics:
+                        priors.append(prior_mat.detach().cpu().clone())
+
+            for mini_t in range(args.mini_H):
+                # Annealing
+                current_prior = prior_mat
+                if not args.no_anneal and prior_mat is not None:
+                     if args.mini_H > 1:
+                        ratio = mini_t / (args.mini_H - 1)
+                        factor = args.gamma * (1.0 - ratio) + args.min_gamma * ratio
+                     else:
+                        factor = args.gamma
+                     current_prior = prior_mat * factor
+
+                # Sample
+                return_decoded = getattr(args, 'verify', False) and (problem == 'cvrp')
+                
+                prior_arg = current_prior.cpu().numpy() if (current_prior is not None and torch.is_tensor(current_prior)) else current_prior
+
+                if problem == 'tsp':
+                    costs_t, flats, _, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg, parallel_traced=True)
+                else:
+                    costs_t, routes, decoded, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg, return_decoded=return_decoded, parallel_traced=True)
+                    flats = routes
+
+                if do_metrics:
+                    metrics_log["survival"].append(survival.mean().item())
+
+                if return_decoded and problem == 'cvrp':
+                     best_idx_t = int(costs_t.argmin().item())
+                     try:
+                         rt = decoded[best_idx_t] if decoded is not None else flats[best_idx_t]
+                         verify_solution_cvrp(coords, demand, capacity, float(costs_t[best_idx_t]), rt)
+                     except ValueError as e:
+                         print(f"Verification failed: {e}")
+                         sys.exit(1)
+
+                avg_last = float(costs_t.mean().item())
+                best_idx = int(costs_t.argmin().item())
+                best_cost = float(costs_t[best_idx].item())
+                best_seen = min(best_seen, best_cost)
+
+                if collect_iter_stats:
+                    iter_idx = t * int(args.mini_H) + int(mini_t)
+                    iter_stats.append({
+                        "iter": int(iter_idx),
+                        "t": int(t),
+                        "mini_t": int(mini_t),
+                        "mean": float(avg_last),
+                        "best": float(best_seen),
+                    })
+                
+                if problem == 'tsp':
+                    aco._update_pheromone_from_flat(flats[best_idx], best_cost)
+                else:
+                    aco.update_pheromone(flats[best_idx], best_cost)
+
+            if do_metrics:
+                metrics_log["cost"].append(best_seen)
+                is_prior_avail = (len(priors) > 0)
+                
+                if is_prior_avail and len(priors) > 1:
+                     P_prev, P_cur = priors[-2], priors[-1]
+                     metrics_log["l2"].append(rel_l2_drift(P_prev, P_cur))
+                     metrics_log["kl"].append(mean_row_kl(P_prev, P_cur))
+                     metrics_log["turnover"].append(top_turnover(P_prev, P_cur))
+                     metrics_log["flip"].append(top1_flip_rate(P_prev, P_cur))
+                else:
+                     for k in ["l2", "kl", "turnover", "flip"]: metrics_log[k].append(0.0)
+
+                if is_prior_avail:
+                    tau = pher_before[-1] # Match last captured
+                    pr = priors[-1]
+                    metrics_log["corr"].append(safe_corr(tau, pr))
+                    metrics_log["ov"].append(top_overlap_frac(tau, pr))
+                    metrics_log["row_match"].append(row_top1_match_rate(tau, pr))
+                else:
+                    for k in ["corr", "ov", "row_match"]: metrics_log[k].append(0.0)
+            
+            # Capture snapshots at H/2
+            if collect_metrics and t == (args.H // 2):
+                 # Pheromone
+                 pher = aco.pheromone_sparse.detach().cpu()
+                 
+                 # Neural Prior (Model Output)
+                 neural_prior = None
+                 if 'prior_mat' in locals() and prior_mat is not None:
+                      neural_prior = prior_mat.detach().cpu()
+
+                 metrics_log["snapshots"].append({
+                     "t": t,
+                     "pheromone": pher,
+                     "neural_prior": neural_prior
+                 })
+
+
+    timings = {}
+    if hasattr(aco, 'get_timings') and args.timed:
+        t = aco.get_timings()
+        timings = {k: v/1000.0 for k, v in t.items()} # ms to s
+    
+    if args.timed:
+        timings["time_neural"] = t_neural_total
+    
+    extra = {}
+    if collect_metrics:
+        extra["metrics"] = metrics_log
+    if collect_iter_stats:
+        extra["iter_stats"] = iter_stats
+    return avg_last, best_seen, timings, extra

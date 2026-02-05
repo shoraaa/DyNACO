@@ -1393,8 +1393,6 @@ def main():
     if args.baseline == 'default':
         args.baseline = 'lkh' if args.problem == 'tsp' else 'hgs'
         
-    args.extend_ls = not args.no_extend_ls
-    
     if args.threads is None:
         args.threads = psutil.cpu_count(logical=False)
     faco.set_faco_cpp_threads(args.threads)
@@ -1493,6 +1491,11 @@ def main():
             save_checkpoint(
                 net_model, optimizer, epoch, args,
                 save_dir / f"{model_name}_last.pt"
+            )
+            # Save per-epoch checkpoint
+            save_checkpoint(
+                net_model, optimizer, epoch, args,
+                save_dir / f"{model_name}_epoch{epoch}.pt"
             )
     
     # Save final model
