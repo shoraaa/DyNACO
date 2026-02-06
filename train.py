@@ -1060,6 +1060,13 @@ def _preprocess_val_item(item: Any, problem: str) -> Any:
             item[1] = item[1].numpy()
         if torch.is_tensor(item[2]):
             item[2] = float(item[2])
+            
+        # Normalize demand if capacity > 1.0 (indicating raw data)
+        # Training data is already normalized (cap=1.0)
+        capacity = float(item[2])
+        if capacity > 1.0 + 1e-6:
+             item[1] = item[1] / capacity
+             item[2] = 1.0
     else:  # tsp
         if isinstance(item, (tuple, list)):
             item = item[0]

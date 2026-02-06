@@ -645,6 +645,12 @@ def main():
                      item[0] = item[0].numpy()
                      item[1] = item[1].numpy()
                      item[2] = float(item[2])
+                
+                # Normalize demand if capacity > 1.0 (indicating raw data)
+                capacity = float(item[2])
+                if capacity > 1.0 + 1e-6:
+                     item[1] = item[1] / capacity
+                     item[2] = 1.0
 
             if opt_cost is not None and isinstance(opt_cost, (int, float)) and float(opt_cost) > 1e-12:
                 opt_costs_summary.append(float(opt_cost))
