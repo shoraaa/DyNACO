@@ -630,6 +630,38 @@ def load_auto_dataset(n, problem='tsp', data_source='test_set', rl_data=False, d
                  target_filename = "test_cvrp100000_hgs_n16_C2000.txt"
 
 
+        if data_source == 'validation_set':
+            # Validation Set (validation_{problem}{n}...)
+            
+            if problem == 'tsp':
+                if n == 100:
+                    target_filename = "validation_TSP100_n10000.txt"
+                elif n == 1000:
+                    target_filename = "validation_TSP1000_n128.txt"
+                elif n == 5000:
+                    target_filename = "validation_TSP5000_n16.txt"
+                elif n == 10000:
+                    target_filename = "validation_TSP10000_n16.txt"
+                elif n == 50000:
+                    target_filename = "validation_TSP50000_n4.txt"
+                elif n == 100000:
+                    target_filename = "validation_TSP100000_n4.txt"
+            
+            elif problem == 'cvrp':
+                if n == 100:
+                    target_filename = "validation_cvrp100_lkh3_n10000_C50.txt"
+                elif n == 1000:
+                    target_filename = "validation_cvrp1000_n128_C250.txt"
+                elif n == 5000:
+                    target_filename = "validation_cvrp5000_n16_C500.txt"
+                elif n == 10000:
+                    target_filename = "validation_cvrp10000_n16_C1000.txt"
+                elif n == 50000:
+                    target_filename = "validation_cvrp50000_n4_C2000.txt"
+                elif n == 100000:
+                    target_filename = "validation_cvrp100000_n4_C2000.txt"
+
+
     # 3. Load if found
     if target_filename:
         full_path = base_dir / target_filename
