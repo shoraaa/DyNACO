@@ -12,8 +12,21 @@ import time
 import math
 import faco
 
+
+import random
+
 _THIS_DIR = Path(__file__).resolve().parent
 DATA_DIR = (_THIS_DIR / "data").resolve()
+
+
+def set_seed(seed: int):
+    """Set random seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 
 
 # =============================================================================
@@ -288,7 +301,7 @@ def gen_distance_matrix(coords):
 def generate_tsp_instance(n):
     return np.random.rand(n, 2).astype(np.float32)
 
-def build_pyg_data_tsp(aco, coords, device, dynamic: bool):
+def build_pyg_data_tsp(aco, coords, device, dynamic: bool, simple_features: bool = False):
     """
     Build PyG Data for TSP using 2D node features (coords).
     Edge features (6): dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge
@@ -342,10 +355,22 @@ def build_pyg_data_tsp(aco, coords, device, dynamic: bool):
         is_source_pred = torch.zeros((E, 1), device=device, dtype=torch.float32)
         is_new_edge = torch.zeros((E, 1), device=device, dtype=torch.float32)
 
-    edge_attr = torch.cat(
-        [dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
-        dim=1
-    )
+    if simple_features:
+        # Simple features: dist_norm, log_tau_rel, is_in_route (3 features)
+        # Consistent with CVRP
+        is_in_route = (is_source_succ > 0.5) | (is_source_pred > 0.5)
+        is_in_route = is_in_route.to(torch.float32).view(E, 1)
+        
+        edge_attr = torch.cat(
+            [dist_norm, log_tau_rel, is_in_route],
+            dim=1
+        )
+    else:
+        # Full features (6 features)
+        edge_attr = torch.cat(
+            [dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
+            dim=1
+        )
     return Data(x=coords, edge_index=edge_index, edge_attr=edge_attr)
 
 
@@ -424,15 +449,13 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
         log_tau_rel = torch.log(tau_rel).clamp(-5.0, 5.0).view(E, 1)
         # Simplified: removed tau_cv
     else:
+        tau_rel = torch.ones((E, 1), device=device, dtype=torch.float32)
         log_tau_rel = torch.zeros((E, 1), device=device, dtype=torch.float32)
 
     # Source-route features for CVRP
     # CVRP route is variable-length: [0, c1, c2, 0, c3, c4, 0, ...]
     # Depot (0) can have multiple edges - we use directed edge matrices
-    try:
-        src_route_np = aco.source_route
-    except AttributeError:
-        src_route_np = aco.source_perm
+    src_route_np = aco.source_route
     
     src_route = torch.as_tensor(np.asarray(src_route_np, dtype=np.int64), device=device, dtype=torch.long)
     
@@ -505,7 +528,7 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
     is_in_route = is_in_route.to(torch.float32).view(E, 1)
 
     edge_attr = torch.cat(
-        [dist_norm, log_tau_rel, is_in_route],
+        [dist_norm, tau_rel, is_in_route],
         dim=1
     )
 
@@ -1349,7 +1372,16 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
             mmas_kwargs['capacity'] = kwargs['capacity']
         kwargs = mmas_kwargs
     
+    
     aco = aco_class(**kwargs)
+    
+    # Seeding C++ backend
+    # We generate a unique seed for this instance from the global numpy state
+    # This ensures determinism if global seed is set, but uniqueness across instances
+    instance_seed = np.random.randint(0, 2**63 - 1)
+    if hasattr(aco, 'seed_rng'):
+        aco.seed_rng(instance_seed)
+
     if hasattr(aco, 'reset_timings'): aco.reset_timings()
 
     best_seen = float("inf")

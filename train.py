@@ -22,6 +22,7 @@ import gc
 
 # Shared helpers
 import wandb
+import functools
 
 # Unified modules
 import net
@@ -400,8 +401,11 @@ def train_instance_reinforce(
     
     aco, pyg_args = setup_aco(args, instance_data, args.problem)
     eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
-    build_fn = (utils.build_pyg_data_tsp if args.problem == 'tsp' 
-                else utils.build_pyg_data_cvrp)
+    eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
+    if args.problem == 'tsp':
+        build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
+    else:
+        build_fn = utils.build_pyg_data_cvrp
 
     best_seen = float("inf")
     avg_cost_last = None
@@ -571,8 +575,11 @@ def train_instance_ppo(
     
     aco, pyg_args = setup_aco(args, instance_data, args.problem)
     eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
-    build_fn = (utils.build_pyg_data_tsp if args.problem == 'tsp' 
-                else utils.build_pyg_data_cvrp)
+    eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
+    if args.problem == 'tsp':
+        build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
+    else:
+        build_fn = utils.build_pyg_data_cvrp
 
     best_seen = float("inf")
     avg_cost_last = None
@@ -886,7 +893,7 @@ def infer_instance(
     """
     if args.problem == 'tsp':
         aco, pyg_args = setup_aco(args, instance_data, 'tsp')
-        build_fn = utils.build_pyg_data_tsp
+        build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
     else:
         aco, pyg_args = setup_aco(args, instance_data, 'cvrp')
         build_fn = utils.build_pyg_data_cvrp
@@ -1173,6 +1180,7 @@ def parse_args() -> argparse.Namespace:
                         help="Path to save generated validation dataset")
     parser.add_argument("--val_H", type=int, default=None)
     parser.add_argument("--val_mini_H", type=int, default=None)
+    parser.add_argument("--simple_features", action="store_true", help="Use simplified edge features for TSP (3 instead of 6)")
     
     # Warmup and annealing
     parser.add_argument("--warmup", action="store_true", default=True,
@@ -1406,7 +1414,12 @@ def main():
     
 
 
+
+    import functools
+    
     # Setup defaults
+    utils.set_seed(args.seed)
+    
     if args.lr is None:
         args.lr = args.ppo_lr if args.algo == 'ppo' else args.reinforce_lr
     
@@ -1467,9 +1480,14 @@ def main():
 
     # Initialize model
     feats = 2 if args.problem == 'tsp' else 4
+    
+    edge_feats = 6 if args.problem == 'tsp' else 3
+    if args.simple_features and args.problem == 'tsp':
+        edge_feats = 3
+
     net_model = Net(
         feats=feats,
-        edge_feats=6 if args.problem == 'tsp' else 3,
+        edge_feats=edge_feats,
         logit_net=not args.no_logit_net,
     ).to(args.device)
     

@@ -126,6 +126,7 @@ def main():
     parser.add_argument("--no_normalized_heuristic", action="store_true")
     parser.add_argument("--no_logit_net", action="store_true")
     parser.add_argument("--no_dynamic_feats", action="store_true")
+    parser.add_argument("--simple_features", action="store_true", help="Use simplified edge features for TSP")
     
     parser.add_argument("--baseline", type=str, default='default')
     parser.add_argument("--baseline_time_limit", type=float, default=2.0)
@@ -255,9 +256,8 @@ def main():
     faco.set_faco_cpp_threads(args.threads)
     
     # Seeds
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    random.seed(args.seed)
+    # Seeds
+    utils.set_seed(args.seed)
 
     if args.log:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -304,9 +304,10 @@ def main():
             csv_path_iters = out_dir / f"{csv_name_base}_iters.csv"
             print(f"CSV iters:     {csv_path_iters}")
     
+    import functools
     # Setup modules
     if args.problem == 'tsp':
-        build_fn = utils.build_pyg_data_tsp
+        build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
         gen_fn = utils.generate_tsp_instance
         if args.alg == 'mmas':
             MFACO = faco.ACO_TSP
@@ -461,7 +462,12 @@ def main():
         # Model
         feats = 2 if args.problem == 'tsp' else 4
         # Simplified dynamic features for CVRP
+        feats = 2 if args.problem == 'tsp' else 4
+        # Simplified dynamic features for CVRP
         edge_feats = 6 if args.problem == 'tsp' else 3
+        if args.simple_features and args.problem == 'tsp':
+            edge_feats = 3
+
         model = Net(feats=feats, edge_feats=edge_feats, logit_net=not args.no_logit_net).to(args.device)
         model.load_state_dict(state_dict)
         model.eval()
