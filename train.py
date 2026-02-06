@@ -1104,7 +1104,7 @@ def parse_args() -> argparse.Namespace:
     
     # ACO configuration
     parser.add_argument("--rho", type=float, default=0.5)
-    parser.add_argument("--min_new_edges", type=int, default=12)
+    parser.add_argument("--min_new_edges", type=int, default=None)
     parser.add_argument("--H", type=int, default=10)
     parser.add_argument("--mini_H", type=int, default=100)
     parser.add_argument("--disable_heuristic", action="store_true")
@@ -1405,6 +1405,25 @@ def main():
     
     if args.baseline == 'default':
         args.baseline = 'lkh' if args.problem == 'tsp' else 'hgs'
+    
+    # Auto-set min_new_edges for CVRP based on capacity
+    if args.problem == 'cvrp' and args.min_new_edges is None:
+        # Use same capacity logic as utils.gen_cvrp_instance
+        if args.n_node >= 50000:
+            capacity = 2000
+        elif args.n_node >= 10000:
+            capacity = 1000
+        elif args.n_node >= 5000:
+            capacity = 500
+        elif args.n_node >= 1000:
+            capacity = 250
+        else:
+            capacity = 50
+        args.min_new_edges = int(capacity / 20)
+        print(f"Auto-set min_new_edges to {args.min_new_edges} (capacity={capacity}, capacity/20={capacity/20})")
+    elif args.min_new_edges is None:
+        # Default for TSP
+        args.min_new_edges = 12
         
     if args.threads is None:
         args.threads = psutil.cpu_count(logical=False)
