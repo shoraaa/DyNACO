@@ -1160,7 +1160,7 @@ def parse_args() -> argparse.Namespace:
     # Baseline configuration
     parser.add_argument("--baseline", type=str, default='default')
     parser.add_argument("--baseline_runs", type=int, default=1)
-    parser.add_argument("--baseline_time_limit", type=float, default=300.0)
+    parser.add_argument("--baseline_time_limit", type=float, default=0.5)
     
     # Validation configuration
     parser.add_argument("--val_dataset", type=str, default=None,
