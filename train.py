@@ -1170,7 +1170,7 @@ def parse_args() -> argparse.Namespace:
     # Warmup and annealing
     parser.add_argument("--warmup", action="store_true", default=True,
                         help="Use warmup strategy in validation")
-    parser.add_argument("--no-warmup", dest="warmup", action="store_false")
+    parser.add_argument("--no-warmup", "--no_warmup", dest="warmup", action="store_false")
     parser.add_argument("--train_warmup", action="store_true",
                         help="Use warmup strategy in training")
     parser.add_argument("--warmup_ratio", type=float, default=0.5)

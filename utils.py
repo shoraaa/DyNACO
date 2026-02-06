@@ -354,7 +354,6 @@ def build_pyg_data_tsp(aco, coords, device, dynamic: bool):
 CAPACITY = 250
 DEMAND_LOW = 1
 DEMAND_HIGH = 9
-DEPOT_COOR = [0.5, 0.5]
 
 def gen_cvrp_instance(n, device, capacity=None):
     """

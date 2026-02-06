@@ -7,23 +7,26 @@ def is_float(value):
     except ValueError:
         return False
 
-def main():
+def recalculate_gaps(filename, datasets, baseline_method):
     rows = []
     fieldnames = []
     
-    # Read CSV
-    with open('results.csv', 'r') as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames
-        for row in reader:
-            rows.append(row)
-            
-    # Find LKH3 baselines
+    try:
+        # Read CSV
+        with open(filename, 'r') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            for row in reader:
+                rows.append(row)
+    except FileNotFoundError:
+        print(f"File {filename} not found.")
+        return
+
+    # Find baseline row
     baselines = {}
-    datasets = ["TSP1K", "TSP5K", "TSP10K", "TSP50K", "TSP100K"]
     
     for row in rows:
-        if row['Method'] == 'LKH3':
+        if row['Method'] == baseline_method:
             for ds in datasets:
                 obj_key = f"{ds}_Obj"
                 if is_float(row[obj_key]):
@@ -31,10 +34,10 @@ def main():
             break
             
     if not baselines:
-        print("Error: LKH3 row not found or has invalid values.")
+        print(f"Error: Baseline method '{baseline_method}' not found or has invalid values in {filename}.")
         return
 
-    print(f"Baselines: {baselines}")
+    print(f"Baselines for {filename} ({baseline_method}): {baselines}")
 
     # Recalculate Gaps
     for row in rows:
@@ -43,6 +46,10 @@ def main():
             obj_key = f"{ds}_Obj"
             gap_key = f"{ds}_Gap(%)"
             
+            # Check if dataset exists in this row (column exists)
+            if obj_key not in row:
+                continue
+
             obj_val = row[obj_key]
             
             # Skip if Obj is not a number (e.g. -, N/A, OOM)
@@ -61,17 +68,23 @@ def main():
             gap = ((current_obj - base_obj) / base_obj) * 100
             
             # Update row
-            # Keep consistent formatting? CSV usually had variable decimals.
-            # Let's use 2 decimals to match previous manual entries strictly
             row[gap_key] = f"{gap:.2f}"
             
     # Write back
-    with open('results.csv', 'w', newline='') as f:
+    with open(filename, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
         
-    print("Updated gaps in results.csv")
+    print(f"Updated gaps in {filename}")
+
+def main():
+    # Helper to run manually if needed
+    tsp_datasets = ["TSP1K", "TSP5K", "TSP10K", "TSP50K", "TSP100K"]
+    recalculate_gaps('results.csv', tsp_datasets, 'LKH3')
+    
+    cvrp_datasets = ["CVRP1K", "CVRP5K", "CVRP10K", "CVRP50K", "CVRP100K"]
+    recalculate_gaps('result_cvrp.csv', cvrp_datasets, 'HGS')
 
 if __name__ == "__main__":
     main()

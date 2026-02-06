@@ -121,7 +121,7 @@ def main():
     parser.add_argument("--no_local_search", action="store_true")
     parser.add_argument("--no_smooth_mmas", action="store_true")
     parser.add_argument("--no_extend_ls", action="store_true")
-    parser.add_argument("--rho", type=float, default=0.5)
+    parser.add_argument("--rho", type=float, default=0.1)
     parser.add_argument("--min_new_edges", type=int, default=12)
     parser.add_argument("--no_normalized_heuristic", action="store_true")
     parser.add_argument("--no_logit_net", action="store_true")
@@ -176,7 +176,9 @@ def main():
         pretrained_dir = f"pretrained/{args.problem}/n{args.n_node}"
         if os.path.exists(pretrained_dir):
             # Try to find a matching checkpoint
-            pattern = f"{args.problem}_n{args.n_node}_*_best.pt"
+            # pattern = f"{args.problem}_n{args.n_node}_*_best.pt"
+            # pattern = f"{args.problem}_n{args.n_node}_k{args.k_sparse}_ants{args.n_ants}_H{args.H}_miniH{args.mini_H}_rho{args.rho}_*_best.pt"
+            pattern = f"{args.problem}_n{args.n_node}_*_rho{args.rho}_*_best.pt"
             matches = glob.glob(os.path.join(pretrained_dir, pattern))
             if matches:
                 # Prefer exact match, otherwise use first match
@@ -1033,9 +1035,10 @@ def main():
                  print(f"Model Gap to Baseline (no_anneal): {mod_gap_bl_na * 100:.4f}%")
              
              if args.warmup:
-                  mix_gap_bl = (np.mean(results["mix_cost"]) - baseline_values.mean()) / baseline_values.mean()
-                  print(f"Mix Gap to Baseline (anneal): {mix_gap_bl * 100:.4f}%")
-                  if results["mix_cost_no_anneal"]:
+                  if results.get("mix_cost") and len(results["mix_cost"]) > 0:
+                      mix_gap_bl = (np.mean(results["mix_cost"]) - baseline_values.mean()) / baseline_values.mean()
+                      print(f"Mix Gap to Baseline (anneal): {mix_gap_bl * 100:.4f}%")
+                  if results.get("mix_cost_no_anneal") and len(results["mix_cost_no_anneal"]) > 0:
                       mix_gap_bl_na = (np.mean(results["mix_cost_no_anneal"]) - baseline_values.mean()) / baseline_values.mean()
                       print(f"Mix Gap to Baseline (no_anneal): {mix_gap_bl_na * 100:.4f}%")
 
