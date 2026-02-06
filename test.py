@@ -458,8 +458,11 @@ def main():
         config = ckpt.get("config", {})
         # ... logic to override args if needed ...
 
+        # Model
         feats = 2 if args.problem == 'tsp' else 4
-        model = Net(feats=feats, logit_net=not args.no_logit_net).to(args.device)
+        # Simplified dynamic features for CVRP
+        edge_feats = 6 if args.problem == 'tsp' else 3
+        model = Net(feats=feats, edge_feats=edge_feats, logit_net=not args.no_logit_net).to(args.device)
         model.load_state_dict(state_dict)
         model.eval()
 

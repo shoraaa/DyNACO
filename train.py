@@ -1469,8 +1469,8 @@ def main():
     feats = 2 if args.problem == 'tsp' else 4
     net_model = Net(
         feats=feats,
+        edge_feats=6 if args.problem == 'tsp' else 3,
         logit_net=not args.no_logit_net,
-
     ).to(args.device)
     
     optimizer = torch.optim.AdamW(net_model.parameters(), lr=args.lr)

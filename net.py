@@ -219,12 +219,12 @@ class EmbNetCheckpoint(nn.Module):
         return w
 
 class Net(nn.Module):
-    def __init__(self, feats=2, logit_net=False, grad_checkpointing=False):
+    def __init__(self, feats=2, edge_feats=6, logit_net=False, grad_checkpointing=False):
         super().__init__()
         if grad_checkpointing:
-            self.emb_net = EmbNetCheckpoint(feats=feats, edge_feats=6)
+            self.emb_net = EmbNetCheckpoint(feats=feats, edge_feats=edge_feats)
         else:
-            self.emb_net = EmbNet(feats=feats, edge_feats=6)
+            self.emb_net = EmbNet(feats=feats, edge_feats=edge_feats)
         # self.par_net_phe = ParNet()
         self.par_net_heu = ParNet(logit_net=logit_net)
     def forward(self, pyg):
