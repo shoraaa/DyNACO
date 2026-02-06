@@ -1264,7 +1264,7 @@ def load_validation_data(args: argparse.Namespace, logger: Logger):
         val_dataset = utils.load_auto_dataset(
             args.n_node, 
             problem=args.problem, 
-            data_source='test_set', # Default source
+            data_source='validation_set', # Use validation set (not test set)
             rl_data=False,          # Default assumption unless training needs RL data
             device='cpu'
         )
@@ -1543,6 +1543,18 @@ def main():
     best_model_state = None
     total_train_time = 0.0
     
+    # Pre-training validation
+    if val_dataset is not None:
+        logger.info("Running pre-training validation...")
+        avg_last, avg_best, avg_gap, val_metrics = validation(
+            net_model, val_dataset, args, baseline_values
+        )
+        logger.log_epoch_summary(-1, 0.0, avg_best, avg_gap)
+        logger.log_validation(
+            avg_last, avg_best, avg_gap, -1, val_metrics,
+            timing=None, step=global_step
+        )
+
     for epoch in range(start_epoch, args.epochs):
         # Train one epoch
         (global_step, avg_train, t_neural, t_aco, 
