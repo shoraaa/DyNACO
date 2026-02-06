@@ -489,11 +489,41 @@ def main():
         "model_gap_no_anneal": [],
         "mix_gap": [],
         "mix_gap_no_anneal": [],
+        "model_gap_no_anneal": [],
+        "mix_gap": [],
+        "mix_gap_no_anneal": [],
         "model_time_breakdown": {
             "neural": [], "sampling": [], "ls": [], "update": []
         }
     }
-    
+
+    TARGET_HS = [10, 20, 50, 100]
+    # Initialize keys for Target HS
+    for h in TARGET_HS:
+        results[f"base_cost_H{h}"] = []
+        results[f"base_time_H{h}"] = []
+        
+        results[f"model_cost_H{h}"] = []
+        results[f"model_time_H{h}"] = []
+        results[f"model_neural_time_H{h}"] = []
+        
+        results[f"model_no_anneal_cost_H{h}"] = []
+        results[f"model_no_anneal_time_H{h}"] = []
+        results[f"model_no_anneal_neural_time_H{h}"] = []
+
+        results[f"mix_cost_H{h}"] = []
+        results[f"mix_time_H{h}"] = []
+        results[f"mix_neural_time_H{h}"] = []
+
+        results[f"mix_no_anneal_cost_H{h}"] = []
+        results[f"mix_no_anneal_time_H{h}"] = []
+        results[f"mix_no_anneal_neural_time_H{h}"] = []
+        
+    results["model_neural_time"] = []
+    results["model_neural_time_no_anneal"] = []
+    results["mix_neural_time"] = []
+    results["mix_neural_time_no_anneal"] = []
+
     iterable = val_list
     if args.problem == 'cvrp' and hasattr(val_list, 'tensors'):
          iterable = torch.utils.data.DataLoader(val_list, batch_size=1, shuffle=False)
@@ -550,6 +580,29 @@ def main():
             iter_csv_f = None
             iter_csv_writer = None
 
+    def _record_history(prefix, history, res_dict):
+        # map t -> (time, cost, neural_time)
+        # history items can be 3 or 4 elements: (t, time, cost) or (t, time, cost, neural_time)
+        t_map = {}
+        for item in history:
+            t = item[0]
+            val_tuple = (item[1], item[2])
+            n_time = item[3] if len(item) > 3 else 0.0
+            t_map[t] = (val_tuple[0], val_tuple[1], n_time)
+
+        for h in TARGET_HS:
+            val = t_map.get(h)
+            if val:
+                res_dict[f"{prefix}_cost_H{h}"].append(val[1])
+                res_dict[f"{prefix}_time_H{h}"].append(val[0])
+                if f"{prefix}_neural_time_H{h}" in res_dict:
+                    res_dict[f"{prefix}_neural_time_H{h}"].append(val[2])
+            else:
+                res_dict[f"{prefix}_cost_H{h}"].append(None)
+                res_dict[f"{prefix}_time_H{h}"].append(None)
+                if f"{prefix}_neural_time_H{h}" in res_dict:
+                    res_dict[f"{prefix}_neural_time_H{h}"].append(None)
+
     for i, item in enumerate(tqdm(iterable)):
         opt_cost = None
         
@@ -605,6 +658,8 @@ def main():
                 base_best = float(cached_base_costs[i])
                 results["base_cost"].append(base_best)
                 results["base_time"].append(0.0)
+                # Fill intermediate history with None for cached results
+                _record_history("base", [], results)
             else:
                 tb0 = time.time()
                 base_ret = infer_instance(
@@ -621,6 +676,8 @@ def main():
                 base_iter_stats = base_extra.get("iter_stats")
                 results["base_cost"].append(base_best)
                 results["base_time"].append(tb1 - tb0)
+                
+                _record_history("base", base_extra.get("history", []), results)
 
                 if args.iter_log and iter_csv_writer is not None and base_iter_stats is not None:
                     for st in base_iter_stats:
@@ -639,6 +696,8 @@ def main():
                  gap = (base_best - opt_cost) / opt_cost
                  results["base_gap"].append(gap)
                  results["opt_cost"].append(opt_cost)
+            
+
 
         # Model
         model_best = None
@@ -679,6 +738,7 @@ def main():
                   model_iter_stats = mod_extra.get("iter_stats")
                   results["model_cost"].append(model_best)
                   results["model_time"].append(tm1 - tm0)
+                  results["model_neural_time"].append(mod_timings.get("time_neural", 0.0))
 
                   if args.iter_log and iter_csv_writer is not None and model_iter_stats is not None:
                       for st in model_iter_stats:
@@ -702,6 +762,8 @@ def main():
                   if opt_cost is not None and opt_cost > 1e-6:
                       gap = (model_best - opt_cost) / opt_cost
                       results["model_gap"].append(gap)
+                  
+                  _record_history("model", mod_extra.get("history", []), results)
 
               # Model (anneal OFF)
               if run_model_no_anneal:
@@ -715,10 +777,11 @@ def main():
                       metrics_every_step=False,
                   )
                   tm1 = time.time()
-                  _, model_best_na, _, mod_na_extra = mod_ret_na
+                  _, model_best_na, mod_na_timings, mod_na_extra = mod_ret_na
                   model_na_iter_stats = mod_na_extra.get("iter_stats")
                   results["model_cost_no_anneal"].append(model_best_na)
                   results["model_time_no_anneal"].append(tm1 - tm0)
+                  results["model_neural_time_no_anneal"].append(mod_na_timings.get("time_neural", 0.0))
 
                   if args.iter_log and iter_csv_writer is not None and model_na_iter_stats is not None:
                       for st in model_na_iter_stats:
@@ -736,6 +799,8 @@ def main():
                   if opt_cost is not None and opt_cost > 1e-6:
                       gap_na = (model_best_na - opt_cost) / opt_cost
                       results["model_gap_no_anneal"].append(gap_na)
+                  
+                  _record_history("model_no_anneal", mod_na_extra.get("history", []), results)
                           # Mix methods (only if warmup is enabled)
               if args.warmup:
                   inject_step = int(args.H * args.warmup_ratio)
@@ -753,11 +818,12 @@ def main():
                           inject_step=inject_step,
                       )
                       tmi1 = time.time()
-                      _, mix_best, _, mix_extra = mix_ret
+                      _, mix_best, mix_timings, mix_extra = mix_ret
                       mix_m = mix_extra.get("metrics")
                       mix_iter_stats = mix_extra.get("iter_stats")
                       results["mix_cost"].append(mix_best)
                       results["mix_time"].append(tmi1 - tmi0)
+                      results["mix_neural_time"].append(mix_timings.get("time_neural", 0.0))
 
                       if args.iter_log and iter_csv_writer is not None and mix_iter_stats is not None:
                           for st in mix_iter_stats:
@@ -775,6 +841,8 @@ def main():
                       if opt_cost is not None and opt_cost > 1e-6:
                           gap = (mix_best - opt_cost) / opt_cost
                           results["mix_gap"].append(gap)
+                      
+                      _record_history("mix", mix_extra.get("history", []), results)
 
                   # Mix (anneal OFF)
                   if run_mix_no_anneal:
@@ -789,10 +857,11 @@ def main():
                           inject_step=inject_step,
                       )
                       tmi1 = time.time()
-                      _, mix_best_na, _, mix_na_extra = mix_ret_na
+                      _, mix_best_na, mix_na_timings, mix_na_extra = mix_ret_na
                       mix_na_iter_stats = mix_na_extra.get("iter_stats")
                       results["mix_cost_no_anneal"].append(mix_best_na)
                       results["mix_time_no_anneal"].append(tmi1 - tmi0)
+                      results["mix_neural_time_no_anneal"].append(mix_na_timings.get("time_neural", 0.0))
 
                       if args.iter_log and iter_csv_writer is not None and mix_na_iter_stats is not None:
                           for st in mix_na_iter_stats:
@@ -810,6 +879,8 @@ def main():
                       if opt_cost is not None and opt_cost > 1e-6:
                           gap_na = (mix_best_na - opt_cost) / opt_cost
                           results["mix_gap_no_anneal"].append(gap_na)
+
+                      _record_history("mix_no_anneal", mix_na_extra.get("history", []), results)
         
         if args.visualize:
             if i == 0:
@@ -908,7 +979,7 @@ def main():
         # Per-instance CSV logging (always capture if --log)
         if args.log:
             bl_i = float(baseline_values[i]) if (baseline_values is not None and len(baseline_values) > i) else None
-            per_instance_rows.append({
+            row_dict = {
                 "idx": i,
                 "name": name,
                 "opt": (float(opt_cost) if opt_cost is not None else None),
@@ -918,7 +989,30 @@ def main():
                 "model_no_anneal": (float(model_best_na) if model_best_na is not None else None),
                 "mix_anneal": (float(mix_best) if mix_best is not None else None),
                 "mix_no_anneal": (float(mix_best_na) if mix_best_na is not None else None),
-            })
+            }
+            # Add H metrics
+            for h in TARGET_HS:
+                 def _get_val(k, idx):
+                     lst = results.get(k)
+                     if lst and len(lst) > idx: return lst[idx]
+                     return None
+                 
+                 row_dict[f"base_H{h}"] = _get_val(f"base_cost_H{h}", i)
+                 row_dict[f"base_time_H{h}"] = _get_val(f"base_time_H{h}", i)
+                 
+                 row_dict[f"model_anneal_H{h}"] = _get_val(f"model_cost_H{h}", i)
+                 row_dict[f"model_anneal_time_H{h}"] = _get_val(f"model_time_H{h}", i)
+                 
+                 row_dict[f"model_no_anneal_H{h}"] = _get_val(f"model_no_anneal_cost_H{h}", i)
+                 row_dict[f"model_no_anneal_time_H{h}"] = _get_val(f"model_no_anneal_time_H{h}", i)
+
+                 row_dict[f"mix_anneal_H{h}"] = _get_val(f"mix_cost_H{h}", i)
+                 row_dict[f"mix_anneal_time_H{h}"] = _get_val(f"mix_time_H{h}", i)
+
+                 row_dict[f"mix_no_anneal_H{h}"] = _get_val(f"mix_no_anneal_cost_H{h}", i)
+                 row_dict[f"mix_no_anneal_time_H{h}"] = _get_val(f"mix_no_anneal_time_H{h}", i)
+
+            per_instance_rows.append(row_dict)
 
     if iter_csv_f is not None:
         try:
@@ -931,7 +1025,10 @@ def main():
     def _mean_std(xs):
         if xs is None or len(xs) == 0:
             return None, None
-        arr = np.array(xs, dtype=float)
+        # Filter None
+        valid = [x for x in xs if x is not None]
+        if not valid: return None, None
+        arr = np.array(valid, dtype=float)
         return float(arr.mean()), float(arr.std(ddof=0))
 
     def _fmt(x, nd=4, empty="-"):
@@ -1077,10 +1174,18 @@ def main():
         gaps = (c[ok] - b[ok]) / b[ok]
         return gaps
 
-    def _add_method_row(name, cost_list, time_list, gap_list=None):
+    def _add_method_row(name, cost_list, time_list, gap_list=None, neural_time_list=None):
         m, s = _mean_std(cost_list)
         tm, _ = _mean_std(time_list)
-
+        
+        # Calculate A+B time format if neural_time_list is provided
+        time_str = _fmt(tm)
+        if neural_time_list is not None:
+             nm, _ = _mean_std(neural_time_list)
+             if tm is not None and nm is not None:
+                 cpu_time = max(0.0, tm - nm)
+                 time_str = f"{cpu_time:.2f}+{nm:.2f}"
+        
         # Prefer gap to Opt (from txt dataset optimal values) when available.
         gap_ref = "-"
         gap_val = None
@@ -1106,7 +1211,7 @@ def main():
             _fmt(gap_val, nd=2),
             _fmt(gap_std, nd=2),
             gap_ref,
-            _fmt(tm),
+            time_str,
             "",
         ])
         if m is not None:
@@ -1118,17 +1223,36 @@ def main():
     if model:
         # Only add rows for methods that were actually executed (non-empty results)
         if results.get("model_cost") and len(results["model_cost"]) > 0:
-            _add_method_row("Model(anneal)", results["model_cost"], results.get("model_time", []), results.get("model_gap", []))
+            _add_method_row("Model(anneal)", results["model_cost"], results.get("model_time", []), results.get("model_gap", []), neural_time_list=results.get("model_neural_time"))
 
         if results.get("model_cost_no_anneal") and len(results["model_cost_no_anneal"]) > 0:
-            _add_method_row("Model(no_anneal)", results["model_cost_no_anneal"], results.get("model_time_no_anneal", []), results.get("model_gap_no_anneal", []))
+            _add_method_row("Model(no_anneal)", results["model_cost_no_anneal"], results.get("model_time_no_anneal", []), results.get("model_gap_no_anneal", []), neural_time_list=results.get("model_neural_time_no_anneal"))
 
         if args.warmup:
             if results.get("mix_cost") and len(results["mix_cost"]) > 0:
-                _add_method_row("Mix(anneal)", results["mix_cost"], results.get("mix_time", []), results.get("mix_gap", []))
+                _add_method_row("Mix(anneal)", results["mix_cost"], results.get("mix_time", []), results.get("mix_gap", []), neural_time_list=results.get("mix_neural_time"))
 
             if results.get("mix_cost_no_anneal") and len(results["mix_cost_no_anneal"]) > 0:
-                _add_method_row("Mix(no_anneal)", results["mix_cost_no_anneal"], results.get("mix_time_no_anneal", []), results.get("mix_gap_no_anneal", []))
+                _add_method_row("Mix(no_anneal)", results["mix_cost_no_anneal"], results.get("mix_time_no_anneal", []), results.get("mix_gap_no_anneal", []), neural_time_list=results.get("mix_neural_time_no_anneal"))
+
+    # Add H-checkpoint rows
+    for h in TARGET_HS:
+         # Base
+         if (not args.no_baseline) and results.get(f"base_cost_H{h}"):
+             _add_method_row(f"Base@H{h}", results[f"base_cost_H{h}"], results.get(f"base_time_H{h}", []))
+         
+         # Model
+         if results.get(f"model_cost_H{h}"):
+             _add_method_row(f"Model(anneal)@H{h}", results[f"model_cost_H{h}"], results.get(f"model_time_H{h}", []), neural_time_list=results.get(f"model_neural_time_H{h}"))
+         if results.get(f"model_no_anneal_cost_H{h}"):
+             _add_method_row(f"Model(no_anneal)@H{h}", results[f"model_no_anneal_cost_H{h}"], results.get(f"model_no_anneal_time_H{h}", []), neural_time_list=results.get(f"model_no_anneal_neural_time_H{h}"))
+         
+         # Mix
+         if args.warmup:
+             if results.get(f"mix_cost_H{h}"):
+                 _add_method_row(f"Mix(anneal)@H{h}", results[f"mix_cost_H{h}"], results.get(f"mix_time_H{h}", []), neural_time_list=results.get(f"mix_neural_time_H{h}"))
+             if results.get(f"mix_no_anneal_cost_H{h}"):
+                 _add_method_row(f"Mix(no_anneal)@H{h}", results[f"mix_no_anneal_cost_H{h}"], results.get(f"mix_no_anneal_time_H{h}", []), neural_time_list=results.get(f"mix_no_anneal_neural_time_H{h}"))
 
     if summary_rows:
         best_name = min(candidates, key=lambda x: x[0])[1] if candidates else None
@@ -1175,6 +1299,14 @@ def main():
                 "mix_anneal",
                 "mix_no_anneal",
             ]
+            for h in TARGET_HS:
+                fieldnames.extend([
+                    f"base_H{h}", f"base_time_H{h}",
+                    f"model_anneal_H{h}", f"model_anneal_time_H{h}",
+                    f"model_no_anneal_H{h}", f"model_no_anneal_time_H{h}",
+                    f"mix_anneal_H{h}", f"mix_anneal_time_H{h}",
+                    f"mix_no_anneal_H{h}", f"mix_no_anneal_time_H{h}",
+                ])
             with open(csv_path_instances, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()

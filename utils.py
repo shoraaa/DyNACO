@@ -1331,6 +1331,10 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
     collect_iter_stats = bool(getattr(args, "iter_log", False) or getattr(args, "iter_print", False))
     iter_stats = [] if collect_iter_stats else None
     
+    history = []
+    t_start_total_infer = time.time()
+
+    
     # Setup tqdm bar if iter_print is requested
     pbar = None
     if getattr(args, "iter_print", False):
@@ -1427,7 +1431,16 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                         "best": f"{best_seen:.4f}", 
                         "mean": f"{avg_last:.4f}"
                     })
+                    pbar.set_postfix({
+                        "best": f"{best_seen:.4f}", 
+                        "mean": f"{avg_last:.4f}"
+                    })
                     pbar.update(1)
+
+            # Record history at step t (1-based index is t+1)
+            # t is 0-based index of H loop
+            # Added t_neural_total to history
+            history.append((t + 1, time.time() - t_start_total_infer, best_seen, t_neural_total))
 
             if do_metrics:
                 metrics_log["cost"].append(best_seen)
@@ -1483,4 +1496,6 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
         extra["metrics"] = metrics_log
     if collect_iter_stats:
         extra["iter_stats"] = iter_stats
+    
+    extra["history"] = history
     return avg_last, best_seen, timings, extra
