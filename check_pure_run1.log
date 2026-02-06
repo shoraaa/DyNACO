@@ -1,0 +1,17 @@
+No strict match for N=20 (rl_data=False). Scanning for partial match...
+2026-02-07 06:31:25 | INFO | Running pre-training validation (Pure MFACO)...
+2026-02-07 06:31:25 | INFO | Validating on 16 instances...
+Validating:   0%|          | 0/16 [00:00<?, ?it/s]Validating:   6%|▋         | 1/16 [00:00<00:01,  8.16it/s]Validating:  94%|█████████▍| 15/16 [00:00<00:00, 76.46it/s]                                                           2026-02-07 06:31:25 | INFO | Epoch -1: TrainCost=0.0000 ValBest=3.8714 Gap=0.00%
+Epoch:   0%|          | 0/2 [00:00<?, ?it/s]
+Outer:   0%|          | 0/2 [00:00<?, ?it/s][A
+Outer:  50%|█████     | 1/2 [00:00<00:00,  1.37it/s][A
+Outer: 100%|██████████| 2/2 [00:00<00:00,  2.56it/s][A
+                                                    [AEpoch:  50%|█████     | 1/2 [00:00<00:00,  1.03it/s]
+Outer:   0%|          | 0/2 [00:00<?, ?it/s][A
+Outer:  50%|█████     | 1/2 [00:00<00:00,  6.56it/s][A
+Outer: 100%|██████████| 2/2 [00:00<00:00,  6.33it/s][A
+                                                    [AEpoch: 100%|██████████| 2/2 [00:01<00:00,  1.55it/s]Epoch: 100%|██████████| 2/2 [00:01<00:00,  1.44it/s]
+2026-02-07 06:31:26 | INFO | Validating on 16 instances...
+Validating:   0%|          | 0/16 [00:00<?, ?it/s]Validating:  50%|█████     | 8/16 [00:00<00:00, 78.31it/s]Validating: 100%|██████████| 16/16 [00:00<00:00, 31.83it/s]                                                           2026-02-07 06:31:27 | INFO | Epoch 0: TrainCost=3.9842 ValBest=3.8714 Gap=0.00%
+2026-02-07 06:31:27 | INFO | Saved new best model to pretrained/tsp/n20/tsp_n20_k32_ants100_H2_miniH10_rho0.5_mne12_ppo_lr5e-06_best.pt (Epoch 0, Val Cost: 3.8714, Gap: 0.00%)
+2026-02-07 06:31:27 | INFO | Total Train Time: 1.39s

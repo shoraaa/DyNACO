@@ -142,14 +142,21 @@ def get_dataset_hash(dataset):
                 for t in item:
                     if isinstance(t, torch.Tensor):
                         b = t.cpu().numpy().tobytes()
+                    elif isinstance(t, np.ndarray):
+                        b = t.tobytes()
                     elif isinstance(t, (int, float)):
                         b = np.array([t]).tobytes()
                     else:
                         b = np.array(t).tobytes()
                     hasher.update(b)
             else:
-                # Tensor directly
-                b = item.cpu().numpy().tobytes()
+                # Tensor/array directly
+                if isinstance(item, torch.Tensor):
+                    b = item.cpu().numpy().tobytes()
+                elif isinstance(item, np.ndarray):
+                    b = item.tobytes()
+                else:
+                    b = np.array(item).tobytes()
                 hasher.update(b)
     # If TensorDataset (CVRP)
     elif hasattr(dataset, "tensors"):

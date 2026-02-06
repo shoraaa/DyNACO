@@ -401,11 +401,10 @@ def train_instance_reinforce(
     
     aco, pyg_args = setup_aco(args, instance_data, args.problem)
     eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
-    eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
     if args.problem == 'tsp':
         build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
     else:
-        build_fn = utils.build_pyg_data_cvrp
+        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_train)
 
     best_seen = float("inf")
     avg_cost_last = None
@@ -575,11 +574,10 @@ def train_instance_ppo(
     
     aco, pyg_args = setup_aco(args, instance_data, args.problem)
     eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
-    eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
     if args.problem == 'tsp':
         build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
     else:
-        build_fn = utils.build_pyg_data_cvrp
+        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_train)
 
     best_seen = float("inf")
     avg_cost_last = None
@@ -899,7 +897,8 @@ def infer_instance(
         build_fn = utils.build_pyg_data_cvrp
 
     best_seen = float("inf")
-    net.eval()
+    if net is not None:
+        net.eval()
     
     # Initialize metrics
     metrics_log: Dict[str, List[float]] = {}
@@ -918,7 +917,7 @@ def infer_instance(
         pyg_data = build_fn(aco, *pyg_args, dynamic=dynamic)
         
         guidance = None
-        if outer >= warmup_steps:
+        if net is not None and outer >= warmup_steps:
             with torch.no_grad():
                 guidance = net(pyg_data).view(-1).view(aco.n, aco.k)
         
@@ -1004,8 +1003,21 @@ def validation(
         val_args.H = val_args.val_H
     if val_args.val_mini_H is not None:
         val_args.mini_H = val_args.val_mini_H
+
+    # Pure MFACO Caching
+    if net is None:
+        cached_res = utils.load_pure_mfaco_cache(val_args, val_dataset)
+        if cached_res is not None:
+            logger.info("Loaded Pure MFACO result from cache.")
+            return (
+                cached_res['avg_last'], 
+                cached_res['avg_best'], 
+                cached_res['avg_gap'], 
+                cached_res['metrics']
+            )
     
-    net.eval()
+    if net is not None:
+        net.eval()
     sum_sample_best = 0.0
     sum_aco_best = 0.0
     sum_gap = 0.0
@@ -1020,6 +1032,8 @@ def validation(
     
     agg_metrics: Dict[str, List[float]] = {}
     
+    all_aco_best = []
+    
     for idx, item in enumerate(tqdm(iterable, desc="Validating", leave=False)):
         # Preprocess item based on problem type
         item = _preprocess_val_item(item, args.problem)
@@ -1032,6 +1046,7 @@ def validation(
         
         sum_sample_best += avg
         sum_aco_best += best
+        all_aco_best.append(best)
         
         if baseline_values is not None:
             opt = float(baseline_values[idx])
@@ -1049,8 +1064,19 @@ def validation(
     avg_aco_best = sum_aco_best / n_val
     avg_gap = sum_gap / n_val if baseline_values is not None else 0.0
     
-    out_metrics = {k: np.mean(v) for k, v in agg_metrics.items() if len(v) > 0}
+    out_metrics = {k: float(np.mean(v)) for k, v in agg_metrics.items() if len(v) > 0}
     
+    if net is None:
+        cache_data = {
+            'avg_last': float(avg_last),
+            'avg_best': float(avg_aco_best),
+            'avg_gap': float(avg_gap),
+            'costs': [float(x) for x in all_aco_best],
+            'metrics': out_metrics
+        }
+        utils.save_pure_mfaco_cache(val_args, val_dataset, cache_data)
+        logger.info("Saved Pure MFACO result to cache.")
+
     return avg_last, avg_aco_best, avg_gap, out_metrics
 
 
@@ -1159,7 +1185,7 @@ def parse_args() -> argparse.Namespace:
     
     # Logging and output
     parser.add_argument("--no_wandb", action="store_true")
-    parser.add_argument("--wandb_project", type=str, default="lga")
+    parser.add_argument("--wandb_project", type=str, default="dynaco")
     parser.add_argument("--wandb_entity", type=str, default=None)
     parser.add_argument("--save_dir", type=str, default="pretrained")
     parser.add_argument("--no_dynamic_feats", action="store_true")
@@ -1248,6 +1274,10 @@ def build_model_name(args: argparse.Namespace) -> str:
         name += "_nonorm"
     if args.alg == 'mmas':
         name += "_mmas"
+    
+    # Simple features suffix
+    if (args.problem == 'tsp' and args.simple_features) or (args.problem == 'cvrp' and args.simple_train):
+        name += "_simple"
     
     return name
 
@@ -1470,8 +1500,9 @@ def main():
     run_id = wandb.util.generate_id()
     if not args.no_wandb:
         run_name = args.run_name if args.run_name else model_name
+        wandb_project = f"dynaco_{args.problem}"
         wandb.init(
-            project=args.wandb_project,
+            project=wandb_project,
             entity=args.wandb_entity,
             name=run_name,
             id=run_id,
@@ -1481,9 +1512,10 @@ def main():
     # Initialize model
     feats = 2 if args.problem == 'tsp' else 4
     
-    edge_feats = 6 if args.problem == 'tsp' else 3
-    if args.simple_features and args.problem == 'tsp':
-        edge_feats = 3
+    if args.problem == 'tsp':
+        edge_feats = 3 if args.simple_features else 6
+    else: # cvrp
+        edge_feats = 3 if args.simple_train else 6
 
     net_model = Net(
         feats=feats,
@@ -1570,9 +1602,11 @@ def main():
     
     # Pre-training validation
     if val_dataset is not None:
-        logger.info("Running pre-training validation...")
+        # Epoch -1: Pure MFACO check (no model)
+        # This ensures we see the performance of the underlying ACO without random weights
+        logger.info("Running pre-training validation (Pure MFACO)...")
         avg_last, avg_best, avg_gap, val_metrics = validation(
-            net_model, val_dataset, args, baseline_values
+            None, val_dataset, args, baseline_values
         )
         logger.log_epoch_summary(-1, 0.0, avg_best, avg_gap)
         logger.log_validation(

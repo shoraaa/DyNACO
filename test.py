@@ -314,7 +314,7 @@ def main():
         else:
             MFACO = faco.MFACO_TSP
     else:
-        build_fn = utils.build_pyg_data_cvrp
+        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_features)
         gen_fn = utils.gen_cvrp_instance
         if args.alg == 'mmas':
             MFACO = faco.ACO_CVRP
@@ -324,7 +324,7 @@ def main():
     # Dataset
     if args.generate_val:
         # Generate test dataset dynamically
-        baseline_solver = args.baseline
+        baseline_solver = 'none' # Don't force LKH during generation unless specified elsewhere
         val_list = utils.generate_and_save_dataset(
             problem=args.problem,
             n_node=args.n_node,
@@ -409,46 +409,50 @@ def main():
              baseline_values = np.full(len(val_list), 71.778)
 
     if args.baseline != 'none' and baseline_values is None:
-        print("Computing baseline...")
-        # Use TensorDataset wrapper for CVRP get_baseline compatibility
-        if args.problem == 'cvrp' and isinstance(val_list, list) and len(val_list) > 0 and not isinstance(val_list[0], tuple):
-             # Only if not tuples (i.e. if already tensors)
-             pass
-        
-        # If tuple dataset (text), we need to extract coords/demands for baseline?
-        # get_baseline for CVRP expects dataset wrapper.
-        # But if we have optimal cost, maybe we don't need baseline?
-        # User prompt didn't strictly say so, but usually yes.
-        # Let's handle generic case.
-        
-        if args.problem == 'cvrp' and isinstance(val_list, list) and not hasattr(val_list, 'tensors'):
-            if len(val_list)>0 and isinstance(val_list[0], tuple) and len(val_list[0]) == 5:
-                 # Text dataset tuple: (coords, demand, capacity, cost, tour)
-                 cs = torch.stack([x[0] for x in val_list])
-                 ds = torch.stack([x[1] for x in val_list])
-                 caps = torch.stack([torch.tensor(x[2]) for x in val_list]) # Capacity is float
-                 # opt_costs = [x[3] for x in val_list]
-                 ds_wrapper = torch.utils.data.TensorDataset(cs, ds, caps)
-                 baseline_values = get_baseline(ds_wrapper, problem='cvrp', n_node=args.n_node, time_limit=args.baseline_time_limit)
-            elif len(val_list)>0 and isinstance(val_list[0], tuple) and len(val_list[0]) == 3:
-                 # Generated: (c, d, cap)
-                 cs = torch.stack([x[0] for x in val_list])
-                 ds = torch.stack([x[1] for x in val_list])
-                 caps = torch.stack([torch.tensor(x[2]) for x in val_list])
-                 ds_wrapper = torch.utils.data.TensorDataset(cs, ds, caps)
-                 baseline_values = get_baseline(ds_wrapper, problem='cvrp', n_node=args.n_node, time_limit=args.baseline_time_limit)
-        else:
-            # Handle potential tuple items in TSP (coords, cost, tour) for baselines
-            # Just extract coords for baseline computation if needed
-            if args.problem == 'tsp' and isinstance(val_list, list) and len(val_list) > 0 and isinstance(val_list[0], tuple):
-                val_list_coords = [x[0] if isinstance(x, tuple) else x for x in val_list]
-                baseline_values = get_baseline(val_list_coords, problem=args.problem, n_node=args.n_node, runs=args.baseline_runs, time_limit=args.baseline_time_limit)
+        try:
+            print("Computing baseline...")
+            # Use TensorDataset wrapper for CVRP get_baseline compatibility
+            if args.problem == 'cvrp' and isinstance(val_list, list) and len(val_list) > 0 and not isinstance(val_list[0], tuple):
+                 # Only if not tuples (i.e. if already tensors)
+                 pass
+            
+            # If tuple dataset (text), we need to extract coords/demands for baseline?
+            # get_baseline for CVRP expects dataset wrapper.
+            # But if we have optimal cost, maybe we don't need baseline?
+            # User prompt didn't strictly say so, but usually yes.
+            # Let's handle generic case.
+            
+            if args.problem == 'cvrp' and isinstance(val_list, list) and not hasattr(val_list, 'tensors'):
+                if len(val_list)>0 and isinstance(val_list[0], tuple) and len(val_list[0]) == 5:
+                     # Text dataset tuple: (coords, demand, capacity, cost, tour)
+                     cs = torch.stack([x[0] for x in val_list])
+                     ds = torch.stack([x[1] for x in val_list])
+                     caps = torch.stack([torch.tensor(x[2]) for x in val_list]) # Capacity is float
+                     # opt_costs = [x[3] for x in val_list]
+                     ds_wrapper = torch.utils.data.TensorDataset(cs, ds, caps)
+                     baseline_values = get_baseline(ds_wrapper, problem='cvrp', n_node=args.n_node, time_limit=args.baseline_time_limit)
+                elif len(val_list)>0 and isinstance(val_list[0], tuple) and len(val_list[0]) == 3:
+                     # Generated: (c, d, cap)
+                     cs = torch.stack([x[0] for x in val_list])
+                     ds = torch.stack([x[1] for x in val_list])
+                     caps = torch.stack([torch.tensor(x[2]) for x in val_list])
+                     ds_wrapper = torch.utils.data.TensorDataset(cs, ds, caps)
+                     baseline_values = get_baseline(ds_wrapper, problem='cvrp', n_node=args.n_node, time_limit=args.baseline_time_limit)
             else:
-                baseline_values = get_baseline(val_list, problem=args.problem, n_node=args.n_node, runs=args.baseline_runs, time_limit=args.baseline_time_limit)
-        
-        if baseline_values is not None:
-             baseline_values = baseline_values.cpu().numpy()
-             print(f"Baseline mean: {baseline_values.mean()}")
+                # Handle potential tuple items in TSP (coords, cost, tour) for baselines
+                # Just extract coords for baseline computation if needed
+                if args.problem == 'tsp' and isinstance(val_list, list) and len(val_list) > 0 and isinstance(val_list[0], tuple):
+                    val_list_coords = [x[0] if isinstance(x, tuple) else x for x in val_list]
+                    baseline_values = get_baseline(val_list_coords, problem=args.problem, n_node=args.n_node, runs=args.baseline_runs, time_limit=args.baseline_time_limit)
+                else:
+                    baseline_values = get_baseline(val_list, problem=args.problem, n_node=args.n_node, runs=args.baseline_runs, time_limit=args.baseline_time_limit)
+            
+            if baseline_values is not None:
+                 baseline_values = baseline_values.cpu().numpy()
+                 print(f"Baseline mean: {baseline_values.mean()}")
+        except Exception as e:
+            print(f"Warning: Failed to compute external baseline ({e}). Continuing without it.")
+            baseline_values = None
 
     # Model
     model = None
@@ -462,11 +466,7 @@ def main():
         # Model
         feats = 2 if args.problem == 'tsp' else 4
         # Simplified dynamic features for CVRP
-        feats = 2 if args.problem == 'tsp' else 4
-        # Simplified dynamic features for CVRP
-        edge_feats = 6 if args.problem == 'tsp' else 3
-        if args.simple_features and args.problem == 'tsp':
-            edge_feats = 3
+        edge_feats = 3 if args.simple_features else 6
 
         model = Net(feats=feats, edge_feats=edge_feats, logit_net=not args.no_logit_net).to(args.device)
         model.load_state_dict(state_dict)
@@ -541,18 +541,15 @@ def main():
 
     # Baseline cache (heuristic-only MFACO). Reuse across runs for the same dataset+config.
     cached_base_costs = None
-    base_cache_path = None
     if not args.no_baseline:
-        base_cache_path = _base_cache_path(args, len(val_list))
-        if base_cache_path.exists():
-            try:
-                obj = torch.load(base_cache_path, map_location="cpu", weights_only=False)
-                base_arr = obj.get("base_costs", None) if isinstance(obj, dict) else None
-                if base_arr is not None and len(base_arr) == len(val_list):
-                    cached_base_costs = [float(x) for x in base_arr]
-                    print(f"Loaded cached base costs: {base_cache_path} ({len(cached_base_costs)} instances)")
-            except Exception as e:
-                print(f"Warning: failed to load base cache {base_cache_path}: {e}")
+        cached_res = utils.load_pure_mfaco_cache(args, val_list)
+        if cached_res is not None and "costs" in cached_res:
+            cached_base_costs = cached_res["costs"]
+            if len(cached_base_costs) == len(val_list):
+                 print(f"Loaded cached base costs from shared cache ({len(cached_base_costs)} instances)")
+            else:
+                 print(f"Warning: cached costs length {len(cached_base_costs)} != dataset length {len(val_list)}")
+                 cached_base_costs = None
 
     if args.iter_log and cached_base_costs is not None:
         # Can't reconstruct per-iteration traces from cached scalar costs.
@@ -1069,19 +1066,20 @@ def main():
         print(_line("-"))
 
     # Save base cache if we computed it this run
-    if (not args.no_baseline) and (cached_base_costs is None) and base_cache_path is not None:
+    # Save base cache if computed and not loaded
+    if (not args.no_baseline) and (cached_base_costs is None):
+        # We computed it fresh. Save it.
         try:
-            torch.save({
-                "base_costs": list(results["base_cost"]),
-                "meta": {
-                    "problem": args.problem,
-                    "n_instances": len(results["base_cost"]),
-                    "created": datetime.now().isoformat(),
-                },
-            }, base_cache_path)
-            print(f"Saved cached base costs: {base_cache_path}")
+             cache_data = {
+                 "costs": list(results["base_cost"]),
+                 "avg_last": float(np.mean(results["base_cost"])), # Approximate for test
+                 "avg_best": float(np.mean(results["base_cost"])),
+                 "metrics": {} # Test doesn't collect detailed metrics usually?
+             }
+             utils.save_pure_mfaco_cache(args, val_list, cache_data)
+             print("Saved base costs to shared cache.")
         except Exception as e:
-            print(f"Warning: failed to save base cache {base_cache_path}: {e}")
+            print(f"Warning: failed to save base cache: {e}")
     
     # Base
     if not args.no_baseline and results["base_cost"]:

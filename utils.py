@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 import time
 import math
 import faco
+import hashlib
+import json
 
 
 import random
@@ -409,7 +411,7 @@ def gen_cvrp_instance(n, device, capacity=None):
     # Return coords (n+1, 2), demands (n+1,) normalized, capacity_norm=1.0
     return coords, all_demands, 1.0
 
-def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
+def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool, simple_features: bool = False):
     """
     Build PyG Data for CVRP using 4D node features (coords, demand, depot_flag).
     Edge features (6): dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge
@@ -445,17 +447,21 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
     if dynamic:
         tau = aco.pheromone_sparse.detach().to(device=device, dtype=torch.float32)
         tau_mean = tau.mean(dim=1, keepdim=True).clamp_min(1e-12)
-        tau_rel = (tau / tau_mean).clamp_min(1e-12).view(E, 1)
+        tau_rel = (tau / tau_mean).clamp_min(1e-12)
         log_tau_rel = torch.log(tau_rel).clamp(-5.0, 5.0).view(E, 1)
-        # Simplified: removed tau_cv
+        tau_std = tau.std(dim=1, keepdim=True)
+        tau_cv = (tau_std / tau_mean).clamp(0, 10).repeat_interleave(k, dim=0)
     else:
-        tau_rel = torch.ones((E, 1), device=device, dtype=torch.float32)
         log_tau_rel = torch.zeros((E, 1), device=device, dtype=torch.float32)
+        tau_cv = torch.zeros((E, 1), device=device, dtype=torch.float32)
 
     # Source-route features for CVRP
     # CVRP route is variable-length: [0, c1, c2, 0, c3, c4, 0, ...]
     # Depot (0) can have multiple edges - we use directed edge matrices
-    src_route_np = aco.source_route
+    try:
+        src_route_np = aco.source_route
+    except AttributeError:
+        src_route_np = aco.source_perm
     
     src_route = torch.as_tensor(np.asarray(src_route_np, dtype=np.int64), device=device, dtype=torch.long)
     
@@ -518,19 +524,24 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
             # Check if dst is in the set of depot predecessors
             is_match = torch.isin(dst[mask_src_depot], depot_preds)
             is_source_pred[mask_src_depot] = is_match.float().view(-1, 1)  
-    # Remove redundant assignment (which referred to removed backward_edge)
-    # is_source_pred = backward_edge[src, dst].to(torch.float32).view(E, 1) # REMOVED
     
     # is_new_edge: edge not in current route (either direction)
     # Edge is in route if it is a successor OR predecessor edge (undirected check)
-    # Simplified: Merge is_source_succ/pred into is_in_route
     is_in_route = (is_source_succ > 0.5) | (is_source_pred > 0.5)
-    is_in_route = is_in_route.to(torch.float32).view(E, 1)
+    is_new_edge = (~is_in_route).to(torch.float32).view(E, 1)
+    is_in_route_feat = is_in_route.to(torch.float32).view(E, 1)
 
-    edge_attr = torch.cat(
-        [dist_norm, tau_rel, is_in_route],
-        dim=1
-    )
+    if simple_features:
+        # Use 3 features similar to TSP: dist_norm, log_tau_rel, is_in_route
+        edge_attr = torch.cat(
+            [dist_norm, log_tau_rel, is_in_route_feat],
+            dim=1
+        )
+    else:
+        edge_attr = torch.cat(
+            [dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
+            dim=1
+        )
 
     depot_flag = torch.zeros((coords_t.size(0), 1), device=device)
     depot_flag[0, 0] = 1.0
@@ -1379,6 +1390,7 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
     # We generate a unique seed for this instance from the global numpy state
     # This ensures determinism if global seed is set, but uniqueness across instances
     instance_seed = np.random.randint(0, 2**63 - 1)
+    print(f"DEBUG: infer_instance seed={instance_seed}")
     if hasattr(aco, 'seed_rng'):
         aco.seed_rng(instance_seed)
 
@@ -1562,3 +1574,93 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
     
     extra["history"] = history
     return avg_last, best_seen, timings, extra
+
+def get_dataset_signature(dataset, problem):
+    """
+    Compute a consistent hash signature for a dataset.
+    Uses the first item's content as a proxy for the dataset identity.
+    """
+    if len(dataset) == 0:
+        return "empty"
+    
+    first_item = dataset[0]
+    hasher = hashlib.md5()
+    
+    # Add length as part of signature
+    hasher.update(str(len(dataset)).encode('utf-8'))
+    
+    try:
+        if problem == 'tsp':
+            if torch.is_tensor(first_item):
+                # TensorDataset or list of tensors
+                # Quantize slightly to avoid float precision issues across machines/platforms?
+                # Or just use tobytes().
+                hasher.update(first_item.cpu().numpy().tobytes())
+            elif isinstance(first_item, np.ndarray):
+                hasher.update(first_item.tobytes())
+            else:
+                # Fallback
+                hasher.update(str(first_item).encode('utf-8'))
+        elif problem == 'cvrp':
+            # Tuple: (coords, demand, capacity)
+            coords, demand, cap = first_item
+            if torch.is_tensor(coords): coords = coords.cpu().numpy()
+            if torch.is_tensor(demand): demand = demand.cpu().numpy()
+            hasher.update(coords.tobytes())
+            hasher.update(demand.tobytes())
+            hasher.update(str(cap).encode('utf-8'))
+    except Exception as e:
+        print(f"Warning: Could not hash dataset item: {e}")
+        return "unknown_dataset"
+        
+    return hasher.hexdigest()
+
+def get_pure_mfaco_config_hash(args):
+    """
+    Compute hash of configuration parameters relevant to Pure MFACO.
+    Ignores model-specific args or paths that don't affect ACO logic.
+    """
+    # Key parameters affecting Pure MFACO behavior
+    keys = [
+        'problem', 'n_node', 'n_ants', 'k_sparse', 
+        'seed', 'rho', 'alpha', 'beta', 'min_new_edges',
+        'H', 'mini_H', 'L', # Iterations
+        'parallel_traced', 'no_local_search', 'no_smooth_mmas', 
+        'no_extend_ls', 'disable_heuristic', 'no_normalized_heuristic',
+    ]
+    
+    config_str = ""
+    for k in sorted(keys):
+        val = getattr(args, k, None)
+        config_str += f"{k}={val};"
+        
+    return hashlib.sha256(config_str.encode('utf-8')).hexdigest()
+
+def get_pure_mfaco_cache_path(args, dataset_sig):
+    config_hash = get_pure_mfaco_config_hash(args)
+    # Combine config hash and dataset signature
+    full_hash = hashlib.sha256(f"{config_hash}_{dataset_sig}".encode('utf-8')).hexdigest()
+    
+    cache_dir = Path("pretrained/cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f"pure_mfaco_{full_hash}.json"
+
+def load_pure_mfaco_cache(args, dataset):
+    sig = get_dataset_signature(dataset, args.problem)
+    path = get_pure_mfaco_cache_path(args, sig)
+    if path.exists():
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
+
+def save_pure_mfaco_cache(args, dataset, result):
+    sig = get_dataset_signature(dataset, args.problem)
+    path = get_pure_mfaco_cache_path(args, sig)
+    try:
+        with open(path, 'w') as f:
+            json.dump(result, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Failed to save cache: {e}")

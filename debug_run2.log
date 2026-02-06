@@ -1,0 +1,18 @@
+Auto-set min_new_edges to 2 (capacity=50, capacity/20=2.5)
+No strict match for N=20 (rl_data=False). Scanning for partial match...
+2026-02-07 06:27:26 | INFO | Running pre-training validation...
+2026-02-07 06:27:26 | INFO | Validating on 16 instances...
+Validating:   0%|          | 0/16 [00:00<?, ?it/s]Validating:   6%|▋         | 1/16 [00:00<00:05,  2.83it/s]Validating:  38%|███▊      | 6/16 [00:00<00:00, 15.29it/s]Validating:  56%|█████▋    | 9/16 [00:01<00:00,  8.19it/s]Validating:  69%|██████▉   | 11/16 [00:01<00:00,  5.09it/s]Validating:  81%|████████▏ | 13/16 [00:02<00:00,  5.47it/s]Validating:  88%|████████▊ | 14/16 [00:02<00:00,  5.74it/s]Validating:  94%|█████████▍| 15/16 [00:02<00:00,  5.50it/s]Validating: 100%|██████████| 16/16 [00:02<00:00,  4.69it/s]                                                           2026-02-07 06:27:29 | INFO | Epoch -1: TrainCost=0.0000 ValBest=4.8926 Gap=0.00%
+Epoch:   0%|          | 0/2 [00:00<?, ?it/s]
+Outer:   0%|          | 0/2 [00:00<?, ?it/s][A
+Outer:  50%|█████     | 1/2 [00:00<00:00,  1.80it/s][A
+Outer: 100%|██████████| 2/2 [00:00<00:00,  3.08it/s][A
+                                                    [AEpoch:  50%|█████     | 1/2 [00:00<00:00,  1.20it/s]
+Outer:   0%|          | 0/2 [00:00<?, ?it/s][A
+Outer:  50%|█████     | 1/2 [00:00<00:00,  2.43it/s][A
+Outer: 100%|██████████| 2/2 [00:00<00:00,  3.77it/s][A
+                                                    [AEpoch: 100%|██████████| 2/2 [00:01<00:00,  1.36it/s]Epoch: 100%|██████████| 2/2 [00:01<00:00,  1.33it/s]
+2026-02-07 06:27:30 | INFO | Validating on 16 instances...
+Validating:   0%|          | 0/16 [00:00<?, ?it/s]Validating:  25%|██▌       | 4/16 [00:00<00:00, 38.97it/s]Validating:  50%|█████     | 8/16 [00:00<00:00, 34.93it/s]Validating:  75%|███████▌  | 12/16 [00:01<00:00,  6.88it/s]Validating:  94%|█████████▍| 15/16 [00:02<00:00,  5.03it/s]                                                           2026-02-07 06:27:33 | INFO | Epoch 0: TrainCost=5.2351 ValBest=4.8926 Gap=0.00%
+2026-02-07 06:27:33 | INFO | Saved new best model to pretrained/cvrp/n20/cvrp_n20_k32_ants100_H2_miniH10_rho0.5_mne2_ppo_lr5e-06_best.pt (Epoch 0, Val Cost: 4.8926, Gap: 0.00%)
+2026-02-07 06:27:33 | INFO | Total Train Time: 1.49s

@@ -1,0 +1,19 @@
+No strict match for N=20 (rl_data=False). Scanning for partial match...
+2026-02-07 06:35:09 | INFO | Running pre-training validation (Pure MFACO)...
+2026-02-07 06:35:09 | INFO | Validating on 16 instances...
+Validating:   0%|          | 0/16 [00:00<?, ?it/s]Validating:   6%|▋         | 1/16 [00:00<00:01,  7.79it/s]Validating:  88%|████████▊ | 14/16 [00:00<00:00, 71.82it/s]                                                           Warning: Failed to save cache: Object of type float32 is not JSON serializable
+2026-02-07 06:35:10 | INFO | Saved Pure MFACO result to cache.
+2026-02-07 06:35:10 | INFO | Epoch -1: TrainCost=0.0000 ValBest=3.8714 Gap=0.00%
+Epoch:   0%|          | 0/2 [00:00<?, ?it/s]
+Outer:   0%|          | 0/2 [00:00<?, ?it/s][A
+Outer:  50%|█████     | 1/2 [00:00<00:00,  1.27it/s][A
+Outer: 100%|██████████| 2/2 [00:00<00:00,  2.42it/s][A
+                                                    [AEpoch:  50%|█████     | 1/2 [00:01<00:01,  1.03s/it]
+Outer:   0%|          | 0/2 [00:00<?, ?it/s][A
+Outer:  50%|█████     | 1/2 [00:00<00:00,  6.36it/s][A
+Outer: 100%|██████████| 2/2 [00:00<00:00,  6.36it/s][A
+                                                    [AEpoch: 100%|██████████| 2/2 [00:01<00:00,  1.49it/s]Epoch: 100%|██████████| 2/2 [00:01<00:00,  1.38it/s]
+2026-02-07 06:35:11 | INFO | Validating on 16 instances...
+Validating:   0%|          | 0/16 [00:00<?, ?it/s]Validating:  31%|███▏      | 5/16 [00:00<00:00, 28.34it/s]Validating:  75%|███████▌  | 12/16 [00:00<00:00, 46.25it/s]                                                           2026-02-07 06:35:11 | INFO | Epoch 0: TrainCost=3.9842 ValBest=3.8714 Gap=0.00%
+2026-02-07 06:35:12 | INFO | Saved new best model to pretrained/tsp/n20/tsp_n20_k32_ants100_H2_miniH10_rho0.5_mne12_ppo_lr5e-06_best.pt (Epoch 0, Val Cost: 3.8714, Gap: 0.00%)
+2026-02-07 06:35:12 | INFO | Total Train Time: 1.45s
