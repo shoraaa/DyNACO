@@ -165,6 +165,8 @@ def main():
 
     args = parser.parse_args()
 
+    # args.run_model_anneal = args.run_mix_anneal = args.run_model_no_anneal = args.run_mix_no_anneal = True
+
     # Args setup
     ckpt = None
     

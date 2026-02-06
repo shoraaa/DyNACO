@@ -1225,6 +1225,8 @@ def build_model_name(args: argparse.Namespace) -> str:
         name += "_nosmooth"
     if args.disable_heuristic:
         name += "_noheu"
+    if args.no_local_search:
+        name += "_nols"
     if args.no_extend_ls:
         name += "_noextls"
     if args.no_normalized_heuristic:
