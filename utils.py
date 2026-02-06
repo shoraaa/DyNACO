@@ -445,11 +445,11 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
     if dynamic:
         tau = aco.pheromone_sparse.detach().to(device=device, dtype=torch.float32)
         tau_mean = tau.mean(dim=1, keepdim=True).clamp_min(1e-12)
-        tau_rel = (tau / tau_mean).clamp_min(1e-12)
+        tau_rel = (tau / tau_mean).clamp_min(1e-12).view(E, 1)
         log_tau_rel = torch.log(tau_rel).clamp(-5.0, 5.0).view(E, 1)
         # Simplified: removed tau_cv
     else:
-        tau_rel = torch.ones((E, 1), device=device, dtype=torch.float32).view(E, 1)
+        tau_rel = torch.ones((E, 1), device=device, dtype=torch.float32)
         log_tau_rel = torch.zeros((E, 1), device=device, dtype=torch.float32)
 
     # Source-route features for CVRP
