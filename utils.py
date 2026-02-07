@@ -1602,8 +1602,10 @@ def get_dataset_signature(dataset, problem):
                 # Fallback
                 hasher.update(str(first_item).encode('utf-8'))
         elif problem == 'cvrp':
-            # Tuple: (coords, demand, capacity)
-            coords, demand, cap = first_item
+            # Tuple: (coords, demand, capacity) or (coords, demand, capacity, cost, tour) or (..., name)
+            coords = first_item[0]
+            demand = first_item[1]
+            cap = first_item[2]
             if torch.is_tensor(coords): coords = coords.cpu().numpy()
             if torch.is_tensor(demand): demand = demand.cpu().numpy()
             hasher.update(coords.tobytes())

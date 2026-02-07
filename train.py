@@ -894,7 +894,7 @@ def infer_instance(
         build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
     else:
         aco, pyg_args = setup_aco(args, instance_data, 'cvrp')
-        build_fn = utils.build_pyg_data_cvrp
+        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_train)
 
     best_seen = float("inf")
     if net is not None:
@@ -1500,7 +1500,7 @@ def main():
     run_id = wandb.util.generate_id()
     if not args.no_wandb:
         run_name = args.run_name if args.run_name else model_name
-        wandb_project = f"dynaco_{args.problem}"
+        wandb_project = f"dynaco{args.problem}"
         wandb.init(
             project=wandb_project,
             entity=args.wandb_entity,
