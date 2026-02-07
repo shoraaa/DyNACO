@@ -1341,21 +1341,53 @@ void MFACO_CVRP::build_nn_lists() {
     firstprivate(n, k, bl, total)
   {
     KDTree kdtree = shared_kdtree;
+    std::vector<int32_t> deleted_nodes;
+    deleted_nodes.reserve(total + 8);
 
 #pragma omp for schedule(static)
     for (int32_t u = 0; u < n; ++u) {
-      for (int32_t j = 0; j < total; ++j) {
-        uint32_t pt_idx = kdtree.nn_bottom_up(static_cast<uint32_t>(u));
-        if (j < k)
-          nn_list[u * k + j] = (int32_t)pt_idx;
-        else
-          backup_list[u * bl + (j - k)] = (int32_t)pt_idx;
-        kdtree.delete_point(pt_idx);
+      deleted_nodes.clear();
+      int32_t current_k = 0;
+      int32_t current_bl = 0;
+
+      // Force depot as first neighbor for customers
+      if (u > 0 && k > 0) {
+        nn_list[u * k + 0] = 0;
+        current_k = 1;
       }
-      for (int32_t j = 0; j < k; ++j)
-        kdtree.undelete_point((uint32_t)nn_list[u * k + j]);
-      for (int32_t j = 0; j < bl; ++j)
-        kdtree.undelete_point((uint32_t)backup_list[u * bl + j]);
+
+      // Search KDTree
+      // We search a bit more than total to account for self/depot skips
+      int32_t search_limit = total + 5;
+
+      for (int32_t step = 0; step < search_limit; ++step) {
+        if (current_k >= k && current_bl >= bl)
+          break;
+
+        uint32_t pt_idx = kdtree.nn_bottom_up(static_cast<uint32_t>(u));
+        int32_t v = static_cast<int32_t>(pt_idx);
+
+        kdtree.delete_point(pt_idx);
+        deleted_nodes.push_back(v);
+
+        if (v == u)
+          continue; // Skip self
+        if (u > 0 && v == 0)
+          continue; // Skip depot for customers (already added)
+
+        if (current_k < k) {
+          nn_list[u * k + current_k] = v;
+          current_k++;
+        } else if (current_bl < bl) {
+          backup_list[u * bl + current_bl] = v;
+          current_bl++;
+        }
+      }
+
+      // Undelete all deleted nodes
+      for (int32_t v_del : deleted_nodes) {
+        kdtree.undelete_point(static_cast<uint32_t>(v_del));
+      }
     }
   }
 }

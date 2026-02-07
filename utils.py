@@ -526,11 +526,23 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
         dim=1
     )
 
-    depot_flag = torch.zeros((coords_t.size(0), 1), device=device)
-    depot_flag[0, 0] = 1.0
-    coords_cat = torch.cat([coords_t, demand_t.unsqueeze(-1), depot_flag], dim=-1)
+    # Node features: (demand, dist_to_depot, subroute_id)
+    # demand_t is (N,)
+    d0 = torch.norm(coords_t - coords_t[0], dim=1, keepdim=True) # (N, 1)
 
-    return Data(x=coords_cat, edge_index=edge_index, edge_attr=edge_attr)
+    subroute_id = torch.zeros((n, 1), device=device, dtype=torch.float32)
+    if dynamic:
+        # Identify routes by depot (0) separators in src_route
+        is_depot = (src_route == 0).long()
+        route_indices = torch.cumsum(is_depot, dim=0).float()
+        
+        # Assign route indices to nodes
+        # Customers appear exactly once in src_route
+        subroute_id[src_route] = route_indices.unsqueeze(1)
+
+    x = torch.cat([demand_t.unsqueeze(1), d0, subroute_id], dim=1)
+
+    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
 
 
 # ----------------- Shared/Dataset -----------------
