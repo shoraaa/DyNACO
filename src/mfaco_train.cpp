@@ -3942,7 +3942,7 @@ float MFACO_CVRP::sample_ant_direct(const float *probmat, int32_t start_node,
   // 6. Apply Local Search
   if (use_local_search && !checklist.empty()) {
     // Intra-Route LS (2-opt)
-    intra_route_ls(route_out, checklist);
+    // intra_route_ls(route_out, checklist);
     // Inter-Route LS
     std::vector<int32_t> pos_ls(n, -1);
     inter_route_ls_optimized(route_out, pos_ls, checklist, in_checklist);
