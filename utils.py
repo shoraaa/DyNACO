@@ -1200,25 +1200,30 @@ def generate_and_save_dataset(problem, n_node, n_instances, save_path, baseline_
             dataset.append((coords_np, demand_np, capacity_val, cost, tour, f"Gen_{i}"))
     
     # Save to file
+    # Save to file
     if save_path:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         
-        print(f"Saving dataset to {save_path}...")
-        with open(save_path, 'w') as f:
-            for item in dataset:
-                if problem == 'tsp':
-                    coords, cost, tour, name = item
-                    # Format: coords_flat, cost, tour
-                    coords_flat = coords.flatten().tolist()
-                    line = f"{coords_flat},{cost},{tour}\n" # Name not saved in this simplistic generated format but okay
-                else:
-                    coords, demand, capacity, cost, tour, name = item
-                    coords_flat = coords.flatten().tolist()
-                    demand_flat = demand.flatten().tolist()
-                    line = f"{coords_flat},{demand_flat},{capacity},{cost},{tour}\n"
-                f.write(line)
-                
+        if save_path.suffix == '.pt':
+            print(f"Saving dataset to {save_path} (torch)...")
+            torch.save(dataset, save_path)
+        else:
+            print(f"Saving dataset to {save_path} (txt)...")
+            with open(save_path, 'w') as f:
+                for item in dataset:
+                    if problem == 'tsp':
+                        coords, cost, tour, name = item
+                        # Format: coords_flat, cost, tour
+                        coords_flat = coords.flatten().tolist()
+                        line = f"{coords_flat},{cost},{tour}\n" # Name not saved in this simplistic generated format but okay
+                    else:
+                        coords, demand, capacity, cost, tour, name = item
+                        coords_flat = coords.flatten().tolist()
+                        demand_flat = demand.flatten().tolist()
+                        line = f"{coords_flat},{demand_flat},{capacity},{cost},{tour}\n"
+                    f.write(line)
+            
         print(f"Saved {len(dataset)} instances.")
         
     return dataset
@@ -1255,7 +1260,7 @@ def verify_solution_cvrp(coords, demand, capacity, cost, route0):
     return True
 
 
-def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=True, inject_step=None):
+def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=True, inject_step=None, seed=None):
     if model is not None:
         model.eval()
 
@@ -1311,6 +1316,10 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
             'normalized_heuristic': not args.no_normalized_heuristic,
             'fixed_steps': args.L
         }
+
+    aco = aco_class(**kwargs)
+    if seed is not None and hasattr(aco, 'seed_rng'):
+        aco.seed_rng(seed)
 
     # Normalize coordinates for model input (scale to [0, 1] while preserving aspect ratio)
     norm_coords = coords

@@ -1,0 +1,80 @@
+Loading /home/shora/Research/old/NGFACO/cvrp_n10000_k32_ants100_H10_miniH20_rho0.5_mne50_ppo_lr5e-06_best.pt...
+Checkpoint Metadata:
+  epoch: 7
+  val_cost: 114.53306579589844
+  val_gap: 11.868721008300781
+  config: {'problem': 'cvrp', 'n_node': 10000, 'k_sparse': 32, 'algo': 'ppo', 'alg': 'faco', 'ppo_epochs': 4, 'ppo_clip': 0.1, 'no_adv_norm': False, 'alpha': 1.0, 'beta': 1.0, 'n_ants': 100, 'steps_per_epoch': 32, 'epochs': 20, 'lr': 5e-06, 'ppo_lr': 5e-06, 'reinforce_lr': 0.0001, 'seed': 1234, 'device': 'cuda:0', 'rho': 0.5, 'min_new_edges': 50, 'H': 10, 'mini_H': 20, 'disable_heuristic': False, 'no_local_search': False, 'no_smooth_mmas': False, 'no_extend_ls': False, 'no_normalized_heuristic': False, 'parallel_traced': True, 'nls': False, 'nls_beta': 0.5, 'T_nls': 10, 'no_logit_net': False, 'no_wandb': False, 'wandb_project': 'dynaco', 'wandb_entity': None, 'save_dir': 'pretrained', 'no_dynamic_feats': False, 'baseline': 'hgs', 'baseline_runs': 1, 'baseline_time_limit': 0.5, 'val_dataset': None, 'val_size': 16, 'generate_val': False, 'save_generated': None, 'val_H': None, 'val_mini_H': None, 'warmup': False, 'train_warmup': False, 'warmup_ratio': 0.5, 'train_anneal': False, 'no_anneal': True, 'gamma': 1.0, 'min_gamma': 0.0, 'L': 0, 'run_name': None, 'threads': 16, 'simple_train': False, 'train_deepaco': False, 'resume': None}
+Restoring config from checkpoint (unless overridden):
+  Override rho: 0.1 -> 0.5
+  Override min_new_edges: 12 -> 50
+  Override mini_H: 100 -> 20
+  Override no_anneal: False -> True
+
+==================================================
+Config Parameter               | Value          
+--------------------------------------------------
+H                              | 10             
+L                              | 0              
+alg                            | faco           
+alpha                          | 1.0            
+baseline                       | default        
+baseline_runs                  | 1              
+baseline_time_limit            | 2.0            
+beta                           | 1.0            
+checkpoint                     | /home/shora/Research/old/NGFACO/cvrp_n10000_k32_ants100_H10_miniH20_rho0.5_mne50_ppo_lr5e-06_best.pt
+dataset                        | data.pt        
+device                         | cuda:0         
+disable_heuristic              | False          
+gamma                          | 1.0            
+generate_val                   | False          
+iter_log                       | False          
+iter_print                     | False          
+k_sparse                       | 32             
+log                            | False          
+min_gamma                      | 0.0            
+min_new_edges                  | 50             
+mini_H                         | 20             
+n_ants                         | 100            
+n_node                         | 50             
+no_anneal                      | True           
+no_baseline                    | True           
+no_dynamic_feats               | False          
+no_extend_ls                   | False          
+no_local_search                | False          
+no_logit_net                   | False          
+no_model                       | False          
+no_normalized_heuristic        | False          
+no_smooth_mmas                 | False          
+problem                        | cvrp           
+rho                            | 0.5            
+rl_data                        | False          
+run_mix_anneal                 | False          
+run_mix_no_anneal              | False          
+run_model_anneal               | False          
+run_model_no_anneal            | False          
+save_generated                 | None           
+seed                           | 1234           
+threads                        | None           
+timed                          | False          
+val_size                       | 1              
+verify                         | False          
+visualize                      | False          
+visualize_output               | visualizations 
+warmup                         | True           
+warmup_ratio                   | 0.5            
+==================================================
+
+Loading data.pt...
+Traceback (most recent call last):
+  File "/home/shora/Research/old/NGFACO/test.py", line 1437, in <module>
+    main()
+    ~~~~^^
+  File "/home/shora/Research/old/NGFACO/test.py", line 344, in main
+    data = torch.load(args.dataset, map_location="cpu", weights_only=False)
+  File "/home/shora/Research/old/NGFACO/.venv/lib/python3.13/site-packages/torch/serialization.py", line 1554, in load
+    return _legacy_load(
+        opened_file, map_location, pickle_module, **pickle_load_args
+    )
+  File "/home/shora/Research/old/NGFACO/.venv/lib/python3.13/site-packages/torch/serialization.py", line 1802, in _legacy_load
+    magic_number = pickle_module.load(f, **pickle_load_args)
+_pickle.UnpicklingError: invalid load key, '['.

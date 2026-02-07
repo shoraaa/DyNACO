@@ -698,6 +698,7 @@ def main():
                     use_heuristic_only=True,
                     collect_metrics=args.visualize,
                     metrics_every_step=args.visualize,
+                    seed=args.seed + i
                 )
                 tb1 = time.time()
                 _, base_best, base_timings, base_extra = base_ret
@@ -760,6 +761,7 @@ def main():
                       use_heuristic_only=False,
                       collect_metrics=args.visualize,
                       metrics_every_step=args.visualize,
+                      seed=args.seed + i
                   )
                   tm1 = time.time()
                   _, model_best, mod_timings, mod_extra = mod_ret
@@ -802,6 +804,7 @@ def main():
                       use_heuristic_only=False,
                       collect_metrics=False,
                       metrics_every_step=False,
+                      seed=args.seed + i
                   )
                   tm1 = time.time()
                   _, model_best_na, mod_na_timings, mod_na_extra = mod_ret_na
@@ -843,6 +846,7 @@ def main():
                           collect_metrics=args.visualize,
                           metrics_every_step=args.visualize,
                           inject_step=inject_step,
+                          seed=args.seed + i
                       )
                       tmi1 = time.time()
                       _, mix_best, mix_timings, mix_extra = mix_ret
@@ -882,6 +886,7 @@ def main():
                           collect_metrics=False,
                           metrics_every_step=False,
                           inject_step=inject_step,
+                          seed=args.seed + i
                       )
                       tmi1 = time.time()
                       _, mix_best_na, mix_na_timings, mix_na_extra = mix_ret_na
