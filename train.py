@@ -577,7 +577,7 @@ def train_instance_ppo(
     if args.problem == 'tsp':
         build_fn = utils.build_pyg_data_tsp
     else:
-        build_fn = utils.build_pyg_data_cvrp
+        build_fn = functools.partial(utils.build_pyg_data_cvrp, advanced_features=args.advanced_features)
 
     best_seen = float("inf")
     avg_cost_last = None
@@ -894,7 +894,7 @@ def infer_instance(
         build_fn = utils.build_pyg_data_tsp
     else:
         aco, pyg_args = setup_aco(args, instance_data, 'cvrp')
-        build_fn = utils.build_pyg_data_cvrp
+        build_fn = functools.partial(utils.build_pyg_data_cvrp, advanced_features=args.advanced_features)
 
     best_seen = float("inf")
     if net is not None:
@@ -1232,6 +1232,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save_dir", type=str, default="pretrained")
     parser.add_argument("--no_dynamic_feats", action="store_true")
     
+    # Advanced features
+    parser.add_argument("--advanced_features", action="store_true", help="Enable advanced CVRP state features (dist to depot, capacity, etc)")
+    
     # Baseline configuration
     parser.add_argument("--baseline", type=str, default='default')
     parser.add_argument("--baseline_runs", type=int, default=1)
@@ -1549,7 +1552,13 @@ def main():
         )
 
     # Initialize model
-    feats = 2 if args.problem == 'tsp' else 4
+    if args.problem == 'tsp':
+        feats = 2
+    else:
+        # CVRP
+        feats = 4
+        if args.advanced_features:
+            feats = 4 + 3 # dist_to_depot, cap_left, demand_ratio
     
     edge_feats = 6
 

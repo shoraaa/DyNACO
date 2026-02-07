@@ -399,7 +399,7 @@ def gen_cvrp_instance(n, device, capacity=None):
     # Return coords (n+1, 2), demands (n+1,) normalized, capacity_norm=1.0
     return coords, all_demands, 1.0
 
-def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
+def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool, advanced_features: bool = False):
     """
     Build PyG Data for CVRP using 4D node features (coords, demand, depot_flag).
     Edge features (6): dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge
@@ -526,9 +526,82 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
         dim=1
     )
 
+    # dist_to_depot (normalized)
+    # Depot is at index 0
+    dist_to_depot = torch.norm(coords_t - coords_t[0], dim=1).view(-1, 1)
+    # Normalize by max distance in graph (approx)
+    max_dist = dist_mean.max() * 20 # rough estimate or use actual max
+    if max_dist < 1e-6: max_dist = 1.0
+    dist_to_depot_norm = dist_to_depot / max_dist
+
+    # Incumbent-based features
+    # Capacity tracking based on src_route
+    # We want to know for each node in the best route found so far:
+    # 1. What was the remaining capacity when arriving at this node?
+    # 2. What is the ratio of demand / remaining_capacity?
+    
+    # Initialize with default values (e.g. 1.0 for capacity, 0 for ratio)
+    # For nodes not in incumbent, we can use 1.0 (full capacity assumed available?) or 0? 
+    # Let's use 0.0 for "not in route" or default context
+    
+    incumbent_cap_left = torch.zeros((n, 1), device=device, dtype=torch.float32)
+    incumbent_demand_ratio = torch.zeros((n, 1), device=device, dtype=torch.float32)
+
+    if src_route.numel() > 1:
+        # Traverse route to calculate capacity
+        # Route: 0 -> c1 -> c2 -> 0 -> c3 ...
+        # Capacity resets at 0
+        
+        # We need to do this on CPU since it's sequential logic, or vectorized if possible
+        # Vectorized is hard with variable sub-tours. Let's do simple CPU loop for now.
+        # N can be 100k, so CPU loop might be slow if Python.
+        # But source_route is just one solution.
+        
+        route_np = src_route.cpu().numpy()
+        demand_np = demand_t.cpu().numpy()
+        
+        current_cap = 1.0
+        
+        # Array to store values
+        cap_vals = np.zeros(n, dtype=np.float32)
+        
+        # Iterate
+        for node_idx in route_np:
+            if node_idx == 0:
+                current_cap = 1.0
+                cap_vals[0] = 1.0 # Depot always has full capacity available to start
+            else:
+                # Arriving at node_idx
+                # Record capacity BEFORE serving
+                cap_vals[node_idx] = current_cap
+                
+                # Consume demand
+                d = demand_np[node_idx]
+                current_cap -= d
+                if current_cap < 0: current_cap = 0.0
+        
+        # To Tensor
+        incumbent_cap_left = torch.from_numpy(cap_vals).to(device=device, dtype=torch.float32).view(-1, 1)
+        
+        # Demand ratio
+        # Avoid div by zero
+        denom = incumbent_cap_left + 1e-6
+        incumbent_demand_ratio = (demand_t.view(-1, 1) / denom).clamp(0, 5.0) # Clip high values
+
     depot_flag = torch.zeros((coords_t.size(0), 1), device=device)
     depot_flag[0, 0] = 1.0
-    coords_cat = torch.cat([coords_t, demand_t.unsqueeze(-1), depot_flag], dim=-1)
+    
+    # Base features
+    base_feats = [coords_t, demand_t.unsqueeze(-1), depot_flag]
+    
+    if advanced_features:
+        # Add advanced features:
+        # 1. dist_to_depot
+        # 2. incumbent_cap_left
+        # 3. incumbent_demand_ratio
+        base_feats.extend([dist_to_depot_norm, incumbent_cap_left, incumbent_demand_ratio])
+        
+    coords_cat = torch.cat(base_feats, dim=-1)
 
     return Data(x=coords_cat, edge_index=edge_index, edge_attr=edge_attr)
 
