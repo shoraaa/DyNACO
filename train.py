@@ -910,16 +910,58 @@ def infer_instance(
         }
         eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
     
+    # Normalize coordinates for model input (scale to [0, 1] while preserving aspect ratio)
+    norm_coords = instance_data
+    if args.problem == 'tsp':
+        coords = instance_data
+    else:
+        coords = instance_data[0]
+
+    if net is not None:
+        if torch.is_tensor(coords):
+             c_min = coords.min(dim=0)[0]
+             c_max = coords.max(dim=0)[0]
+             c_diff = c_max - c_min
+             scale = c_diff.max()
+             if scale < 1e-6: scale = 1.0
+             norm_coords = (coords - c_min) / scale
+        else:
+             c_min = coords.min(axis=0)
+             c_max = coords.max(axis=0)
+             c_diff = c_max - c_min
+             scale = c_diff.max()
+             if scale < 1e-6: scale = 1.0
+             norm_coords = (coords - c_min) / scale
+        
+        # If CVRP, repackage norm_coords into the tuple structure expected by build_fn
+        if args.problem == 'cvrp':
+            # instance_data is (coords, demand, capacity)
+            # norm_coords becomes the new coords
+            norm_coords = (norm_coords, instance_data[1], instance_data[2])
+
+
     prior_prev_outer = None
     warmup_steps = compute_warmup_steps(args, use_train=False)
 
     for outer in range(args.H):
         pyg_data = build_fn(aco, *pyg_args, dynamic=dynamic)
         
+        # Use normalized coordinates for the network to match training distribution
+        if net is not None:
+             if args.problem == 'tsp':
+                 pyg_data_net = build_fn(aco, norm_coords, args.device, dynamic=dynamic)
+             else:
+                 # norm_coords key 0 is coords, 1 is demand, 2 is capacity (which build_fn doesn't need but setup_aco did)
+                 # Actually build_pyg_data_cvrp takes (aco, coords, demand, device, dynamic)
+                 # We need to pass the normalized coords and original demand
+                 pyg_data_net = build_fn(aco, norm_coords[0], norm_coords[1], args.device, dynamic=dynamic)
+        else:
+             pyg_data_net = pyg_data
+
         guidance = None
         if net is not None and outer >= warmup_steps:
             with torch.no_grad():
-                guidance = net(pyg_data).view(-1).view(aco.n, aco.k)
+                guidance = net(pyg_data_net).view(-1).view(aco.n, aco.k)
         
         # Track prior metrics
         if collect_metrics and guidance is not None:
