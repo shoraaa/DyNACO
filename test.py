@@ -513,27 +513,27 @@ def main():
         }
     }
 
-    TARGET_HS = [10, 20, 50, 100]
-    # Initialize keys for Target HS
-    for h in TARGET_HS:
-        results[f"base_cost_H{h}"] = []
-        results[f"base_time_H{h}"] = []
+    TARGET_ITERS = [1000, 2000, 5000, 10000]
+    # Initialize keys for Target iterations
+    for itr in TARGET_ITERS:
+        results[f"base_cost_I{itr}"] = []
+        results[f"base_time_I{itr}"] = []
         
-        results[f"model_cost_H{h}"] = []
-        results[f"model_time_H{h}"] = []
-        results[f"model_neural_time_H{h}"] = []
+        results[f"model_cost_I{itr}"] = []
+        results[f"model_time_I{itr}"] = []
+        results[f"model_neural_time_I{itr}"] = []
         
-        results[f"model_no_anneal_cost_H{h}"] = []
-        results[f"model_no_anneal_time_H{h}"] = []
-        results[f"model_no_anneal_neural_time_H{h}"] = []
+        results[f"model_no_anneal_cost_I{itr}"] = []
+        results[f"model_no_anneal_time_I{itr}"] = []
+        results[f"model_no_anneal_neural_time_I{itr}"] = []
 
-        results[f"mix_cost_H{h}"] = []
-        results[f"mix_time_H{h}"] = []
-        results[f"mix_neural_time_H{h}"] = []
+        results[f"mix_cost_I{itr}"] = []
+        results[f"mix_time_I{itr}"] = []
+        results[f"mix_neural_time_I{itr}"] = []
 
-        results[f"mix_no_anneal_cost_H{h}"] = []
-        results[f"mix_no_anneal_time_H{h}"] = []
-        results[f"mix_no_anneal_neural_time_H{h}"] = []
+        results[f"mix_no_anneal_cost_I{itr}"] = []
+        results[f"mix_no_anneal_time_I{itr}"] = []
+        results[f"mix_no_anneal_neural_time_I{itr}"] = []
         
     results["model_neural_time"] = []
     results["model_neural_time_no_anneal"] = []
@@ -594,27 +594,28 @@ def main():
             iter_csv_writer = None
 
     def _record_history(prefix, history, res_dict):
-        # map t -> (time, cost, neural_time)
-        # history items can be 3 or 4 elements: (t, time, cost) or (t, time, cost, neural_time)
-        t_map = {}
+        # Build a mapping from total iterations (H * mini_H) to values
+        # history items: (H, time, cost) or (H, time, cost, neural_time)
+        iter_map = {}
         for item in history:
-            t = item[0]
+            t = item[0]  # H value
+            total_iters = t * args.mini_H
             val_tuple = (item[1], item[2])
             n_time = item[3] if len(item) > 3 else 0.0
-            t_map[t] = (val_tuple[0], val_tuple[1], n_time)
+            iter_map[total_iters] = (val_tuple[0], val_tuple[1], n_time)
 
-        for h in TARGET_HS:
-            val = t_map.get(h)
+        for itr in TARGET_ITERS:
+            val = iter_map.get(itr)
             if val:
-                res_dict[f"{prefix}_cost_H{h}"].append(val[1])
-                res_dict[f"{prefix}_time_H{h}"].append(val[0])
-                if f"{prefix}_neural_time_H{h}" in res_dict:
-                    res_dict[f"{prefix}_neural_time_H{h}"].append(val[2])
+                res_dict[f"{prefix}_cost_I{itr}"].append(val[1])
+                res_dict[f"{prefix}_time_I{itr}"].append(val[0])
+                if f"{prefix}_neural_time_I{itr}" in res_dict:
+                    res_dict[f"{prefix}_neural_time_I{itr}"].append(val[2])
             else:
-                res_dict[f"{prefix}_cost_H{h}"].append(None)
-                res_dict[f"{prefix}_time_H{h}"].append(None)
-                if f"{prefix}_neural_time_H{h}" in res_dict:
-                    res_dict[f"{prefix}_neural_time_H{h}"].append(None)
+                res_dict[f"{prefix}_cost_I{itr}"].append(None)
+                res_dict[f"{prefix}_time_I{itr}"].append(None)
+                if f"{prefix}_neural_time_I{itr}" in res_dict:
+                    res_dict[f"{prefix}_neural_time_I{itr}"].append(None)
 
     for i, item in enumerate(tqdm(iterable)):
         opt_cost = None
@@ -1009,27 +1010,27 @@ def main():
                 "mix_anneal": (float(mix_best) if mix_best is not None else None),
                 "mix_no_anneal": (float(mix_best_na) if mix_best_na is not None else None),
             }
-            # Add H metrics
-            for h in TARGET_HS:
+            # Add iteration metrics
+            for itr in TARGET_ITERS:
                  def _get_val(k, idx):
                      lst = results.get(k)
                      if lst and len(lst) > idx: return lst[idx]
                      return None
                  
-                 row_dict[f"base_H{h}"] = _get_val(f"base_cost_H{h}", i)
-                 row_dict[f"base_time_H{h}"] = _get_val(f"base_time_H{h}", i)
+                 row_dict[f"base_I{itr}"] = _get_val(f"base_cost_I{itr}", i)
+                 row_dict[f"base_time_I{itr}"] = _get_val(f"base_time_I{itr}", i)
                  
-                 row_dict[f"model_anneal_H{h}"] = _get_val(f"model_cost_H{h}", i)
-                 row_dict[f"model_anneal_time_H{h}"] = _get_val(f"model_time_H{h}", i)
+                 row_dict[f"model_anneal_I{itr}"] = _get_val(f"model_cost_I{itr}", i)
+                 row_dict[f"model_anneal_time_I{itr}"] = _get_val(f"model_time_I{itr}", i)
                  
-                 row_dict[f"model_no_anneal_H{h}"] = _get_val(f"model_no_anneal_cost_H{h}", i)
-                 row_dict[f"model_no_anneal_time_H{h}"] = _get_val(f"model_no_anneal_time_H{h}", i)
+                 row_dict[f"model_no_anneal_I{itr}"] = _get_val(f"model_no_anneal_cost_I{itr}", i)
+                 row_dict[f"model_no_anneal_time_I{itr}"] = _get_val(f"model_no_anneal_time_I{itr}", i)
 
-                 row_dict[f"mix_anneal_H{h}"] = _get_val(f"mix_cost_H{h}", i)
-                 row_dict[f"mix_anneal_time_H{h}"] = _get_val(f"mix_time_H{h}", i)
+                 row_dict[f"mix_anneal_I{itr}"] = _get_val(f"mix_cost_I{itr}", i)
+                 row_dict[f"mix_anneal_time_I{itr}"] = _get_val(f"mix_time_I{itr}", i)
 
-                 row_dict[f"mix_no_anneal_H{h}"] = _get_val(f"mix_no_anneal_cost_H{h}", i)
-                 row_dict[f"mix_no_anneal_time_H{h}"] = _get_val(f"mix_no_anneal_time_H{h}", i)
+                 row_dict[f"mix_no_anneal_I{itr}"] = _get_val(f"mix_no_anneal_cost_I{itr}", i)
+                 row_dict[f"mix_no_anneal_time_I{itr}"] = _get_val(f"mix_no_anneal_time_I{itr}", i)
 
             per_instance_rows.append(row_dict)
 
@@ -1255,24 +1256,24 @@ def main():
             if results.get("mix_cost_no_anneal") and len(results["mix_cost_no_anneal"]) > 0:
                 _add_method_row("Mix(no_anneal)", results["mix_cost_no_anneal"], results.get("mix_time_no_anneal", []), results.get("mix_gap_no_anneal", []), neural_time_list=results.get("mix_neural_time_no_anneal"))
 
-    # Add H-checkpoint rows
-    for h in TARGET_HS:
+    # Add iteration-checkpoint rows
+    for itr in TARGET_ITERS:
          # Base
-         if (not args.no_baseline) and results.get(f"base_cost_H{h}"):
-             _add_method_row(f"Base@H{h}", results[f"base_cost_H{h}"], results.get(f"base_time_H{h}", []))
+         if (not args.no_baseline) and results.get(f"base_cost_I{itr}"):
+             _add_method_row(f"Base@I{itr}", results[f"base_cost_I{itr}"], results.get(f"base_time_I{itr}", []))
          
          # Model
-         if results.get(f"model_cost_H{h}"):
-             _add_method_row(f"Model(anneal)@H{h}", results[f"model_cost_H{h}"], results.get(f"model_time_H{h}", []), neural_time_list=results.get(f"model_neural_time_H{h}"))
-         if results.get(f"model_no_anneal_cost_H{h}"):
-             _add_method_row(f"Model(no_anneal)@H{h}", results[f"model_no_anneal_cost_H{h}"], results.get(f"model_no_anneal_time_H{h}", []), neural_time_list=results.get(f"model_no_anneal_neural_time_H{h}"))
+         if results.get(f"model_cost_I{itr}"):
+             _add_method_row(f"Model(anneal)@I{itr}", results[f"model_cost_I{itr}"], results.get(f"model_time_I{itr}", []), neural_time_list=results.get(f"model_neural_time_I{itr}"))
+         if results.get(f"model_no_anneal_cost_I{itr}"):
+             _add_method_row(f"Model(no_anneal)@I{itr}", results[f"model_no_anneal_cost_I{itr}"], results.get(f"model_no_anneal_time_I{itr}", []), neural_time_list=results.get(f"model_no_anneal_neural_time_I{itr}"))
          
          # Mix
          if args.warmup:
-             if results.get(f"mix_cost_H{h}"):
-                 _add_method_row(f"Mix(anneal)@H{h}", results[f"mix_cost_H{h}"], results.get(f"mix_time_H{h}", []), neural_time_list=results.get(f"mix_neural_time_H{h}"))
-             if results.get(f"mix_no_anneal_cost_H{h}"):
-                 _add_method_row(f"Mix(no_anneal)@H{h}", results[f"mix_no_anneal_cost_H{h}"], results.get(f"mix_no_anneal_time_H{h}", []), neural_time_list=results.get(f"mix_no_anneal_neural_time_H{h}"))
+             if results.get(f"mix_cost_I{itr}"):
+                 _add_method_row(f"Mix(anneal)@I{itr}", results[f"mix_cost_I{itr}"], results.get(f"mix_time_I{itr}", []), neural_time_list=results.get(f"mix_neural_time_I{itr}"))
+             if results.get(f"mix_no_anneal_cost_I{itr}"):
+                 _add_method_row(f"Mix(no_anneal)@I{itr}", results[f"mix_no_anneal_cost_I{itr}"], results.get(f"mix_no_anneal_time_I{itr}", []), neural_time_list=results.get(f"mix_no_anneal_neural_time_I{itr}"))
 
     if summary_rows:
         best_name = min(candidates, key=lambda x: x[0])[1] if candidates else None
@@ -1319,13 +1320,13 @@ def main():
                 "mix_anneal",
                 "mix_no_anneal",
             ]
-            for h in TARGET_HS:
+            for itr in TARGET_ITERS:
                 fieldnames.extend([
-                    f"base_H{h}", f"base_time_H{h}",
-                    f"model_anneal_H{h}", f"model_anneal_time_H{h}",
-                    f"model_no_anneal_H{h}", f"model_no_anneal_time_H{h}",
-                    f"mix_anneal_H{h}", f"mix_anneal_time_H{h}",
-                    f"mix_no_anneal_H{h}", f"mix_no_anneal_time_H{h}",
+                    f"base_I{itr}", f"base_time_I{itr}",
+                    f"model_anneal_I{itr}", f"model_anneal_time_I{itr}",
+                    f"model_no_anneal_I{itr}", f"model_no_anneal_time_I{itr}",
+                    f"mix_anneal_I{itr}", f"mix_anneal_time_I{itr}",
+                    f"mix_no_anneal_I{itr}", f"mix_no_anneal_time_I{itr}",
                 ])
             with open(csv_path_instances, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
