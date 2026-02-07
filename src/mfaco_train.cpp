@@ -38,6 +38,10 @@ MFACO_TSP::MFACO_TSP(const float *coords_ptr, int32_t n_, int32_t n_ants_,
   if (coords_ptr == nullptr) {
     throw std::runtime_error("coords_ptr must not be null");
   }
+  if (k > static_cast<int32_t>(MAX_CAND_LIST_SIZE)) {
+    throw std::runtime_error("cand_list_size must be <= " +
+                             std::to_string(MAX_CAND_LIST_SIZE));
+  }
 
   // Store coordinates and compute distances on-demand (EXPLICT_EUC_2D).
   coords.resize(static_cast<size_t>(n) * 2);
@@ -1259,6 +1263,10 @@ MFACO_CVRP::MFACO_CVRP(const float *coords_ptr, const float *demand_ptr,
   }
   if (n < 2)
     throw std::runtime_error("n must be >= 2 (depot + at least one customer)");
+  if (k > static_cast<int32_t>(MAX_CAND_LIST_SIZE)) {
+    throw std::runtime_error("cand_list_size must be <= " +
+                             std::to_string(MAX_CAND_LIST_SIZE));
+  }
   if (capacity <= 0)
     throw std::runtime_error("capacity must be > 0");
   capacity_int = (int64_t)std::round(capacity * DEMAND_SCALE);
@@ -1929,7 +1937,7 @@ void MFACO_CVRP::update_pheromone(const std::vector<int32_t> &best_route_in,
     }
   }
 
-  // Update source solution (unconditionally, to track iteration best)
+  // Update source solution
   source_route = best_route_in;
   source_cost = new_best_cost;
 }
@@ -4010,7 +4018,7 @@ std::tuple<int32_t, bool, float> MFACO_CVRP::select_next_node(
   if (c_size == 0) {
     for (int32_t j = 0; j < bl; ++j) {
       int32_t v = backup_list[lookup_node * bl + j];
-      if (v <= 0 || v >= n)
+      if (v < 0 || v >= n)
         continue;
       if (visited[v])
         continue;

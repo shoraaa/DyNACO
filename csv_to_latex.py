@@ -3,6 +3,26 @@ import math
 import argparse
 import re
 
+def parse_single_time(val):
+    val = val.strip()
+    if not val:
+        return 0.0
+    multiplier = 1.0
+    if val.endswith('h'):
+        multiplier = 3600.0
+        val = val[:-1]
+    elif val.endswith('m'):
+        multiplier = 60.0
+        val = val[:-1]
+    elif val.endswith('s'):
+        multiplier = 1.0
+        val = val[:-1]
+    
+    try:
+        return float(val) * multiplier
+    except ValueError:
+        return None
+
 def parse_seconds(time_val):
     if isinstance(time_val, (int, float)):
         return float(time_val)
@@ -12,20 +32,14 @@ def parse_seconds(time_val):
     if time_val in ['N/A', 'OOM', '-']:
         return None
         
-    if '+' in time_val:
-        parts = time_val.split('+')
-        total = 0.0
-        try:
-            for p in parts:
-                total += float(p.strip())
-            return total
-        except ValueError:
+    parts = time_val.split('+')
+    total = 0.0
+    for p in parts:
+        val = parse_single_time(p)
+        if val is None:
             return None
-    else:
-        try:
-            return float(time_val)
-        except ValueError:
-            return None
+        total += val
+    return total
 
 def format_time(seconds_str):
     seconds = parse_seconds(seconds_str)
