@@ -166,7 +166,7 @@ def main():
 
     args = parser.parse_args()
 
-    # args.run_model_anneal = args.run_mix_anneal = args.run_model_no_anneal = args.run_mix_no_anneal = True
+
 
     # Args setup
     ckpt = None
@@ -179,8 +179,7 @@ def main():
         pretrained_dir = f"pretrained/{args.problem}/n{args.n_node}"
         if os.path.exists(pretrained_dir):
             # Try to find a matching checkpoint
-            # pattern = f"{args.problem}_n{args.n_node}_*_best.pt"
-            # pattern = f"{args.problem}_n{args.n_node}_k{args.k_sparse}_ants{args.n_ants}_H{args.H}_miniH{args.mini_H}_rho{args.rho}_*_best.pt"
+
             pattern = f"{args.problem}_n{args.n_node}_*_rho{args.rho}_*_best.pt"
             matches = glob.glob(os.path.join(pretrained_dir, pattern))
             if matches:
@@ -417,10 +416,7 @@ def main():
                  pass
             
             # If tuple dataset (text), we need to extract coords/demands for baseline?
-            # get_baseline for CVRP expects dataset wrapper.
-            # But if we have optimal cost, maybe we don't need baseline?
-            # User prompt didn't strictly say so, but usually yes.
-            # Let's handle generic case.
+
             
             if args.problem == 'cvrp' and isinstance(val_list, list) and not hasattr(val_list, 'tensors'):
                 if len(val_list)>0 and isinstance(val_list[0], tuple) and len(val_list[0]) == 5:
@@ -428,7 +424,7 @@ def main():
                      cs = torch.stack([x[0] for x in val_list])
                      ds = torch.stack([x[1] for x in val_list])
                      caps = torch.stack([torch.tensor(x[2]) for x in val_list]) # Capacity is float
-                     # opt_costs = [x[3] for x in val_list]
+
                      ds_wrapper = torch.utils.data.TensorDataset(cs, ds, caps)
                      baseline_values = get_baseline(ds_wrapper, problem='cvrp', n_node=args.n_node, time_limit=args.baseline_time_limit)
                 elif len(val_list)>0 and isinstance(val_list[0], tuple) and len(val_list[0]) == 3:
@@ -702,9 +698,7 @@ def main():
                             "anneal": "-",
                             **st,
                         })
-                # if args.iter_print and base_iter_stats is not None:
-                #     for st in base_iter_stats:
-                #         print(f"{name} Base iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+
             
             if opt_cost is not None and opt_cost > 1e-6:
                  gap = (base_best - opt_cost) / opt_cost
@@ -765,9 +759,7 @@ def main():
                               "anneal": "on",
                               **st,
                           })
-                  # if args.iter_print and model_iter_stats is not None:
-                  #     for st in model_iter_stats:
-                  #         print(f"{name} Model(anneal) iter={st['iter']} mean={st['mean']:.6f} best={st['best']:.6f}")
+
                   
                   if mod_timings:
                       if "time_neural" in mod_timings: results["model_time_breakdown"]["neural"].append(mod_timings["time_neural"])

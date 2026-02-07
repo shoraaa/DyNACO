@@ -46,8 +46,7 @@ MFACO_TSP::MFACO_TSP(const float *coords_ptr, int32_t n_, int32_t n_ants_,
 
   // Build nearest neighbor lists
   build_nn_lists();
-  // if (!smooth_mmas || nls)
-  //   build_nn_pos();
+
   build_heuristic();
 
   // Initialize source/best solutions
@@ -402,8 +401,6 @@ void MFACO_TSP::build_nn_lists() {
   }
 }
 
-// void MFACO_TSP::build_nn_pos() { ... } REMOVED
-
 void MFACO_TSP::build_heuristic() {
   heuristic_sparse.resize(n * k);
   if (disable_heuristic) {
@@ -518,27 +515,6 @@ void MFACO_TSP::compute_probmat(const float *prior_ptr,
     float mean_z = 0.0f;
     float var_z = 0.0f;
 
-    // if (prior_ptr) {
-    //   // mean
-    //   for (int32_t j = 0; j < k; ++j) {
-    //     float z = prior_ptr[u * k + j];
-    //     // optional clamp for safety (avoid huge exp)
-    //     z = std::max(-10.0f, std::min(10.0f, z));
-    //     mean_z += z;
-    //   }
-    //   mean_z /= (float)k;
-
-    //   // variance
-    //   for (int32_t j = 0; j < k; ++j) {
-    //     float z = prior_ptr[u * k + j];
-    //     z = std::max(-10.0f, std::min(10.0f, z));
-    //     float dz = z - mean_z;
-    //     var_z += dz * dz;
-    //   }
-    //   var_z /= (float)k;
-    // }
-    // float std_z = (prior_ptr ? std::sqrt(var_z + 1e-6f) : 1.0f);
-
     // ---- first pass: compute logits and max for stable exp ----
     float max_logit = -std::numeric_limits<float>::infinity();
 
@@ -563,8 +539,7 @@ void MFACO_TSP::compute_probmat(const float *prior_ptr,
       // Prior logits: gamma * normalized_z
       if (prior_ptr) {
         float z = prior_ptr[idx];
-        // z = std::max(-10.0f, std::min(10.0f, z));
-        // float z_norm = (z - mean_z) / std_z; // row-center + row-scale
+
         logit += gamma * z;
       }
 

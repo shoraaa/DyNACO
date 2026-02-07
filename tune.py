@@ -75,14 +75,14 @@ def parse_result_full(log_file):
 def stage1_solver(args, output_dir):
     # Grid search: Vanilla vs Neural
     
-    # Grid from previous user edit + safe defaults
+    # Grid search: Vanilla vs Neural
+
     rhos = [0.02, 0.05, 0.1, 0.2]
-    n_ants_list = [50, 100] # Reduced slightly for speed, user had [100]
-    k_sparses = [16, 32]    # Reduced for speed
+    n_ants_list = [50, 100]
+    k_sparses = [16, 32]
     mnes = [8, 12, 16]
     
-    # If using full grid, it might be slow.
-    # User specific instruction: "neural net can improve config where solver fail"
+
     
     grid = list(itertools.product(rhos, n_ants_list, k_sparses, mnes))
     print(f"Stage 1: {len(grid)} configs. Comparing Vanilla vs Neural (Short Train).")
@@ -372,8 +372,7 @@ def stage4_ablations(args, output_dir):
             cmd = [
                 "--problem", args.problem,
                 "--n_node", str(args.n_node),
-                "--epochs", "0", # Ablations on SOLVER? Or Net? User said "Tune as ablation, not full sweep" under Solver section.
-                # So implies pure solver performance.
+                "--epochs", "0", # Ablations on SOLVER
                 "--no_logit_net",
                 "--device", args.device,
                 "--seed", str(4567 + seed),

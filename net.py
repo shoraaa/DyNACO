@@ -159,32 +159,7 @@ class ParNet(MLP):
     def forward(self, x):
         return super().forward(x).squeeze(dim = -1)
     
-# Single GNN layer for checkpointing
-class GNNLayer(nn.Module):
-    def __init__(self, units, act_fn, agg_fn):
-        super().__init__()
-        self.act_fn = act_fn
-        self.agg_fn = agg_fn
-        self.v_lin1 = nn.Linear(units, units)
-        self.v_lin2 = nn.Linear(units, units)
-        self.v_lin3 = nn.Linear(units, units)
-        self.v_lin4 = nn.Linear(units, units)
-        self.v_bn = gnn.BatchNorm(units)
-        self.e_lin0 = nn.Linear(units, units)
-        self.e_bn = gnn.BatchNorm(units)
 
-    def forward(self, x, w, edge_index):
-        x0 = x
-        x1 = self.v_lin1(x0)
-        x2 = self.v_lin2(x0)
-        x3 = self.v_lin3(x0)
-        x4 = self.v_lin4(x0)
-        w0 = w
-        w1 = self.e_lin0(w0)
-        w2 = torch.sigmoid(w0)
-        x = x0 + self.act_fn(self.v_bn(x1 + self.agg_fn(w2 * x2[edge_index[1]], edge_index[0])))
-        w = w0 + self.act_fn(self.e_bn(w1 + x3[edge_index[0]] + x4[edge_index[1]]))
-        return x, w
 
 # Checkpointed version of EmbNet
 class EmbNetCheckpoint(nn.Module):
@@ -225,7 +200,7 @@ class Net(nn.Module):
             self.emb_net = EmbNetCheckpoint(feats=feats, edge_feats=edge_feats)
         else:
             self.emb_net = EmbNet(feats=feats, edge_feats=edge_feats)
-        # self.par_net_phe = ParNet()
+
         self.par_net_heu = ParNet(logit_net=logit_net)
     def forward(self, pyg):
         x, edge_index, edge_attr = pyg.x, pyg.edge_index, pyg.edge_attr

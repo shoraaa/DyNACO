@@ -547,8 +547,7 @@ def load_auto_dataset(n, problem='tsp', data_source='test_set', rl_data=False, d
     # Default to test_set
     base_dir = DATA_DIR / problem.upper() / "data" / data_source
     if not base_dir.exists():
-        # Fallback to validation_set if test_set not found (legacy behavior?)
-        # Or just fail? Let's try validation_set as fallback if default 'test_set' missing
+
         if data_source == 'test_set':
              alt_dir = DATA_DIR / problem.upper() / "data" / "validation_set"
              if alt_dir.exists():
@@ -595,12 +594,7 @@ def load_auto_dataset(n, problem='tsp', data_source='test_set', rl_data=False, d
             if target_filename is None:
                  # Try to find *TSPlib*
                  # Filter by N maybe? 
-                 # Just returning first TSPlib related?
                  matches = [f for f in candidates if "TSPlib" in f.name]
-                 # If we have matches, maybe try to match numeric? 
-                 # For now just pick one?
-                 # If N provided, filtering by N is better.
-                 # Re-scan for pattern like "{n}K" or "{n}"?
                  pass
 
         elif problem == 'cvrp':
@@ -688,8 +682,7 @@ def load_auto_dataset(n, problem='tsp', data_source='test_set', rl_data=False, d
         else:
             return load_cvrp_txt_dataset(str(full_path))
     else:
-        # Fallback to old heuristic scanning if hardcode didn't match
-        # (Original logic roughly)
+
         print(f"No strict match for N={n} (rl_data={rl_data}). Scanning for partial match...")
         
         # Original scanning logic adapted
@@ -698,7 +691,6 @@ def load_auto_dataset(n, problem='tsp', data_source='test_set', rl_data=False, d
         for f in candidates:
              name = f.name.lower()
              if pattern in name:
-                 # check digit boundary?
                  idx = name.find(pattern)
                  if idx != -1:
                      after = name[idx+len(pattern):]
@@ -787,10 +779,7 @@ def load_tsp_txt_dataset(path):
                 num_nodes = len(coords_flat) // 2
                 coords = torch.tensor(coords_flat).view(num_nodes, 2)
                 
-                # Parse Tour
                 # Tour indices are 1-based in file, convert to 0-based.
-                # Sometimes line ends with potential empty strings if split by space naively, but parts usually cleans up ok?
-                # Actually earlier log showed: ... output 1 949 709 ... 
                 # Let's filter empty strings just in case
                 tour_parts = [x for x in parts[output_idx+1:] if x]
                 tour = [int(x) - 1 for x in tour_parts]
