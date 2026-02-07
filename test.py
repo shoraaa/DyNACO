@@ -507,6 +507,10 @@ def main():
         TARGET_ITERS = [250, 500, 1250, 2500]
     else:
         TARGET_ITERS = [1000, 2000, 5000, 10000]
+
+    for itr in TARGET_ITERS:
+        if itr % args.mini_H != 0:
+            print(f"Warning: Target iteration {itr} is not a multiple of mini_H ({args.mini_H}). It will never be logged.")
     # Initialize keys for Target iterations
     for itr in TARGET_ITERS:
         results[f"base_cost_I{itr}"] = []
@@ -1161,14 +1165,14 @@ def main():
     if opt_costs_summary:
         opt_mean, opt_std = _mean_std(opt_costs_summary)
         summary_rows.append([
-            "Opt", _fmt(opt_mean), _fmt(opt_std), "0.00", "0.00", "opt", "-", ""
+            "Opt", _fmt(opt_mean), _fmt(opt_std), "0.00", "0.00", "opt", "-", "-", ""
         ])
 
     # Baseline solver row (if available)
     if baseline_values is not None:
         bl_mean, bl_std = _mean_std(baseline_values)
         summary_rows.append([
-            "Baseline", _fmt(bl_mean), _fmt(bl_std), "-", "-", "-", "-", ""
+            "Baseline", _fmt(bl_mean), _fmt(bl_std), "-", "-", "-", "-", "-", ""
         ])
 
     def _mean_gap_to_baseline(cost_list, baseline_arr):
@@ -1191,12 +1195,23 @@ def main():
         tm, _ = _mean_std(time_list)
         
         # Calculate A+B time format if neural_time_list is provided
+        # Filter None from time_list for total sum
+        valid_times = [t for t in time_list if t is not None]
+        total_time_str = _fmt(np.sum(valid_times)) if valid_times else "-"
+        
         time_str = _fmt(tm)
         if neural_time_list is not None:
              nm, _ = _mean_std(neural_time_list)
+             valid_neural = [t for t in neural_time_list if t is not None]
+             nt_sum = np.sum(valid_neural) if valid_neural else 0.0
+             
              if tm is not None and nm is not None:
                  cpu_time = max(0.0, tm - nm)
+                 # Total CPU time = Total Time - Total Neural Time
+                 total_time_val = np.sum(valid_times) if valid_times else 0.0
+                 cpu_total = max(0.0, total_time_val - nt_sum)
                  time_str = f"{cpu_time:.2f}+{nm:.2f}"
+                 total_time_str = f"{cpu_total:.2f}+{nt_sum:.2f}"
         
         # Prefer gap to Opt (from txt dataset optimal values) when available.
         gap_ref = "-"
@@ -1224,6 +1239,7 @@ def main():
             _fmt(gap_std, nd=2),
             gap_ref,
             time_str,
+            total_time_str,
             "",
         ])
         if m is not None:
@@ -1277,7 +1293,7 @@ def main():
         print("\n--- Summary (mean over instances) ---")
         _print_table(
             summary_rows,
-            headers=["Method", "MeanCost", "StdCost", "Gap%", "StdGap%", "GapRef", "MeanTime", "Best"],
+            headers=["Method", "MeanCost", "StdCost", "Gap%", "StdGap%", "GapRef", "MeanTime", "TotalTime", "Best"],
         )
 
         # CSV summary logging
@@ -1291,7 +1307,7 @@ def main():
                     writer.writerow(["dataset", args.dataset])
                     writer.writerow(["seed", args.seed])
                     writer.writerow([])
-                    writer.writerow(["Method", "MeanCost", "StdCost", "Gap%", "StdGap%", "GapRef", "MeanTime", "Best"])
+                    writer.writerow(["Method", "MeanCost", "StdCost", "Gap%", "StdGap%", "GapRef", "MeanTime", "TotalTime", "Best"])
                     for r in summary_rows:
                         writer.writerow(r)
             except Exception as e:
