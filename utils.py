@@ -367,7 +367,6 @@ def build_pyg_data_tsp(aco, coords, device, dynamic: bool):
 
 # ----------------- CVRP Utils -----------------
 
-CAPACITY = 250
 DEMAND_LOW = 1
 DEMAND_HIGH = 9
 
@@ -523,7 +522,7 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
 
     # Always use 6 edge features
     edge_attr = torch.cat(
-        [dist_norm, tau_cv, tau_rel.view(E, 1), is_source_succ, is_source_pred, is_new_edge],
+        [dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
         dim=1
     )
 

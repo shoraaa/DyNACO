@@ -3,12 +3,33 @@ import math
 import argparse
 import re
 
+def parse_seconds(time_val):
+    if isinstance(time_val, (int, float)):
+        return float(time_val)
+    if not isinstance(time_val, str):
+        return None
+    
+    if time_val in ['N/A', 'OOM', '-']:
+        return None
+        
+    if '+' in time_val:
+        parts = time_val.split('+')
+        total = 0.0
+        try:
+            for p in parts:
+                total += float(p.strip())
+            return total
+        except ValueError:
+            return None
+    else:
+        try:
+            return float(time_val)
+        except ValueError:
+            return None
+
 def format_time(seconds_str):
-    if seconds_str in ['N/A', 'OOM', '-']:
-        return seconds_str
-    try:
-        seconds = float(seconds_str)
-    except ValueError:
+    seconds = parse_seconds(seconds_str)
+    if seconds is None:
         return seconds_str
 
     if seconds < 1:
@@ -69,9 +90,10 @@ def process_csv(filename):
             
     return rows, g1_rows, g2_rows, g3_rows
 
-def get_best_gaps(rows, datasets):
+def get_best_gaps(rows, datasets, excluded_methods=None):
+    if excluded_methods is None:
+        excluded_methods = []
     best_gaps = {}
-    excluded_methods = ["LKH3", "Concorde"]
     for ds in datasets:
         min_gap = float('inf')
         for row in rows:
@@ -103,8 +125,9 @@ def print_section_header(datasets):
     print(r"\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9} \cmidrule(lr){10-11}")
     print(r"Method & Obj.\ (Gap) & Time & Obj.\ (Gap) & Time & Obj.\ (Gap) & Time & Obj.\ (Gap) & Time & Obj.\ (Gap) & Time \\")
 
-def print_section_rows(row_list, datasets, args, instance_counts, best_gaps):
-    excluded_methods = ["LKH3", "Concorde"]
+def print_section_rows(row_list, datasets, args, instance_counts, best_gaps, excluded_methods=None):
+    if excluded_methods is None:
+        excluded_methods = []
     for row in row_list:
         method_name = row['Method']
         name_tex = format_method_name(method_name)
@@ -119,12 +142,12 @@ def print_section_rows(row_list, datasets, args, instance_counts, best_gaps):
             gap_str = row.get(gap_key, "-")
             time_str = row.get(time_key, "-")
 
-            if args.avg and time_str not in ['N/A', 'OOM', '-']:
-                try:
-                    total_seconds = float(time_str)
-                    avg_seconds = total_seconds / instance_counts[ds]
-                    f_time = format_time(avg_seconds)
-                except ValueError:
+            if args.avg:
+                seconds = parse_seconds(time_str)
+                if seconds is not None:
+                     avg_seconds = seconds / instance_counts[ds]
+                     f_time = format_time(avg_seconds)
+                else:
                     f_time = format_time(time_str)
             else:
                 f_time = format_time(time_str)
@@ -186,11 +209,13 @@ def main():
     print("Recalculating CVRP gaps...")
     recalculate_gaps('result_cvrp.csv', cvrp_datasets, 'HGS')
     
+    tsp_exclusions = ["LKH3", "Concorde"]
     tsp_rows_all, tsp_g1, tsp_g2, tsp_g3 = process_csv("results.csv")
-    tsp_best = get_best_gaps(tsp_rows_all, tsp_datasets)
+    tsp_best = get_best_gaps(tsp_rows_all, tsp_datasets, tsp_exclusions)
 
+    cvrp_exclusions = ["HGS"]
     cvrp_rows_all, cvrp_g1, cvrp_g2, cvrp_g3 = process_csv("result_cvrp.csv")
-    cvrp_best = get_best_gaps(cvrp_rows_all, cvrp_datasets)
+    cvrp_best = get_best_gaps(cvrp_rows_all, cvrp_datasets, cvrp_exclusions)
 
     # Start Table
     print(r"\begin{table*}[t]")
@@ -206,11 +231,11 @@ def main():
     # TSP Section
     print_section_header(tsp_datasets)
     print(r"\midrule")
-    print_section_rows(tsp_g1, tsp_datasets, args, tsp_counts, tsp_best)
+    print_section_rows(tsp_g1, tsp_datasets, args, tsp_counts, tsp_best, tsp_exclusions)
     print(r"\midrule")
-    print_section_rows(tsp_g2, tsp_datasets, args, tsp_counts, tsp_best)
+    print_section_rows(tsp_g2, tsp_datasets, args, tsp_counts, tsp_best, tsp_exclusions)
     print(r"\midrule")
-    print_section_rows(tsp_g3, tsp_datasets, args, tsp_counts, tsp_best)
+    print_section_rows(tsp_g3, tsp_datasets, args, tsp_counts, tsp_best, tsp_exclusions)
 
     # Sep
     print(r"\midrule")
@@ -219,11 +244,11 @@ def main():
     # CVRP Section
     print_section_header(cvrp_datasets)
     print(r"\midrule")
-    print_section_rows(cvrp_g1, cvrp_datasets, args, cvrp_counts, cvrp_best)
+    print_section_rows(cvrp_g1, cvrp_datasets, args, cvrp_counts, cvrp_best, cvrp_exclusions)
     print(r"\midrule")
-    print_section_rows(cvrp_g2, cvrp_datasets, args, cvrp_counts, cvrp_best)
+    print_section_rows(cvrp_g2, cvrp_datasets, args, cvrp_counts, cvrp_best, cvrp_exclusions)
     print(r"\midrule")
-    print_section_rows(cvrp_g3, cvrp_datasets, args, cvrp_counts, cvrp_best)
+    print_section_rows(cvrp_g3, cvrp_datasets, args, cvrp_counts, cvrp_best, cvrp_exclusions)
 
     print(r"\bottomrule")
     print(r"\end{tabular}")
