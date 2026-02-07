@@ -1549,7 +1549,7 @@ def main():
         )
 
     # Initialize model
-    feats = 2 if args.problem == 'tsp' else 3
+    feats = 2 if args.problem == 'tsp' else 1
     
     edge_feats = 6
 

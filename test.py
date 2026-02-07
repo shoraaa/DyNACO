@@ -460,10 +460,22 @@ def main():
         # ... logic to override args if needed ...
 
         # Model
-        feats = 2 if args.problem == 'tsp' else 3
+        # Check input feats from checkpoint if available
+        feats = 2 if args.problem == 'tsp' else 1
         
-        # Always use 6 edge features
+        if "emb_net.v_lin0.weight" in state_dict:
+            ckpt_feats = state_dict["emb_net.v_lin0.weight"].shape[1]
+            if ckpt_feats != feats:
+                print(f"Override feats={feats} with checkpoint feats={ckpt_feats}")
+                feats = ckpt_feats
+        
+        # Always use 6 edge features, unless checkpoint differs
         edge_feats = 6
+        if "emb_net.e_lin0.weight" in state_dict:
+            ckpt_edge_feats = state_dict["emb_net.e_lin0.weight"].shape[1]
+            if ckpt_edge_feats != edge_feats:
+                print(f"Override edge_feats={edge_feats} with checkpoint edge_feats={ckpt_edge_feats}")
+                edge_feats = ckpt_edge_feats
 
         model = Net(feats=feats, edge_feats=edge_feats, logit_net=not args.no_logit_net).to(args.device)
         model.load_state_dict(state_dict)
