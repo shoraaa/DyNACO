@@ -460,7 +460,7 @@ def main():
         # ... logic to override args if needed ...
 
         # Model
-        feats = 2 if args.problem == 'tsp' else 4
+        feats = 2 if args.problem == 'tsp' else 3
         
         # Always use 6 edge features
         edge_feats = 6
