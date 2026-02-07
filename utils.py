@@ -452,6 +452,7 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool, simple_featu
         tau_std = tau.std(dim=1, keepdim=True)
         tau_cv = (tau_std / tau_mean).clamp(0, 10).repeat_interleave(k, dim=0)
     else:
+        tau_rel = torch.ones((n, k), device=device, dtype=torch.float32)
         log_tau_rel = torch.zeros((E, 1), device=device, dtype=torch.float32)
         tau_cv = torch.zeros((E, 1), device=device, dtype=torch.float32)
 
