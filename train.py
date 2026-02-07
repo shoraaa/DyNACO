@@ -788,6 +788,245 @@ def train_instance_ppo(
     return avg_cost_last, best_seen, out_metrics
 
 
+def train_instance_ppo_batch(
+    model: Net,
+    optimizer: torch.optim.Optimizer,
+    batch_data: List[Any],
+    args: argparse.Namespace
+) -> Tuple[float, float, Dict[str, float]]:
+    """
+    Train on a batch of instances using PPO algorithm.
+    Accumulates gradients across the batch for stable updates.
+    """
+    model.train()
+    
+    bs = len(batch_data)
+    if bs == 0:
+        return 0.0, float("inf"), {}
+
+    # Initialize ACOs for all instances
+    acos = []
+    pyg_args_list = []
+    eta_nk_list = []
+    build_fns = []
+    
+    for instance_data in batch_data:
+        aco, pyg_args = setup_aco(args, instance_data, args.problem)
+        acos.append(aco)
+        pyg_args_list.append(pyg_args)
+        eta_nk_list.append(get_heuristic_tensor(aco, args.problem, args.device))
+        
+        if args.problem == 'tsp':
+            build_fns.append(utils.build_pyg_data_tsp)
+        else:
+            build_fns.append(functools.partial(utils.build_pyg_data_cvrp, advanced_features=args.advanced_features))
+            
+    best_seen = float("inf")
+    metrics = MetricsCollector()
+    
+    # Timing accumulators (sum over batch or avg?) - let's track total time
+    t_neural_total = 0.0
+    t_aco_sampling = 0.0
+    t_aco_ls = 0.0
+    t_aco_update = 0.0
+    t_aco_total = 0.0
+    
+    warmup_steps = compute_warmup_steps(args, use_train=True)
+    
+    # Storage for "prior_old" from previous step, per instance
+    priors_old = [None] * bs
+    prior_prev_cpus = [None] * bs
+    
+    for outer in tqdm(range(args.H), desc="Outer (Batch)", leave=False):
+        # 1. Forward pass (Priors) for all instances
+        # Batched forward pass would be better if we could batch PyG data objects
+        # For now, loop over instances (simpler implementation)
+        
+        pyg_data_list = []
+        for i in range(bs):
+            pyg_data = build_fns[i](acos[i], *pyg_args_list[i], dynamic=not args.no_dynamic_feats)
+            pyg_data_list.append(pyg_data)
+
+        # Update priors (potentially batched if we used Batch.from_data_list)
+        # But our model takes single Data object usually? 
+        # utils.Batch exists in PyG. But let's keep it simple first: loop.
+        
+        if outer >= warmup_steps:
+            t0 = time.time()
+            for i in range(bs):
+                with torch.no_grad():
+                    prior = model(pyg_data_list[i]).view(-1).view(acos[i].n, acos[i].k)
+                    priors_old[i] = prior
+                    
+                    prior_prev_cpus[i] = _collect_prior_metrics(
+                        metrics, prior, prior_prev_cpus[i], eta_nk_list[i], args.simple_train
+                    )
+            t_neural_total += time.time() - t0
+
+        # 2. ACO Sampling + PPO Data Collection
+        batch_traj = [] # List of (traces, costs, logp_old, etc.) for each instance
+        
+        t_aco_start = time.time()
+        
+        for i in range(bs):
+            aco = acos[i]
+            if hasattr(aco, "reset_timings"): aco.reset_timings()
+            
+            # Storage for THIS instance
+            inst_data = {
+                "tau_list": [], "traces_list": [], "costs_list": [], 
+                "logp_old_list": [], "ndec_list": [], "costs_raw_list": []
+            }
+            
+            curr_prior = priors_old[i]
+            eta_nk = eta_nk_list[i]
+            
+            for inner in range(args.mini_H):
+                prior_use = curr_prior
+                if curr_prior is not None and args.train_anneal:
+                    factor = compute_annealing_factor(inner, args.mini_H, args.gamma, args.min_gamma)
+                    prior_use = curr_prior * factor
+                
+                res = aco.sample(require_prob=True, prior=prior_use, parallel_traced=args.parallel_traced)
+                costs, flats, _, _, traces, costs_raw, _, new_edges, survival = res
+                
+                if survival is not None: metrics.add("survival", survival.mean().item())
+                if new_edges is not None: metrics.add("new_edges", new_edges.astype(np.float32).mean())
+                
+                costs_t = torch.as_tensor(costs, device=args.device, dtype=torch.float32)
+                costs_raw_t = torch.as_tensor(costs_raw, device=args.device, dtype=torch.float32) if costs_raw is not None else costs_t
+                
+                tau_nk = aco.tau_nk_torch().detach()
+                
+                # Log old
+                with torch.no_grad():
+                    log_prob_old = log_prob_sparse_from_tau_eta_prior(
+                        tau_nk, eta_nk, prior_use, args.alpha, args.beta, EPS
+                    )
+                    logp_old, ndec = replay_logp_from_cpp_batch_trace(traces, log_prob_old)
+                    ndec_f = ndec.to(torch.float32).clamp_min(1.0)
+                    logp_old = (logp_old / ndec_f).detach()
+                    
+                    metrics.add("ndec", ndec.float().mean().item())
+                    metrics.add("entropy", (-logp_old / ndec.float().clamp_min(1.0)).mean().item())
+
+                # Update pheromone
+                best_idx = int(costs_t.argmin().item())
+                best_val = float(costs[best_idx])
+                best_seen = min(best_seen, best_val)
+                
+                if not args.train_deepaco:
+                    with torch.no_grad():
+                        aco.update_pheromone(flats[best_idx], best_val)
+                
+                # Store
+                inst_data["tau_list"].append(tau_nk.detach())
+                inst_data["traces_list"].append(traces)
+                inst_data["costs_list"].append(costs_t.detach())
+                inst_data["costs_raw_list"].append(costs_raw_t)
+                inst_data["logp_old_list"].append(logp_old)
+                inst_data["ndec_list"].append(ndec.detach())
+            
+            batch_traj.append(inst_data)
+            
+            # Collect timings
+            _, _, _ = _update_aco_timings(metrics, aco, 0, 0, 0) # Just to trigger internal gathering if needed
+
+        t_aco_total += time.time() - t_aco_start
+        
+        if outer < warmup_steps:
+             continue
+             
+        # 3. PPO Update (Accumulate Batch Gradients)
+        # We process the PPO epochs. For batching, we can average gradients across the batch.
+        
+        for _ in range(args.ppo_epochs):
+            optimizer.zero_grad(set_to_none=True)
+            
+            batch_loss_sum = 0.0
+            
+            # We iterate over the batch and accumulate loss
+            # Optimization: could we batch the forward pass here? 
+            # Generating priors for all B instances:
+            t0 = time.time()
+            current_priors_new = []
+            for i in range(bs):
+                current_priors_new.append(model(pyg_data_list[i]).view(-1).view(acos[i].n, acos[i].k))
+            t_neural_total += time.time() - t0
+            
+            for i in range(bs):
+                # Calculate loss for instance i
+                inst_loss_sum = 0.0
+                prior_new = current_priors_new[i]
+                data = batch_traj[i]
+                eta_nk = eta_nk_list[i]
+                
+                for inner in range(args.mini_H):
+                    curr_prior = prior_new
+                    if args.train_anneal:
+                        factor = compute_annealing_factor(inner, args.mini_H, args.gamma, args.min_gamma)
+                        curr_prior = prior_new * factor
+                        
+                    log_prob_new = log_prob_sparse_from_tau_eta_prior(
+                        data["tau_list"][inner], eta_nk, curr_prior, args.alpha, args.beta, EPS
+                    )
+                    logp_new, ndec_new = replay_logp_from_cpp_batch_trace(data["traces_list"][inner], log_prob_new)
+                    ndec_f = ndec_new.to(torch.float32).clamp_min(1.0)
+                    logp_new = logp_new / ndec_f
+                    
+                    logp_old = data["logp_old_list"][inner]
+                    
+                    ratio = torch.exp(logp_new - logp_old)
+                    
+                    costs_t = data["costs_list"][inner]
+                    costs_raw_t = data["costs_raw_list"][inner]
+                    
+                    if args.nls:
+                         cost_comb = args.nls_beta * costs_t + (1.0 - args.nls_beta) * costs_raw_t
+                         base = cost_comb.mean()
+                         adv = (base - cost_comb).detach()
+                    else:
+                         base = costs_t.mean()
+                         adv = (base - costs_t).detach()
+                         
+                    if not args.no_adv_norm:
+                        adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
+                        
+                    surr1 = ratio * adv
+                    surr2 = torch.clamp(ratio, 1 - args.ppo_clip, 1 + args.ppo_clip) * adv
+                    loss = -torch.mean(torch.min(surr1, surr2))
+                    
+                    inst_loss_sum += loss
+                
+                # Average loss over mini_H steps for this instance
+                batch_loss_sum += (inst_loss_sum / args.mini_H)
+            
+            # Average over batch
+            total_loss = batch_loss_sum / bs
+            total_loss.backward()
+            
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            
+            metrics.add("loss", total_loss.item())
+
+    # Final metrics
+    out_metrics = metrics.get_all_means()
+    out_metrics["time_neural"] = t_neural_total
+    out_metrics["time_aco"] = t_aco_total
+    
+    # Avg cost of last iteration of batch
+    avg_costs = []
+    for i in range(bs):
+        if len(batch_traj) > 0 and len(batch_traj[-1]["costs_list"]) > 0:
+            last_costs = batch_traj[-1]["costs_list"][-1]
+            avg_costs.append(last_costs.mean().item())
+        else:
+            avg_costs.append(0.0)
+            
+    return float(np.mean(avg_costs)), best_seen, out_metrics
+
+
 
 
 # =============================================================================
@@ -826,6 +1065,76 @@ def train_epoch(
     epoch_time_neural = 0.0
     epoch_time_aco = 0.0
     
+    # Simple batch support
+    if args.batch_size > 0:
+        # Calculate number of batches
+        n_batches = max(1, steps // args.batch_size)
+        
+        for step in tqdm(range(n_batches), desc="Batch Epoch", leave=True):
+            # Generate batch
+            batch_data = []
+            for _ in range(args.batch_size):
+                if args.problem == 'tsp':
+                    instance_data = np.random.rand(args.n_node, 2).astype(np.float32)
+                else:
+                    coords_t, demand_t, capacity = gen_func(args.n_node, device=args.device)
+                    instance_data = (
+                        coords_t.detach().cpu().numpy().astype(np.float32),
+                        demand_t.detach().cpu().numpy().astype(np.float32),
+                        capacity
+                    )
+                batch_data.append(instance_data)
+            
+            # Train batch
+            t_start_batch = time.time()
+            if args.algo == 'ppo':
+                 avg_cost, best_cost, metrics = train_instance_ppo_batch(
+                     net, optimizer, batch_data, args
+                 )
+            else:
+                 # Fallback for REINFORCE (sequential)
+                 avg_costs = []
+                 best_costs = []
+                 metrics_list = []
+                 for instance_data in batch_data:
+                     c, b, m = train_instance_reinforce(net, optimizer, instance_data, args)
+                     avg_costs.append(c)
+                     best_costs.append(b)
+                     metrics_list.append(m)
+                 
+                 avg_cost = float(np.mean(avg_costs))
+                 best_cost = float(np.min(best_costs))
+                 metrics = {} 
+                 if metrics_list:
+                     for k in metrics_list[0].keys():
+                         metrics[k] = float(np.mean([m.get(k, 0) for m in metrics_list]))
+
+            t_train = time.time() - t_start_batch
+            epoch_train_time += t_train
+            
+            if metrics:
+                sum_avg_cost += avg_cost
+                if "time_neural" in metrics: epoch_time_neural += metrics["time_neural"]
+                if "time_aco" in metrics: epoch_time_aco += metrics["time_aco"]
+                
+                # Log to wandb
+                if not args.no_wandb:
+                    wandb.log({
+                        "train/avg_cost": avg_cost,
+                        "train/best_cost": best_cost,
+                        "train/gap": 0.0,
+                        "epoch": epoch,
+                        "step": global_step,
+                        **{f"train/{k}": v for k, v in metrics.items()}
+                    })
+            
+            # Log step metrics
+            logger.set_step(global_step)
+            logger.log_train_step(avg_cost, best_cost, epoch, metrics, global_step)
+            global_step += 1
+            
+        return global_step, sum_avg_cost / n_batches, epoch_time_neural, epoch_time_aco, epoch_train_time
+
     for step in tqdm(range(steps), desc="Epoch", leave=True):
         # Generate instance
         if args.problem == 'tsp':
@@ -1211,6 +1520,9 @@ def parse_args() -> argparse.Namespace:
         help="Force single-thread traced sampling (slower; legacy behavior)",
     )
     parser.set_defaults(parallel_traced=True)
+    
+    parser.add_argument("--batch_size", type=int, default=0,
+                        help="Batch size for PPO updates (0 = instance-based)")
 
     # Optimization
 
