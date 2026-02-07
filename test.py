@@ -516,7 +516,7 @@ def main():
     }
 
     if args.problem == 'cvrp':
-        TARGET_ITERS = [250, 500, 1250, 2500]
+        TARGET_ITERS = [1000, 2000, 5000, 10000]
     else:
         TARGET_ITERS = [1000, 2000, 5000, 10000]
 

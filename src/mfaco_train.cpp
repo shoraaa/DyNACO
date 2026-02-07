@@ -3255,8 +3255,6 @@ float ACO_CVRP::run(int32_t n_iterations) {
 
   for (int32_t iter = 0; iter < n_iterations; ++iter) {
     // 1. Generate paths
-    // We don't use prior in standard run (unless passed? API doesn't differ)
-    // We assume prior=nullptr for basic run.
     sample(false, nullptr, result, false);
 
     // 2. Local Search (if enabled)
@@ -3295,43 +3293,6 @@ float ACO_CVRP::run(int32_t n_iterations) {
     }
 
     // 3. Update Pheromone
-    // Python logic:
-    // if not adaptive or improved: update_pheromone
-    // else: diversification (if adaptive)
-    // We assume adaptive=False for now essentially, or simplify.
-    // ALWAYS update for standard ACO.
-
-    // Elitist vs All?
-    // User Python: if elitist (adaptive default=False): best only.
-    //              else: all.
-    // The "standard" ACO_CVRP usually uses elitist in MMAS.
-    // But user passed "elitist=False" in one example (pure AS?).
-    // However, the class name implies MMAS features (min_max).
-    // Let's implement specific logic matching Python variable `elitist`?
-    // Python code *inferred*: `self.elitist = elitist or adaptive`.
-    // My C++ `ACO_CVRP` does NOT have an `elitist` member variable exposed in
-    // header yet? Checking header... ACO_TSP has `elitist`. ACO_CVRP in
-    // header... `class ACO_CVRP { ... public: ... float p_best; bool min_max;
-    // ... }` It seems I missed `elitist` in ACO_CVRP definition in header when
-    // reviewing. Let's check header content again for ACO_CVRP. Line 693: class
-    // ACO_CVRP It has `bool min_max`. No `elitist`. I should infer elitist
-    // behavior or defaults. Given the user wants to "NOT use split", and use
-    // "ACO for CVRP". I made `update_pheromone` take single solution (Elitist).
-    // I added `update_pheromone_batch` (All).
-    // I will use `batch` update if not min_max? Or should I add `elitist` flag?
-    // Using `min_max` corresponds strongly to MMAS which is Elitist.
-    // If `min_max` is true -> Elitist update (best iter or best global).
-    // If `min_max` is false -> "AS" style?
-    // In Python code: `min_max` and `elitist` are separate.
-    // `aco = ACO(..., elitist=False, adaptive=False)`.
-    // I will add a `bool elitist = true;` to ACO_CVRP? Or just hardcode
-    // behavior based on `min_max`? Safest is to check `min_max`. If min_max,
-    // likely MMAS -> Elitist. But wait, Python code allows `elitist=False,
-    // min_max=False`. I will assume `min_max` implies elitist behavior in C++
-    // for simplicity unless I add a field. But wait, `update_pheromone`
-    // (scalar) updates ONE path. `update_pheromone_batch` updates ALL. In
-    // `run()`: If `min_max` is true: default to Elitist (update iteration
-    // best). Else: update all.
 
     // If elitist is true -> Elitist update (best iter)
     // Else -> AS update (all ants)
