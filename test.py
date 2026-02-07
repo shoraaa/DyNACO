@@ -503,7 +503,10 @@ def main():
         }
     }
 
-    TARGET_ITERS = [1000, 2000, 5000, 10000]
+    if args.problem == 'cvrp':
+        TARGET_ITERS = [250, 500, 1250, 2500]
+    else:
+        TARGET_ITERS = [1000, 2000, 5000, 10000]
     # Initialize keys for Target iterations
     for itr in TARGET_ITERS:
         results[f"base_cost_I{itr}"] = []
