@@ -724,6 +724,8 @@ def main():
         model_best_na = None
         mix_best = None
         mix_best_na = None
+        model_m = None
+        mix_m = None
         if model:
               # Determine which methods to run based on problem type and flags
               # Default: Mix(anneal) for TSP, Model(anneal) for CVRP
