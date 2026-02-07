@@ -303,7 +303,7 @@ def gen_distance_matrix(coords):
 def generate_tsp_instance(n):
     return np.random.rand(n, 2).astype(np.float32)
 
-def build_pyg_data_tsp(aco, coords, device, dynamic: bool, simple_features: bool = False):
+def build_pyg_data_tsp(aco, coords, device, dynamic: bool):
     """
     Build PyG Data for TSP using 2D node features (coords).
     Edge features (6): dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge
@@ -357,22 +357,11 @@ def build_pyg_data_tsp(aco, coords, device, dynamic: bool, simple_features: bool
         is_source_pred = torch.zeros((E, 1), device=device, dtype=torch.float32)
         is_new_edge = torch.zeros((E, 1), device=device, dtype=torch.float32)
 
-    if simple_features:
-        # Simple features: dist_norm, log_tau_rel, is_in_route (3 features)
-        # Consistent with CVRP
-        is_in_route = (is_source_succ > 0.5) | (is_source_pred > 0.5)
-        is_in_route = is_in_route.to(torch.float32).view(E, 1)
-        
-        edge_attr = torch.cat(
-            [dist_norm, log_tau_rel, is_in_route],
-            dim=1
-        )
-    else:
-        # Full features (6 features)
-        edge_attr = torch.cat(
-            [dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
-            dim=1
-        )
+    # Always use 6 edge features
+    edge_attr = torch.cat(
+        [dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
+        dim=1
+    )
     return Data(x=coords, edge_index=edge_index, edge_attr=edge_attr)
 
 
@@ -411,7 +400,7 @@ def gen_cvrp_instance(n, device, capacity=None):
     # Return coords (n+1, 2), demands (n+1,) normalized, capacity_norm=1.0
     return coords, all_demands, 1.0
 
-def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool, simple_features: bool = False):
+def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
     """
     Build PyG Data for CVRP using 4D node features (coords, demand, depot_flag).
     Edge features (6): dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge
@@ -532,17 +521,11 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool, simple_featu
     is_new_edge = (~is_in_route).to(torch.float32).view(E, 1)
     is_in_route_feat = is_in_route.to(torch.float32).view(E, 1)
 
-    if simple_features:
-        # Use 3 features similar to TSP: dist_norm, log_tau_rel, is_in_route
-        edge_attr = torch.cat(
-            [dist_norm, tau_rel.view(E, 1), is_in_route_feat],
-            dim=1
-        )
-    else:
-        edge_attr = torch.cat(
-            [dist_norm, tau_cv, tau_rel.view(E, 1), is_source_succ, is_source_pred, is_new_edge],
-            dim=1
-        )
+    # Always use 6 edge features
+    edge_attr = torch.cat(
+        [dist_norm, tau_cv, tau_rel.view(E, 1), is_source_succ, is_source_pred, is_new_edge],
+        dim=1
+    )
 
     depot_flag = torch.zeros((coords_t.size(0), 1), device=device)
     depot_flag[0, 0] = 1.0

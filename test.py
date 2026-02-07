@@ -126,7 +126,7 @@ def main():
     parser.add_argument("--no_normalized_heuristic", action="store_true")
     parser.add_argument("--no_logit_net", action="store_true")
     parser.add_argument("--no_dynamic_feats", action="store_true")
-    parser.add_argument("--simple_features", action="store_true", help="Use simplified edge features for TSP")
+
     
     parser.add_argument("--baseline", type=str, default='default')
     parser.add_argument("--baseline_time_limit", type=float, default=2.0)
@@ -307,14 +307,14 @@ def main():
     import functools
     # Setup modules
     if args.problem == 'tsp':
-        build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
+        build_fn = utils.build_pyg_data_tsp
         gen_fn = utils.generate_tsp_instance
         if args.alg == 'mmas':
             MFACO = faco.ACO_TSP
         else:
             MFACO = faco.MFACO_TSP
     else:
-        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_features)
+        build_fn = utils.build_pyg_data_cvrp
         gen_fn = utils.gen_cvrp_instance
         if args.alg == 'mmas':
             MFACO = faco.ACO_CVRP
@@ -466,14 +466,8 @@ def main():
         # Model
         feats = 2 if args.problem == 'tsp' else 4
         
-        # Infer edge_feats from checkpoint for backward compatibility
-        if "emb_net.e_lin0.weight" in state_dict:
-            edge_feats = state_dict["emb_net.e_lin0.weight"].shape[1]
-            # Update args to match inferred setting
-            args.simple_features = (edge_feats == 3)
-            print(f"Inferred edge_feats={edge_feats} from checkpoint (simple_features={args.simple_features})")
-        else:
-            edge_feats = 3 if args.simple_features else 6
+        # Always use 6 edge features
+        edge_feats = 6
 
         model = Net(feats=feats, edge_feats=edge_feats, logit_net=not args.no_logit_net).to(args.device)
         model.load_state_dict(state_dict)

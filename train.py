@@ -402,9 +402,9 @@ def train_instance_reinforce(
     aco, pyg_args = setup_aco(args, instance_data, args.problem)
     eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
     if args.problem == 'tsp':
-        build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
+        build_fn = utils.build_pyg_data_tsp
     else:
-        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_features)
+        build_fn = utils.build_pyg_data_cvrp
 
     best_seen = float("inf")
     avg_cost_last = None
@@ -575,9 +575,9 @@ def train_instance_ppo(
     aco, pyg_args = setup_aco(args, instance_data, args.problem)
     eta_nk = get_heuristic_tensor(aco, args.problem, args.device)
     if args.problem == 'tsp':
-        build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
+        build_fn = utils.build_pyg_data_tsp
     else:
-        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_features)
+        build_fn = utils.build_pyg_data_cvrp
 
     best_seen = float("inf")
     avg_cost_last = None
@@ -891,10 +891,10 @@ def infer_instance(
     """
     if args.problem == 'tsp':
         aco, pyg_args = setup_aco(args, instance_data, 'tsp')
-        build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
+        build_fn = utils.build_pyg_data_tsp
     else:
         aco, pyg_args = setup_aco(args, instance_data, 'cvrp')
-        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_features)
+        build_fn = utils.build_pyg_data_cvrp
 
     best_seen = float("inf")
     if net is not None:
@@ -1206,7 +1206,7 @@ def parse_args() -> argparse.Namespace:
                         help="Path to save generated validation dataset")
     parser.add_argument("--val_H", type=int, default=None)
     parser.add_argument("--val_mini_H", type=int, default=None)
-    parser.add_argument("--simple_features", action="store_true", help="Use simplified edge features for TSP (3 instead of 6)")
+
     
     # Warmup and annealing
     parser.add_argument("--warmup", action="store_true", default=True,
@@ -1275,10 +1275,7 @@ def build_model_name(args: argparse.Namespace) -> str:
     if args.alg == 'mmas':
         name += "_mmas"
     
-    # Simple features suffix
-    if args.simple_features:
-        name += "_simple"
-    
+
     return name
 
 
@@ -1512,10 +1509,7 @@ def main():
     # Initialize model
     feats = 2 if args.problem == 'tsp' else 4
     
-    if args.problem == 'tsp':
-        edge_feats = 3 if args.simple_features else 6
-    else: # cvrp
-        edge_feats = 3 if args.simple_features else 6
+    edge_feats = 6
 
     net_model = Net(
         feats=feats,
@@ -1581,8 +1575,8 @@ def main():
                     ).to(args.device)
                     optimizer = torch.optim.AdamW(net_model.parameters(), lr=args.lr)
                     
-                    # Also update args to reflect the inferred setting
-                    args.simple_features = (ckpt_edge_feats == 3)
+                    # Old checkpoint may have different edge_feats
+                    print(f"Warning: Checkpoint edge_feats={ckpt_edge_feats} differs from expected=6. Model may not load correctly.")
             
             # Load model state
             net_model.load_state_dict(state_dict)
@@ -1626,10 +1620,10 @@ def main():
             None, val_dataset, args, baseline_values
         )
         logger.log_epoch_summary(-1, 0.0, avg_best, avg_gap)
-        logger.log_validation(
-            avg_last, avg_best, avg_gap, -1, val_metrics,
-            timing=None, step=global_step
-        )
+        # logger.log_validation(
+        #     avg_last, avg_best, avg_gap, -1, val_metrics,
+        #     timing=None, step=global_step
+        # )
 
     for epoch in range(start_epoch, args.epochs):
         # Train one epoch
