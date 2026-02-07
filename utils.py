@@ -1390,7 +1390,6 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
     # We generate a unique seed for this instance from the global numpy state
     # This ensures determinism if global seed is set, but uniqueness across instances
     instance_seed = np.random.randint(0, 2**63 - 1)
-    print(f"DEBUG: infer_instance seed={instance_seed}")
     if hasattr(aco, 'seed_rng'):
         aco.seed_rng(instance_seed)
 

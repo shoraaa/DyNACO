@@ -465,8 +465,15 @@ def main():
 
         # Model
         feats = 2 if args.problem == 'tsp' else 4
-        # Simplified dynamic features for CVRP
-        edge_feats = 3 if args.simple_features else 6
+        
+        # Infer edge_feats from checkpoint for backward compatibility
+        if "emb_net.e_lin0.weight" in state_dict:
+            edge_feats = state_dict["emb_net.e_lin0.weight"].shape[1]
+            # Update args to match inferred setting
+            args.simple_features = (edge_feats == 3)
+            print(f"Inferred edge_feats={edge_feats} from checkpoint (simple_features={args.simple_features})")
+        else:
+            edge_feats = 3 if args.simple_features else 6
 
         model = Net(feats=feats, edge_feats=edge_feats, logit_net=not args.no_logit_net).to(args.device)
         model.load_state_dict(state_dict)

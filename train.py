@@ -404,7 +404,7 @@ def train_instance_reinforce(
     if args.problem == 'tsp':
         build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
     else:
-        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_train)
+        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_features)
 
     best_seen = float("inf")
     avg_cost_last = None
@@ -577,7 +577,7 @@ def train_instance_ppo(
     if args.problem == 'tsp':
         build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
     else:
-        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_train)
+        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_features)
 
     best_seen = float("inf")
     avg_cost_last = None
@@ -894,7 +894,7 @@ def infer_instance(
         build_fn = functools.partial(utils.build_pyg_data_tsp, simple_features=args.simple_features)
     else:
         aco, pyg_args = setup_aco(args, instance_data, 'cvrp')
-        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_train)
+        build_fn = functools.partial(utils.build_pyg_data_cvrp, simple_features=args.simple_features)
 
     best_seen = float("inf")
     if net is not None:
@@ -1276,7 +1276,7 @@ def build_model_name(args: argparse.Namespace) -> str:
         name += "_mmas"
     
     # Simple features suffix
-    if (args.problem == 'tsp' and args.simple_features) or (args.problem == 'cvrp' and args.simple_train):
+    if args.simple_features:
         name += "_simple"
     
     return name
@@ -1515,7 +1515,7 @@ def main():
     if args.problem == 'tsp':
         edge_feats = 3 if args.simple_features else 6
     else: # cvrp
-        edge_feats = 3 if args.simple_train else 6
+        edge_feats = 3 if args.simple_features else 6
 
     net_model = Net(
         feats=feats,
@@ -1567,8 +1567,25 @@ def main():
             print(f"Loading checkpoint from {checkpoint_path}...")
             checkpoint = torch.load(checkpoint_path, map_location=args.device, weights_only=False)
             
+            # Infer edge_feats from checkpoint model weights for backward compatibility
+            state_dict = checkpoint["model_state_dict"]
+            if "emb_net.e_lin0.weight" in state_dict:
+                ckpt_edge_feats = state_dict["emb_net.e_lin0.weight"].shape[1]
+                if ckpt_edge_feats != edge_feats:
+                    print(f"Checkpoint edge_feats={ckpt_edge_feats} differs from current={edge_feats}. Recreating model...")
+                    edge_feats = ckpt_edge_feats
+                    net_model = Net(
+                        feats=feats,
+                        edge_feats=edge_feats,
+                        logit_net=not args.no_logit_net,
+                    ).to(args.device)
+                    optimizer = torch.optim.AdamW(net_model.parameters(), lr=args.lr)
+                    
+                    # Also update args to reflect the inferred setting
+                    args.simple_features = (ckpt_edge_feats == 3)
+            
             # Load model state
-            net_model.load_state_dict(checkpoint["model_state_dict"])
+            net_model.load_state_dict(state_dict)
             print("Loaded model state")
             
             # Load optimizer state
