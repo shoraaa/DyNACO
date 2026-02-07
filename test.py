@@ -126,9 +126,6 @@ def main():
     parser.add_argument("--no_normalized_heuristic", action="store_true")
     parser.add_argument("--no_logit_net", action="store_true")
     parser.add_argument("--no_dynamic_feats", action="store_true")
-    
-    # Advanced features
-    parser.add_argument("--advanced_features", action="store_true", help="Enable advanced CVRP state features")
 
     
     parser.add_argument("--baseline", type=str, default='default')
@@ -316,7 +313,7 @@ def main():
         else:
             MFACO = faco.MFACO_TSP
     else:
-        build_fn = functools.partial(utils.build_pyg_data_cvrp, advanced_features=args.advanced_features)
+        build_fn = utils.build_pyg_data_cvrp
         gen_fn = utils.gen_cvrp_instance
         if args.alg == 'mmas':
             MFACO = faco.ACO_CVRP
@@ -463,12 +460,7 @@ def main():
         # ... logic to override args if needed ...
 
         # Model
-        if args.problem == 'tsp':
-             feats = 2
-        else:
-             feats = 4
-             if args.advanced_features:
-                 feats = 4 + 3 # advanced features
+        feats = 2 if args.problem == 'tsp' else 4
         
         # Always use 6 edge features
         edge_feats = 6
