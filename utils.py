@@ -534,12 +534,12 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool, simple_featu
     if simple_features:
         # Use 3 features similar to TSP: dist_norm, log_tau_rel, is_in_route
         edge_attr = torch.cat(
-            [dist_norm, log_tau_rel, is_in_route_feat],
+            [dist_norm, tau_rel.view(E, 1), is_in_route_feat],
             dim=1
         )
     else:
         edge_attr = torch.cat(
-            [dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
+            [dist_norm, tau_cv, tau_rel.view(E, 1), is_source_succ, is_source_pred, is_new_edge],
             dim=1
         )
 
