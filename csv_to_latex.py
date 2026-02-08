@@ -46,16 +46,14 @@ def format_time(seconds_str):
     if seconds is None:
         return seconds_str
 
-    if seconds < 1:
-        return "<1s"
-    elif seconds < 60:
-        return f"{seconds:.1f}s"
+    if seconds < 60:
+        return f"{seconds:.2f}s"
     elif seconds < 3600:
         minutes = seconds / 60
-        return f"{minutes:.1f}m"
+        return f"{minutes:.2f}m"
     else:
         hours = seconds / 3600
-        return f"{hours:.1f}h"
+        return f"{hours:.2f}h"
 
 def format_method_name(name):
     name = name.replace('"', '')
@@ -156,11 +154,11 @@ def print_section_rows(row_list, datasets, args, instance_counts, best_gaps, exc
             gap_str = row.get(gap_key, "-")
             time_str = row.get(time_key, "-")
 
-            if args.avg:
+            if args.total:
                 seconds = parse_seconds(time_str)
                 if seconds is not None:
-                     avg_seconds = seconds / instance_counts[ds]
-                     f_time = format_time(avg_seconds)
+                     total_seconds = seconds * instance_counts[ds]
+                     f_time = format_time(total_seconds)
                 else:
                     f_time = format_time(time_str)
             else:
@@ -189,7 +187,7 @@ def print_section_rows(row_list, datasets, args, instance_counts, best_gaps, exc
                             p_gap = f"(\\textbf{{{gap_val:.2f}\\%}})"
                         else:
                             p_obj_fmt = p_obj
-                            p_gap = f"({gap_val:.2f}\%)"
+                            p_gap = f"({gap_val:.2f}\\%)"
                         
                         f_obj_gap = f"{p_obj_fmt} {p_gap}"
                     except:
@@ -201,18 +199,19 @@ def print_section_rows(row_list, datasets, args, instance_counts, best_gaps, exc
 
         print(f"{name_tex} & " + " & ".join(tex_cols) + " \\\\")
 
+# TSP Config
+tsp_datasets = ["TSP1K", "TSP5K", "TSP10K", "TSP50K", "TSP100K"]
+tsp_counts = {"TSP1K": 128, "TSP5K": 16, "TSP10K": 16, "TSP50K": 16, "TSP100K": 16}
+
+# CVRP Config
+cvrp_datasets = ["CVRP1K", "CVRP5K", "CVRP10K", "CVRP50K", "CVRP100K"]
+cvrp_counts = {"CVRP1K": 128, "CVRP5K": 16, "CVRP10K": 16, "CVRP50K": 16, "CVRP100K": 16}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--avg", action="store_true", help="Report average time per instance")
+    parser.add_argument("--total", action="store_true", help="Report total time (default is average time per instance)")
     args = parser.parse_args()
-
-    # TSP Config
-    tsp_datasets = ["TSP1K", "TSP5K", "TSP10K", "TSP50K", "TSP100K"]
-    tsp_counts = {"TSP1K": 128, "TSP5K": 16, "TSP10K": 16, "TSP50K": 16, "TSP100K": 16}
-
-    # CVRP Config
-    cvrp_datasets = ["CVRP1K", "CVRP5K", "CVRP10K", "CVRP50K", "CVRP100K"]
-    cvrp_counts = {"CVRP1K": 128, "CVRP5K": 16, "CVRP10K": 16, "CVRP50K": 16, "CVRP100K": 16}
 
     # Load Data
     from recalculate_gaps import recalculate_gaps
