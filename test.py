@@ -744,9 +744,15 @@ def main():
 
               if not run_model_anneal and not run_model_no_anneal and not run_mix_anneal and not run_mix_no_anneal:
                   if args.problem == 'tsp':
-                      run_mix_anneal = True
+                      if args.H < 50:
+                          run_model_anneal = True
+                      else:
+                          run_mix_anneal = True
                   else:
-                      run_model_anneal = True
+                      if args.H < 50:
+                          run_model_no_anneal = True
+                      else:
+                          run_mix_no_anneal = True
               
               args_anneal = _clone_args(args, no_anneal=False)
               args_noanneal = _clone_args(args, no_anneal=True)
