@@ -1480,6 +1480,35 @@ def save_checkpoint(
 def main():
     """Main training entry point."""
     args = parse_args()
+
+    # Load configuration from checkpoint if resuming with a specific path
+    if args.resume and args.resume != "auto" and os.path.isfile(args.resume):
+        print(f"Loading configuration from checkpoint: {args.resume}")
+        try:
+            # Load checkpoint on CPU to just get config
+            checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
+            if 'config' in checkpoint:
+                saved_config = checkpoint['config']
+                
+                # Keys to preserve from current command line (do not overwrite with saved config)
+                preserve_keys = {
+                    'resume', 'epochs', 'device', 'save_dir', 
+                    'no_wandb', 'wandb_entity', 'wandb_project', 'run_name', 
+                    'threads', 'val_dataset', 'generate_val', 'save_generated'
+                }
+                
+                # Update args with saved config
+                update_count = 0
+                for k, v in saved_config.items():
+                    if k not in preserve_keys and hasattr(args, k):
+                        setattr(args, k, v)
+                        update_count += 1
+                
+                print(f"Restored {update_count} arguments from checkpoint configuration.")
+                
+        except Exception as e:
+            print(f"Warning: Failed to load configuration from checkpoint: {e}")
+            print("Continuing with command line arguments.")
     
 
 
