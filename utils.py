@@ -1648,15 +1648,13 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                  # Pheromone
                  pher = aco.pheromone_sparse.detach().cpu()
                  
-                 # Neural Prior (Model Output)
-                 neural_prior = None
-                 if 'prior_mat' in locals() and prior_mat is not None:
-                      neural_prior = prior_mat.detach().cpu()
+                 # Neural Prior (Model Output) - use prior_mat if available
+                 snapshot_prior = prior_mat.detach().cpu() if prior_mat is not None else None
 
                  metrics_log["snapshots"].append({
                      "t": t,
                      "pheromone": pher,
-                     "neural_prior": neural_prior
+                     "neural_prior": snapshot_prior
                  })
 
     if pbar is not None:

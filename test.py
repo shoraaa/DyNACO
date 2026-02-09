@@ -826,8 +826,8 @@ def main():
                       args.k_sparse, args.n_ants, not args.no_dynamic_feats,
                       args_noanneal,
                       use_heuristic_only=False,
-                      collect_metrics=False,
-                      metrics_every_step=False,
+                      collect_metrics=args.visualize,
+                      metrics_every_step=args.visualize,
                       seed=args.seed + i,
                       ablation_pheromone=args.ablation_pheromone_features,
                       ablation_incumbent=args.ablation_incumbent_features
@@ -855,6 +855,10 @@ def main():
                   if opt_cost is not None and opt_cost > 1e-6:
                       gap_na = (model_best_na - opt_cost) / opt_cost
                       results["model_gap_no_anneal"].append(gap_na)
+                  
+                  # If anneal run didn't happen, use no_anneal metrics for visualization
+                  if model_m is None:
+                      model_m = mod_na_extra.get("metrics")
                   
                   _record_history("model_no_anneal", mod_na_extra.get("history", []), results)
                           # Mix methods (only if warmup is enabled)
@@ -946,46 +950,33 @@ def main():
         
         if args.visualize:
             if i == 0:
-                 # Initialize with length from first instance
+                 # Initialize as lists to store per-instance metrics for mean/std
                  if base_m: 
-                     results["base_metrics"] = {k: np.zeros(len(v)) for k,v in base_m.items()}
+                     results["base_metrics_list"] = {k: [] for k,v in base_m.items() if k != "snapshots"}
                  
                  if model and model_m: 
-                     results["model_metrics"] = {k: np.zeros(len(v)) for k,v in model_m.items()}
+                     results["model_metrics_list"] = {k: [] for k,v in model_m.items() if k != "snapshots"}
                  
                  if model and args.warmup and mix_m: 
-                     results["mix_metrics"] = {k: np.zeros(len(v)) for k,v in mix_m.items()}
+                     results["mix_metrics_list"] = {k: [] for k,v in mix_m.items() if k != "snapshots"}
             
-            if base_m:
+            if base_m and "base_metrics_list" in results:
                  for k,v in base_m.items():
                     if k == "snapshots": continue
-                    if k in results["base_metrics"]:
-                         if len(v) == len(results["base_metrics"][k]):
-                             results["base_metrics"][k] += np.array(v)
-                         else:
-                             # Length mismatch fallback (e.g. truncated run?)
-                             L = min(len(v), len(results["base_metrics"][k]))
-                             results["base_metrics"][k][:L] += np.array(v[:L])
-                             
-            if model and model_m:
+                    if k in results["base_metrics_list"]:
+                         results["base_metrics_list"][k].append(np.array(v))
+                              
+            if model and model_m and "model_metrics_list" in results:
                  for k,v in model_m.items():
                     if k == "snapshots": continue
-                    if k in results["model_metrics"]:
-                        if len(v) == len(results["model_metrics"][k]):
-                            results["model_metrics"][k] += np.array(v)
-                        else:
-                             L = min(len(v), len(results["model_metrics"][k]))
-                             results["model_metrics"][k][:L] += np.array(v[:L])
+                    if k in results["model_metrics_list"]:
+                        results["model_metrics_list"][k].append(np.array(v))
 
-            if model and args.warmup and mix_m:
+            if model and args.warmup and mix_m and "mix_metrics_list" in results:
                  for k,v in mix_m.items():
                     if k == "snapshots": continue
-                    if k in results["mix_metrics"]:
-                        if len(v) == len(results["mix_metrics"][k]):
-                            results["mix_metrics"][k] += np.array(v)
-                        else:
-                             L = min(len(v), len(results["mix_metrics"][k]))
-                             results["mix_metrics"][k][:L] += np.array(v[:L])
+                    if k in results["mix_metrics_list"]:
+                        results["mix_metrics_list"][k].append(np.array(v))
 
             if args.visualize and i == 0:
                  # Capture snapshots from i=0
@@ -1394,59 +1385,93 @@ def main():
         out.mkdir(parents=True, exist_ok=True)
         # Increase font sizes for 2-column paper readability
         plt.rcParams.update({
-            'font.family': 'serif', 'font.size': 22, 'axes.titlesize': 26,
-            'axes.labelsize': 24, 'xtick.labelsize': 22, 'ytick.labelsize': 22,
-            'legend.fontsize': 20, 'lines.linewidth': 4, 'lines.markersize': 0,
-            'figure.titlesize': 28
+            'font.family': 'serif', 'font.size': 28, 'axes.titlesize': 32,
+            'axes.labelsize': 30, 'xtick.labelsize': 26, 'ytick.labelsize': 26,
+            'legend.fontsize': 24, 'lines.linewidth': 4, 'lines.markersize': 0,
+            'figure.titlesize': 34
         })
 
         N = len(val_list)
         
+        # Helper to compute mean and std from list of arrays
+        def compute_mean_std(arr_list):
+            if not arr_list:
+                return None, None
+            # Pad to same length
+            max_len = max(len(a) for a in arr_list)
+            padded = np.array([np.pad(a, (0, max_len - len(a)), mode='edge') for a in arr_list])
+            return padded.mean(axis=0), padded.std(axis=0)
+        
+        # Helper to plot with shaded std
+        def plot_with_shade(ax, mean, std, label, color=None):
+            x = np.arange(len(mean))
+            line, = ax.plot(x, mean, label=label, color=color)
+            if std is not None:
+                ax.fill_between(x, mean - std, mean + std, alpha=0.2, color=line.get_color())
+            return line
+        
         plt.figure(figsize=(12, 8))
+        ax = plt.gca()
         
-        if results["base_metrics"]:
-            base_avg = {k: v/N for k,v in results["base_metrics"].items()}
-            plt.plot(base_avg["cost"], label="Base")
+        colors = plt.cm.tab10.colors
+        color_idx = 0
         
-        if model and results["model_metrics"]:
-            mod_avg = {k: v/N for k,v in results["model_metrics"].items()}
-            plt.plot(mod_avg["cost"], label="Model")
+        if "base_metrics_list" in results and results["base_metrics_list"].get("cost"):
+            mean, std = compute_mean_std(results["base_metrics_list"]["cost"])
+            plot_with_shade(ax, mean, std, "Base", colors[color_idx])
+            color_idx += 1
+        
+        if model and "model_metrics_list" in results and results["model_metrics_list"].get("cost"):
+            mean, std = compute_mean_std(results["model_metrics_list"]["cost"])
+            plot_with_shade(ax, mean, std, "Model", colors[color_idx])
+            color_idx += 1
             
-        if model and args.warmup and results["mix_metrics"]:
-            mix_avg = {k: v/N for k,v in results["mix_metrics"].items()}
-            plt.plot(mix_avg["cost"], label="Mix")
+        if model and args.warmup and "mix_metrics_list" in results and results["mix_metrics_list"].get("cost"):
+            mean, std = compute_mean_std(results["mix_metrics_list"]["cost"])
+            plot_with_shade(ax, mean, std, "Mix", colors[color_idx])
+            color_idx += 1
             
+        plt.xlabel("Iteration")
+        plt.ylabel("Cost")
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.tight_layout()
         plt.savefig(out / "cost.pdf")
         plt.close()
         
-        if model and "l2" in results.get("model_metrics", {}): # Check against results directly or ensure mod_avg exists
-            # Only if mod_avg was created
-            if 'mod_avg' in locals():
-                if "l2" in mod_avg:
-                    plt.figure(figsize=(12, 8))
-                    for k in ["l2", "turnover", "flip"]:
-                        plt.plot(mod_avg[k], label=k)
-                    plt.grid(True, alpha=0.3)
-                    plt.legend()
-                    plt.tight_layout()
-                    plt.savefig(out / "prior_changes.pdf")
-                    plt.close()
+        # Prior changes plot
+        if model and "model_metrics_list" in results:
+            mod_list = results["model_metrics_list"]
+            if mod_list.get("l2"):
+                plt.figure(figsize=(12, 8))
+                ax = plt.gca()
+                for k_idx, k in enumerate(["l2", "turnover", "flip"]):
+                    if mod_list.get(k):
+                        mean, std = compute_mean_std(mod_list[k])
+                        plot_with_shade(ax, mean, std, k, colors[k_idx])
+                plt.xlabel("Iteration")
+                plt.ylabel("Value")
+                plt.grid(True, alpha=0.3)
+                plt.legend()
+                plt.tight_layout()
+                plt.savefig(out / "prior_changes.pdf")
+                plt.close()
 
-                if "enhance" in mod_avg:
-                    plt.figure(figsize=(12, 8))
-                    for k in ["enhance", "suppression"]:
-                        plt.plot(mod_avg[k], label=k)
-                    plt.title("Model-Pheromone Interaction")
-                    plt.xlabel("Iteration")
-                    plt.ylabel("Rate")
-                    plt.grid(True, alpha=0.3)
-                    plt.legend()
-                    plt.tight_layout()
-                    plt.savefig(out / "interaction.pdf")
-                    plt.close()
+            if mod_list.get("enhance"):
+                plt.figure(figsize=(12, 8))
+                ax = plt.gca()
+                for k_idx, k in enumerate(["enhance", "suppression"]):
+                    if mod_list.get(k):
+                        mean, std = compute_mean_std(mod_list[k])
+                        plot_with_shade(ax, mean, std, k, colors[k_idx])
+                plt.title("Model-Pheromone Interaction")
+                plt.xlabel("Iteration")
+                plt.ylabel("Rate")
+                plt.grid(True, alpha=0.3)
+                plt.legend()
+                plt.tight_layout()
+                plt.savefig(out / "interaction.pdf")
+                plt.close()
 
         if sample_snapshots:
             print("Plotting matrix snapshots...")
@@ -1460,12 +1485,12 @@ def main():
                     ncols = 1
                     if neural_prior is not None: ncols += 1
                     
-                    width = 8 * ncols
+                    width = 10 * ncols
                     height = 10
                     fig, axes = plt.subplots(1, ncols, figsize=(width, height))
                     if ncols == 1: axes = [axes]
                     
-                    MAX_ROWS = 10
+                    MAX_ROWS = 32
                     
                     # Helper for safe plotting
                     def safe_plot_heatmap(ax, tensor, title, cmap):
@@ -1484,18 +1509,18 @@ def main():
                         if math.isclose(vmin, vmax):
                             vmax = vmin + 1e-6
 
-                        im = ax.imshow(arr, aspect='auto', cmap=cmap, interpolation='nearest', vmin=vmin, vmax=vmax)
+                        im = ax.imshow(arr, aspect='equal', cmap=cmap, interpolation='nearest', vmin=vmin, vmax=vmax)
                         ax.set_title(title)
                         ax.set_xlabel("Neighbor Rank")
                         ax.set_ylabel("Node Index")
-                        fig.colorbar(im, ax=ax)
+                        fig.colorbar(im, ax=ax, shrink=0.8, fraction=0.046, pad=0.04)
 
                     # 1. Pheromone
-                    safe_plot_heatmap(axes[0], pher, f"{mode} t={t}: Pheromone (tau)", 'viridis')
+                    safe_plot_heatmap(axes[0], pher, "Pheromone", 'viridis')
                     
                     # 2. Neural Prior
                     if neural_prior is not None:
-                        safe_plot_heatmap(axes[1], neural_prior, f"{mode} t={t}: Neural Prior (p)", 'inferno')
+                        safe_plot_heatmap(axes[1], neural_prior, "Guidance", 'inferno')
                     
                     plt.tight_layout()
                     plt.savefig(out / f"matrix_{mode}_t{t}.pdf", dpi=300)
