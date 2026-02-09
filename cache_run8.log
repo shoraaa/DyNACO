@@ -1,18 +1,0 @@
-No strict match for N=20 (rl_data=False). Scanning for partial match...
-2026-02-07 06:36:53 | INFO | Running pre-training validation (Pure MFACO)...
-2026-02-07 06:36:53 | INFO | Validating on 16 instances...
-2026-02-07 06:36:53 | INFO | Loaded Pure MFACO result from cache.
-2026-02-07 06:36:53 | INFO | Epoch -1: TrainCost=0.0000 ValBest=3.8714 Gap=0.00%
-Epoch:   0%|          | 0/2 [00:00<?, ?it/s]
-Outer:   0%|          | 0/2 [00:00<?, ?it/s][A
-Outer:  50%|█████     | 1/2 [00:00<00:00,  1.31it/s][A
-Outer: 100%|██████████| 2/2 [00:00<00:00,  2.50it/s][A
-                                                    [AEpoch:  50%|█████     | 1/2 [00:01<00:01,  1.00s/it]
-Outer:   0%|          | 0/2 [00:00<?, ?it/s][A
-Outer:  50%|█████     | 1/2 [00:00<00:00,  6.71it/s][A
-Outer: 100%|██████████| 2/2 [00:00<00:00,  6.56it/s][A
-                                                    [AEpoch: 100%|██████████| 2/2 [00:01<00:00,  1.56it/s]Epoch: 100%|██████████| 2/2 [00:01<00:00,  1.44it/s]
-2026-02-07 06:36:54 | INFO | Validating on 16 instances...
-Validating:   0%|          | 0/16 [00:00<?, ?it/s]Validating:  56%|█████▋    | 9/16 [00:00<00:00, 87.20it/s]                                                          2026-02-07 06:36:55 | INFO | Epoch 0: TrainCost=3.9451 ValBest=3.8714 Gap=0.00%
-2026-02-07 06:36:55 | INFO | Saved new best model to pretrained/tsp/n20/tsp_n20_k32_ants100_H2_miniH10_rho0.5_mne12_ppo_lr5e-06_static_best.pt (Epoch 0, Val Cost: 3.8714, Gap: 0.00%)
-2026-02-07 06:36:55 | INFO | Total Train Time: 1.39s

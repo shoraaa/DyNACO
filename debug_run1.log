@@ -1,18 +1,0 @@
-Auto-set min_new_edges to 2 (capacity=50, capacity/20=2.5)
-No strict match for N=20 (rl_data=False). Scanning for partial match...
-2026-02-07 06:27:20 | INFO | Running pre-training validation...
-2026-02-07 06:27:20 | INFO | Validating on 16 instances...
-Validating:   0%|          | 0/16 [00:00<?, ?it/s]Validating:   6%|▋         | 1/16 [00:00<00:05,  2.85it/s]Validating:  38%|███▊      | 6/16 [00:00<00:00, 15.35it/s]Validating:  56%|█████▋    | 9/16 [00:01<00:01,  5.45it/s]Validating:  69%|██████▉   | 11/16 [00:02<00:01,  4.41it/s]Validating:  81%|████████▏ | 13/16 [00:02<00:00,  3.72it/s]Validating:  88%|████████▊ | 14/16 [00:03<00:00,  4.09it/s]                                                           2026-02-07 06:27:23 | INFO | Epoch -1: TrainCost=0.0000 ValBest=4.8926 Gap=0.00%
-Epoch:   0%|          | 0/2 [00:00<?, ?it/s]
-Outer:   0%|          | 0/2 [00:00<?, ?it/s][A
-Outer:  50%|█████     | 1/2 [00:00<00:00,  1.91it/s][A
-Outer: 100%|██████████| 2/2 [00:00<00:00,  3.06it/s][A
-                                                    [AEpoch:  50%|█████     | 1/2 [00:00<00:00,  1.21it/s]
-Outer:   0%|          | 0/2 [00:00<?, ?it/s][A
-Outer:  50%|█████     | 1/2 [00:00<00:00,  2.47it/s][A
-Outer: 100%|██████████| 2/2 [00:00<00:00,  3.71it/s][A
-                                                    [AEpoch: 100%|██████████| 2/2 [00:01<00:00,  1.34it/s]Epoch: 100%|██████████| 2/2 [00:01<00:00,  1.32it/s]
-2026-02-07 06:27:25 | INFO | Validating on 16 instances...
-Validating:   0%|          | 0/16 [00:00<?, ?it/s]Validating:  25%|██▌       | 4/16 [00:00<00:00, 33.87it/s]Validating:  50%|█████     | 8/16 [00:00<00:00, 28.61it/s]Validating:  81%|████████▏ | 13/16 [00:00<00:00, 35.22it/s]                                                           2026-02-07 06:27:25 | INFO | Epoch 0: TrainCost=5.2351 ValBest=4.8926 Gap=0.00%
-2026-02-07 06:27:25 | INFO | Saved new best model to pretrained/cvrp/n20/cvrp_n20_k32_ants100_H2_miniH10_rho0.5_mne2_ppo_lr5e-06_best.pt (Epoch 0, Val Cost: 4.8926, Gap: 0.00%)
-2026-02-07 06:27:25 | INFO | Total Train Time: 1.51s

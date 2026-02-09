@@ -1,112 +1,0 @@
-
-==================================================
-Config Parameter               | Value          
---------------------------------------------------
-H                              | 2              
-L                              | 0              
-alg                            | faco           
-alpha                          | 1.0            
-baseline                       | base           
-baseline_runs                  | 1              
-baseline_time_limit            | 2.0            
-beta                           | 1.0            
-checkpoint                     | none           
-dataset                        | None           
-device                         | cuda:0         
-disable_heuristic              | False          
-gamma                          | 1.0            
-generate_val                   | True           
-iter_log                       | False          
-iter_print                     | False          
-k_sparse                       | 32             
-log                            | False          
-min_gamma                      | 0.0            
-min_new_edges                  | 12             
-mini_H                         | 10             
-n_ants                         | 100            
-n_node                         | 20             
-no_anneal                      | False          
-no_baseline                    | False          
-no_dynamic_feats               | False          
-no_extend_ls                   | False          
-no_local_search                | False          
-no_logit_net                   | False          
-no_model                       | True           
-no_normalized_heuristic        | False          
-no_smooth_mmas                 | False          
-problem                        | tsp            
-rho                            | 0.1            
-rl_data                        | False          
-run_mix_anneal                 | False          
-run_mix_no_anneal              | False          
-run_model_anneal               | False          
-run_model_no_anneal            | False          
-save_generated                 | None           
-seed                           | 42             
-simple_features                | True           
-threads                        | None           
-timed                          | False          
-val_size                       | 16             
-verify                         | False          
-visualize                      | False          
-visualize_output               | visualizations 
-warmup                         | True           
-warmup_ratio                   | 0.5            
-==================================================
-
-Generating 16 TSP instances (n=20)...
-Generating:   0%|          | 0/16 [00:00<?, ?it/s]Generating: 100%|██████████| 16/16 [00:00<00:00, 165292.77it/s]
-Limited validation dataset from 16 to 16 instances.
-Computing baseline...
-Computing LKH baseline for 16 examples...
-LKH Baseline:   0%|          | 0/16 [00:00<?, ?it/s]LKH Baseline:   0%|          | 0/16 [00:00<?, ?it/s]
-Warning: Failed to compute external baseline (LKH solver not found at /home/shora/Research/old/NGFACO/baselines/LKH-3.0.13/LKH or /home/shora/Research/old/baselines/LKH-3.0.13/LKH). Continuing without it.
-Evaluating 16 instances...
-  0%|          | 0/16 [00:00<?, ?it/s]                                        0%|          | 0/16 [00:00<?, ?it/s]  6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]                                                6%|▋         | 1/16 [00:00<00:03,  4.22it/s]100%|██████████| 16/16 [00:00<00:00, 48.37it/s]
-DEBUG: infer_instance seed=370248212224672806
-Gen_0: Opt=0.0000 Base=3.8643
-DEBUG: infer_instance seed=5941311930130547984
-Gen_1: Opt=0.0000 Base=3.9410
-DEBUG: infer_instance seed=3900527283853989973
-Gen_2: Opt=0.0000 Base=3.8746
-DEBUG: infer_instance seed=6041259876540989565
-Gen_3: Opt=0.0000 Base=3.7577
-DEBUG: infer_instance seed=2209221411584872984
-Gen_4: Opt=0.0000 Base=3.8515
-DEBUG: infer_instance seed=7203956824671391244
-Gen_5: Opt=0.0000 Base=3.8467
-DEBUG: infer_instance seed=1726476056440215576
-Gen_6: Opt=0.0000 Base=3.8758
-DEBUG: infer_instance seed=3303854609871150473
-Gen_7: Opt=0.0000 Base=4.3154
-DEBUG: infer_instance seed=5334267754270245096
-Gen_8: Opt=0.0000 Base=3.8134
-DEBUG: infer_instance seed=9194635666867479697
-Gen_9: Opt=0.0000 Base=4.1142
-DEBUG: infer_instance seed=1603396291508705507
-Gen_10: Opt=0.0000 Base=3.4653
-DEBUG: infer_instance seed=684494842413213141
-Gen_11: Opt=0.0000 Base=3.8427
-DEBUG: infer_instance seed=1601935809240904302
-Gen_12: Opt=0.0000 Base=4.1890
-DEBUG: infer_instance seed=4527559117835284391
-Gen_13: Opt=0.0000 Base=4.2300
-DEBUG: infer_instance seed=7962713169837710059
-Gen_14: Opt=0.0000 Base=3.9116
-DEBUG: infer_instance seed=2353441221394251305
-Gen_15: Opt=0.0000 Base=3.7543
-
---- Results ---
-Saved base costs to shared cache.
-Base Cost: 3.9155, Time: 0.0205s, Total Time: 0.3280s
-
---- Summary (mean over instances) ---
-+-----------+----------+---------+------+---------+--------+----------+------+
-| Method    | MeanCost | StdCost | Gap% | StdGap% | GapRef | MeanTime | Best |
-+===========+==========+=========+======+=========+========+==========+======+
-| Base      | 3.9155   | 0.2028  | -    | -       | -      | 0.0205   | BEST |
-| Base@H10  | -        | -       | -    | -       | -      | -        |      |
-| Base@H20  | -        | -       | -    | -       | -      | -        |      |
-| Base@H50  | -        | -       | -    | -       | -      | -        |      |
-| Base@H100 | -        | -       | -    | -       | -      | -        |      |
-+-----------+----------+---------+------+---------+--------+----------+------+

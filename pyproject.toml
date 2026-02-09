@@ -17,4 +17,5 @@ dependencies = [
     "torch-geometric>=2.7.0",
     "tqdm>=4.67.1",
     "wandb>=0.23.1",
+    "torch"
 ]
