@@ -303,7 +303,7 @@ def gen_distance_matrix(coords):
 def generate_tsp_instance(n):
     return np.random.rand(n, 2).astype(np.float32)
 
-def build_pyg_data_tsp(aco, coords, device, dynamic: bool, ablation_pheromone=False, ablation_incumbent=False):
+def build_pyg_data_tsp(aco, coords, device, ablation_pheromone=False, ablation_incumbent=False, dynamic: bool=True):
     """
     Build PyG Data for TSP using 2D node features (coords).
     Edge features (6): dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge
@@ -401,7 +401,7 @@ def gen_cvrp_instance(n, device, capacity=None):
     # Return coords (n+1, 2), demands (n+1,) normalized, capacity_norm=1.0
     return coords, all_demands, 1.0
 
-def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool, ablation_pheromone=False, ablation_incumbent=False):
+def build_pyg_data_cvrp(aco, coords, demand, device, ablation_pheromone=False, ablation_incumbent=False, dynamic: bool=True):
     """
     Build PyG Data for CVRP using 4D node features (coords, demand, depot_flag).
     Edge features (6): dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge
