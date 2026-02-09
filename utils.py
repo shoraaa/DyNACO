@@ -865,32 +865,37 @@ def load_cvrp_txt_dataset(path):
                 content = line.replace('[', '').replace(']', '').replace("'", "").replace('"', "")
                 parts = [p.strip() for p in content.split(',')]
                 
+                # Collect all keyword indices for robust boundary detection
+                all_keywords = {}
+                for kw in ['name', 'depot', 'customer', 'demand', 'capacity', 'cost', 'end']:
+                    if kw in parts:
+                        all_keywords[kw] = parts.index(kw)
+                
                 try:
-                    depot_idx = parts.index('depot')
-                    cust_idx = parts.index('customer')
-                    cap_idx = parts.index('capacity')
-                    if 'cost' in parts:
-                        cost_idx = parts.index('cost')
-                    else:
-                        cost_idx = -1
-                    if 'demand' in parts:
-                        dem_idx = parts.index('demand')
-                    else:
-                        dem_idx = -1
-                except ValueError:
+                    depot_idx = all_keywords['depot']
+                    cust_idx = all_keywords['customer']
+                    cap_idx = all_keywords['capacity']
+                    cost_idx = all_keywords.get('cost', -1)
+                    dem_idx = all_keywords.get('demand', -1)
+                except KeyError:
                     continue 
                 
-                    continue 
-                
-                name = parts[0]
+                # Name: skip 'name' keyword if present, take the value after it
+                if 'name' in all_keywords:
+                    name_idx = all_keywords['name']
+                    name = parts[name_idx + 1] if name_idx + 1 < len(parts) else f"Instance_{line_idx}"
+                else:
+                    name = f"Instance_{line_idx}"
+
+                # All keyword positions for boundary detection
+                all_kw_positions = set(all_keywords.values())
 
                 # Depot
                 depot_coords = [float(parts[depot_idx+1]), float(parts[depot_idx+2])]
                 
-                # Customer Coords
-                keywords = [depot_idx, cust_idx, cap_idx, cost_idx, dem_idx]
-                keywords = [k for k in keywords if k > cust_idx]
-                cust_end_idx = min(keywords) if keywords else len(parts)
+                # Customer Coords: find end boundary (next keyword after customer)
+                kw_after_cust = [p for p in all_kw_positions if p > cust_idx]
+                cust_end_idx = min(kw_after_cust) if kw_after_cust else len(parts)
                 
                 cust_coords_flat = [float(x) for x in parts[cust_idx+1 : cust_end_idx]]
                 num_cust = len(cust_coords_flat) // 2
@@ -901,9 +906,8 @@ def load_cvrp_txt_dataset(path):
                 
                 # Demand
                 if dem_idx != -1:
-                   keywords = [depot_idx, cust_idx, cap_idx, cost_idx, dem_idx]
-                   keywords = [k for k in keywords if k > dem_idx]
-                   dem_end_idx = min(keywords) if keywords else len(parts)
+                   kw_after_dem = [p for p in all_kw_positions if p > dem_idx]
+                   dem_end_idx = min(kw_after_dem) if kw_after_dem else len(parts)
                    dem_raw = [float(x) for x in parts[dem_idx+1 : dem_end_idx]]
                    demand = torch.tensor(dem_raw)
                    if len(demand) == num_cust:
@@ -914,36 +918,65 @@ def load_cvrp_txt_dataset(path):
                 # Capacity
                 capacity = float(parts[cap_idx+1])
                 
-                # Cost
-                cost = float(parts[cost_idx+1]) if cost_idx != -1 else 0.0
+                # Cost (in original coordinate scale)
+                cost_raw = float(parts[cost_idx+1]) if cost_idx != -1 else 0.0
                 
                 tour = None # Format 2 usually doesn't have tour
+                
+                # Normalize coordinates to [0, 1] if they exceed unit square
+                coord_min = coords.min(dim=0)[0]
+                coord_max = coords.max(dim=0)[0]
+                coord_range = (coord_max - coord_min).max().item()
+                if coord_range > 1.0 + 1e-6:
+                    coords = (coords - coord_min) / coord_range
+                    # Scale cost by the same factor
+                    cost = cost_raw / coord_range if cost_raw > 0 else 0.0
+                else:
+                    cost = cost_raw
+                
+                # Normalize demand by capacity
+                if capacity > 1.0 + 1e-6 and demand is not None:
+                    demand = demand / capacity
+                    capacity = 1.0
                 
                 data_list.append((coords, demand, capacity, cost, tour, name))
 
             # Format 1 (Comma separated with keywords)
             elif "depot" in line and "customer" in line:
                 parts = [p.strip() for p in line.split(',')]
-                name = parts[0] if parts else f"Instance_{line_idx}"
+                
+                # Collect all keyword indices for robust boundary detection
+                known_keywords = ['depot', 'customer', 'capacity', 'demand', 'cost', 'node_flag']
+                all_keywords = {}
+                for kw in known_keywords:
+                    if kw in parts:
+                        all_keywords[kw] = parts.index(kw)
                 
                 try:
-                    depot_idx = parts.index('depot')
-                    cust_idx = parts.index('customer')
-                    cap_idx = parts.index('capacity')
-                except ValueError:
+                    depot_idx = all_keywords['depot']
+                    cust_idx = all_keywords['customer']
+                    cap_idx = all_keywords['capacity']
+                except KeyError:
                     continue
 
-                dem_idx = parts.index('demand') if 'demand' in parts else -1
-                cost_idx = parts.index('cost') if 'cost' in parts else -1
-                tour_idx = parts.index('node_flag') if 'node_flag' in parts else -1
+                dem_idx = all_keywords.get('demand', -1)
+                cost_idx = all_keywords.get('cost', -1)
+                tour_idx = all_keywords.get('node_flag', -1)
+                
+                # Name: if first field is a keyword, use line index as name
+                if parts[0] in known_keywords:
+                    name = f"Instance_{line_idx}"
+                else:
+                    name = parts[0]
+                
+                all_kw_positions = set(all_keywords.values())
                 
                 # Depot
                 depot_coords = [float(parts[depot_idx+1]), float(parts[depot_idx+2])]
                 
                 # Customer Coords
-                keywords = [depot_idx, cust_idx, cap_idx, dem_idx, cost_idx, tour_idx]
-                keywords = [k for k in keywords if k > cust_idx]
-                cust_end_idx = min(keywords) if keywords else len(parts)
+                kw_after_cust = [p for p in all_kw_positions if p > cust_idx]
+                cust_end_idx = min(kw_after_cust) if kw_after_cust else len(parts)
                 
                 cust_coords_flat = [float(x) for x in parts[cust_idx+1 : cust_end_idx]]
                 num_cust = len(cust_coords_flat) // 2
@@ -956,9 +989,8 @@ def load_cvrp_txt_dataset(path):
                 
                 # Demand
                 if dem_idx != -1:
-                    keywords = [depot_idx, cust_idx, cap_idx, dem_idx, cost_idx, tour_idx]
-                    keywords = [k for k in keywords if k > dem_idx]
-                    dem_end_idx = min(keywords) if keywords else len(parts)
+                    kw_after_dem = [p for p in all_kw_positions if p > dem_idx]
+                    dem_end_idx = min(kw_after_dem) if kw_after_dem else len(parts)
                     dem_raw = [float(x) for x in parts[dem_idx+1 : dem_end_idx]]
                     demand = torch.tensor(dem_raw)
                     if len(demand) == num_cust:
@@ -966,21 +998,35 @@ def load_cvrp_txt_dataset(path):
                 else:
                     demand = None
                 
-                # Cost
-                cost = float(parts[cost_idx+1]) if cost_idx != -1 else 0.0
+                # Cost (in original coordinate scale)
+                cost_raw = float(parts[cost_idx+1]) if cost_idx != -1 else 0.0
                 
                 # Tour / node_flag
                 tour = None
                 if tour_idx != -1:
-                     keywords = [depot_idx, cust_idx, cap_idx, dem_idx, cost_idx, tour_idx]
-                     keywords = [k for k in keywords if k > tour_idx]
-                     tour_end = min(keywords) if keywords else len(parts)
+                     kw_after_tour = [p for p in all_kw_positions if p > tour_idx]
+                     tour_end = min(kw_after_tour) if kw_after_tour else len(parts)
                      tour_parts = parts[tour_idx+1 : tour_end]
                      if tour_parts:
                         try:
                             tour = [int(float(x)) for x in tour_parts]
                         except ValueError:
                              pass
+                
+                # Normalize coordinates to [0, 1] if they exceed unit square
+                coord_min = coords.min(dim=0)[0]
+                coord_max = coords.max(dim=0)[0]
+                coord_range = (coord_max - coord_min).max().item()
+                if coord_range > 1.0 + 1e-6:
+                    coords = (coords - coord_min) / coord_range
+                    cost = cost_raw / coord_range if cost_raw > 0 else 0.0
+                else:
+                    cost = cost_raw
+                
+                # Normalize demand by capacity
+                if capacity > 1.0 + 1e-6 and demand is not None:
+                    demand = demand / capacity
+                    capacity = 1.0
                 
                 data_list.append((coords, demand, capacity, cost, tour, name))
 
@@ -1278,8 +1324,8 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
         kwargs = {
             'n_ants': n_ants,
             'coords': coords,
-            'cand_list_size': k_sparse,
-            'backup_list_size': k_sparse,
+            'cand_list_size': min(k_sparse, n - 2),
+            'backup_list_size': min(k_sparse, n - 2),
             'disable_heuristic': disable_heuristic_arg,
             'use_local_search': not args.no_local_search,
             'decay': args.rho,
@@ -1302,8 +1348,8 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
             'demand': demand,
             'capacity': float(capacity),
             'n_ants': n_ants,
-            'cand_list_size': k_sparse,
-            'backup_list_size': max(k_sparse, 64),
+            'cand_list_size': min(k_sparse, n - 1), # n is customers count. total nodes = n+1. safe to use n-1
+            'backup_list_size': max(min(k_sparse, n - 1), min(64, n - 1)),
             'min_new_edges': args.min_new_edges,
             'decay': args.rho,
             'p_best': 0.05,
