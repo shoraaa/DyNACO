@@ -1836,10 +1836,6 @@ void MFACO_CVRP::sample(bool require_prob, const float *prior_ptr,
         Xoshiro128Plus rng_local;
         rng_local.seed(ant_seeds[(size_t)a]);
 
-        // Pass dummy perm_out if removed from signature? I changed it in
-        // header. The implementation of sample_ant_direct must match header.
-        // Let's assume implementation does NOT take perm_out anymore.
-
         // Write whatever the sampler returns into routes[a] first. Some
         // sampler variants return only a customer permutation (no depot zeros).
         // We handle both and ensure we end with a depot-separated route.
@@ -1954,7 +1950,7 @@ std::vector<std::vector<int32_t>> MFACO_CVRP::initial_routes_from_perm(
 
   // Solution should start with 0? sample_ant_direct output starts with customer
   // usually if called with start_node, but build_initial_solution adds 0s.
-  // Let's robustly parse.
+  // Parsing the full route into sub-routes.
 
   std::vector<int32_t> current;
   bool in_route = false;
@@ -1993,8 +1989,6 @@ void MFACO_CVRP::routes_to_perm(const std::vector<std::vector<int32_t>> &routes,
   solution.reserve(n * 2); // Roughly
   positions.assign(
       n, -1); // Not really useful for full route? but might be used by LS?
-  // Actually node_pos in ls_* is passed in directly. `positions` argument here
-  // might be unused or legacy.
 
   // Flatten routes: [0, r1, 0, r2, 0 ...]
   // Routes are [0, c.., 0]
@@ -2024,7 +2018,6 @@ void MFACO_CVRP::routes_to_perm(const std::vector<std::vector<int32_t>> &routes,
       if (node > 0) {
         // positions[node] = ...? In flattened array?
         // positions vector mainly used for Permutation logic.
-        // Maybe safe to ignore or set.
       }
     }
     first = false;
@@ -3016,32 +3009,14 @@ float ACO_CVRP::sample_ant_constructive(const float *probmat,
 
     if (candidates.empty()) {
       if (curr == 0) {
-        // Impossible to satisfy next customer? Or done?
-        // If visited_count < n, and no customer fits capacity (even after
-        // refill if curr==0), implies infeasible for this capacity. For
-        // robustness, we abort or loop? We'll break loop.
+        // No customers fit current capacity even after refill; stopping.
         break;
       } else {
-        // Split Route
-        // Check bounds
-
-        // Insert new depot after curr
-        next_node = 0;           // Return to depot
-        candidates.push_back(0); // Necessary for selection logic below if we
-                                 // wanted to unify, but here we just pick 0
-        // Actuallly, simply setting next_node=0 and handling it is cleaner,
-        // but the code below expects candidates selection.
-        // Let's just set selection directly.
-
+        // Return to depot to restart capacity.
+        next_node = 0;
+        candidates.push_back(0); 
         pick_j = 0;
         is_stochastic = false;
-        // Proceed to use next_node directly, skip selection loop?
-        // The code below line 3937 uses candidates.back() if logic flow
-        // continues. But we are in the 'candidates.empty()' block. We set
-        // next_node = 0. We need to skip the selection loop. The original code
-        // had `else { next_node = 0; ... }` and fell through? No, looking at
-        // lines 3910+: if (candidates.empty()) { ... } else { ... selection ...
-        // } So we are fine.
       }
     } else {
       is_stochastic = true;
@@ -3247,11 +3222,7 @@ float ACO_CVRP::run(int32_t n_iterations) {
   result.costs.resize(n_ants);
   result.routes.resize(n_ants);
 
-  // We reuse a single result object to avoid reallocations
-  // but sample() calls result.clear()...
-  // Actually sample() does: result.clear(); result.costs.resize(...);
-  // So it effectively reallocates or at least clears.
-  // Standard vector clear/resize keeps capacity usually.
+  // Reuse result object to minimize reallocations across iterations.
 
   for (int32_t iter = 0; iter < n_iterations; ++iter) {
     // 1. Generate paths
@@ -3285,10 +3256,6 @@ float ACO_CVRP::run(int32_t n_iterations) {
 
     bool improved = false;
     if (iter_best_cost < best_cost || best_cost == 0.0f) {
-      // update_pheromone will handle best_cost/best_route update internally
-      // if we pass this solution to it?
-      // Actually update_pheromone logic: "if (cost < best_cost) { update ... }"
-      // So we just need to ensure we call it.
       improved = true;
     }
 
@@ -3349,9 +3316,6 @@ void ACO_CVRP::update_pheromone_batch(
 
   // 3. Min-Max Clamping (if enabled)
   // And update best if needed (scan batch)
-  // Actually usually caller handles best update.
-  // But `update_pheromone` (scalar) handles it.
-  // Here we should also check if any route is new best.
 
   if (min_max) {
     float batch_best = std::numeric_limits<float>::max();

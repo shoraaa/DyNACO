@@ -387,10 +387,6 @@ class ACO_TSP:
              prior = arr
 
         # Returns: costs, flats, touched, logps, traces, costs_raw, flats_raw, new_edges_count, survival
-        # But my binding returns simpler tuple.
-        # Wait, binding returns tuple of size 9 with Nones.
-        # So I can just return what self._cpp.sample returns.
-        
         ret = self._cpp.sample(require_prob, prior, parallel_traced)
         
         if require_prob and self._enable_torch_sync:
@@ -420,8 +416,6 @@ class ACO_TSP:
         logit = self._cpp.alpha * torch.log(tau)
         
         h = self._h_sparse_torch.clamp_min(EPS)
-        # beta is self._cpp.beta
-        # Wait, PyACO_TSP exposes beta? Yes I added `get_beta`.
         logit = logit + self._cpp.beta * torch.log(h)
         
         if prior is not None:
@@ -847,13 +841,7 @@ class ACO_CVRP:
             iteration_best_cost = float(costs[best_idx])
             iteration_best_route = routes[best_idx]
 
-            # Update pheromone (Min-Max ACO updates with iteration best or global best depending on strategy, 
-            # but usually we pass iteration best to update_pheromone and C++ handles logic?
-            # Actually PyACO_CVRP::update_pheromone calls solver->update_pheromone. 
-            # MMAS usually updates with GLOBAL best? 
-            # Looking at binding.cpp: update_pheromone takes solution, cost.
-            # In mfaco_train.cpp: update_pheromone(route, cost) -> updates global best if better, then deposits pheromone.
-            # So passing iteration best is correct; C++ will check if it's new global best.
+            # Update pheromone with iteration best; C++ handles global best tracking and pheromone deposition.
             self.update_pheromone(iteration_best_route, iteration_best_cost)
         
         return self.best_cost

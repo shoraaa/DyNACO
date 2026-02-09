@@ -1,5 +1,7 @@
 /**
- * @author: Rafał Skinderowicz (rafal.skinderowicz@us.edu.pl)
+ * kd_tree.h
+ *
+ * Copyright https://github.com/RSkinderowicz/FocusedACO
 */
 #pragma once
 

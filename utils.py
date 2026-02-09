@@ -783,7 +783,6 @@ def load_tsp_txt_dataset(path):
                 coords = torch.tensor(coords_flat).view(num_nodes, 2)
                 
                 # Tour indices are 1-based in file, convert to 0-based.
-                # Let's filter empty strings just in case
                 tour_parts = [x for x in parts[output_idx+1:] if x]
                 tour = [int(x) - 1 for x in tour_parts]
                 

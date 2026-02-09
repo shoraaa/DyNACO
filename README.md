@@ -150,23 +150,7 @@ Key evaluation arguments:
 
 ### Pretrained Checkpoints
 
-Pretrained models are available in `pretrained/`:
-
-```
-pretrained/
-├── tsp/
-│   ├── n1000/    # TSP-1K model
-│   ├── n5000/    # TSP-5K model
-│   ├── n10000/   # TSP-10K model
-│   ├── n50000/   # TSP-50K model
-│   └── n100000/  # TSP-100K model
-└── cvrp/
-    ├── n1000/    # CVRP-1K model
-    ├── n5000/    # CVRP-5K model
-    ├── n10000/   # CVRP-10K model
-    ├── n50000/   # CVRP-50K model
-    └── n100000/  # CVRP-100K model
-```
+Pretrained models are available in `checkpoints/`.
 
 The 1K-trained model transfers zero-shot to larger scales with minimal degradation.
 
@@ -185,14 +169,4 @@ The 1K-trained model transfers zero-shot to larger scales with minimal degradati
 ├── data/             # Benchmark datasets
 ├── pretrained/       # Trained checkpoints
 ```
-
-## Citation
-
-```bibtex
-@inproceedings{dynaco2025,
-  title     = {Beyond Static Priors: Dynamic Neural Guidance for Large-Scale Ant Colony Optimization},
-  author    = {Anonymous},
-  booktitle = {Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining},
-  year      = {2025}
-}
-```
+The code was build partly on top of [DeepACO](github.com/henry-yeh/DeepACO) structures.

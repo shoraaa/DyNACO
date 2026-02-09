@@ -631,13 +631,7 @@ def run_ablation_rl_algo(dry_run=False, only_test=False):
          print("\n--- REINFORCE ---")
          cfg_reinforce = base_cfg.copy()
          cfg_reinforce["algo"] = "reinforce"
-         # REINFORCE typically uses higher LR, train.py defaults to 1e-4 if not set. 
-         # Experiment default is 5e-6 in DEFAULT_CONFIG (for PPO).
-         # We should let train.py decide or set it?
-         # train.py logic: if args.lr is None: args.lr = args.ppo_lr if args.algo == 'ppo' else args.reinforce_lr
-         # DEFAULT_CONFIG has "lr": 5e-6. train_model passes it.
-         # So we must remove "lr" from cfg if we want train.py default, OR set it explicitly.
-         # Let's set it to 1e-4 explicitly to be safe or delete it.
+         # REINFORCE typically uses a higher learning rate (1e-4) compared to PPO (5e-6).
          cfg_reinforce["lr"] = 1e-4
          
          model_path = train_model(cfg_reinforce, dry_run, wandb_project="lga_rl_comparison", only_test=only_test)
