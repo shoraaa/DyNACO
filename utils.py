@@ -303,7 +303,7 @@ def gen_distance_matrix(coords):
 def generate_tsp_instance(n):
     return np.random.rand(n, 2).astype(np.float32)
 
-def build_pyg_data_tsp(aco, coords, device, dynamic: bool):
+def build_pyg_data_tsp(aco, coords, device, dynamic: bool, ablation_pheromone=False, ablation_incumbent=False):
     """
     Build PyG Data for TSP using 2D node features (coords).
     Edge features (6): dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge
@@ -357,11 +357,13 @@ def build_pyg_data_tsp(aco, coords, device, dynamic: bool):
         is_source_pred = torch.zeros((E, 1), device=device, dtype=torch.float32)
         is_new_edge = torch.zeros((E, 1), device=device, dtype=torch.float32)
 
-    # Always use 6 edge features
-    edge_attr = torch.cat(
-        [dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
-        dim=1
-    )
+    features = [dist_norm]
+    if not ablation_pheromone:
+        features.extend([tau_cv, log_tau_rel])
+    if not ablation_incumbent:
+        features.extend([is_source_succ, is_source_pred, is_new_edge])
+
+    edge_attr = torch.cat(features, dim=1)
     return Data(x=coords, edge_index=edge_index, edge_attr=edge_attr)
 
 
@@ -399,7 +401,7 @@ def gen_cvrp_instance(n, device, capacity=None):
     # Return coords (n+1, 2), demands (n+1,) normalized, capacity_norm=1.0
     return coords, all_demands, 1.0
 
-def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
+def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool, ablation_pheromone=False, ablation_incumbent=False):
     """
     Build PyG Data for CVRP using 4D node features (coords, demand, depot_flag).
     Edge features (6): dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge
@@ -520,11 +522,13 @@ def build_pyg_data_cvrp(aco, coords, demand, device, dynamic: bool):
     is_new_edge = (~is_in_route).to(torch.float32).view(E, 1)
     is_in_route_feat = is_in_route.to(torch.float32).view(E, 1)
 
-    # Always use 6 edge features
-    edge_attr = torch.cat(
-        [dist_norm, tau_cv, log_tau_rel, is_source_succ, is_source_pred, is_new_edge],
-        dim=1
-    )
+    features = [dist_norm]
+    if not ablation_pheromone:
+        features.extend([tau_cv, log_tau_rel])
+    if not ablation_incumbent:
+        features.extend([is_source_succ, is_source_pred, is_new_edge])
+
+    edge_attr = torch.cat(features, dim=1)
 
     # Node features: (demand)
     # demand_t is (N,)
@@ -1306,7 +1310,7 @@ def verify_solution_cvrp(coords, demand, capacity, cost, route0):
     return True
 
 
-def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=True, inject_step=None, seed=None):
+def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse, n_ants, dynamic, args, use_heuristic_only=False, collect_metrics=False, metrics_every_step=True, inject_step=None, seed=None, ablation_pheromone=False, ablation_incumbent=False):
     if model is not None:
         model.eval()
 
@@ -1459,9 +1463,11 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                 
                 if use_model:
                     if problem == 'tsp':
-                        pyg_data = build_fn(aco, norm_coords, args.device, dynamic=dynamic)
+                        pyg_data = build_fn(aco, norm_coords, args.device, dynamic=dynamic, 
+                                          ablation_pheromone=ablation_pheromone, ablation_incumbent=ablation_incumbent)
                     else:
-                        pyg_data = build_fn(aco, norm_coords, demand, args.device, dynamic=dynamic)
+                        pyg_data = build_fn(aco, norm_coords, demand, args.device, dynamic=dynamic,
+                                          ablation_pheromone=ablation_pheromone, ablation_incumbent=ablation_incumbent)
                     
                     t_neural_start = time.time()
                     heu_vec = model(pyg_data).view(-1)

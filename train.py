@@ -223,7 +223,7 @@ def setup_aco(
             'nls': args.nls,
             'T_nls': args.T_nls
         }
-        pyg_args = (coords, args.device)
+        pyg_args = (coords, args.device, args.ablation_pheromone_features, args.ablation_incumbent_features)
         
         if args.alg == 'mmas':
             aco = faco.ACO_TSP(
@@ -263,7 +263,7 @@ def setup_aco(
             'nls': args.nls,
             'T_nls': args.T_nls
         }
-        pyg_args = (coords, demand, args.device)
+        pyg_args = (coords, demand, args.device, args.ablation_pheromone_features, args.ablation_incumbent_features)
         
         if args.alg == 'mmas':
             aco = faco.ACO_CVRP(
@@ -1194,6 +1194,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_smooth_mmas", action="store_true")
     parser.add_argument("--no_extend_ls", action="store_true")
     parser.add_argument("--no_normalized_heuristic", action="store_true")
+    
+    # Ablation studies
+    parser.add_argument("--ablation_pheromone_features", action="store_true",
+                        help="Remove pheromone-based features (tau_cv, log_tau_rel)")
+    parser.add_argument("--ablation_incumbent_features", action="store_true", 
+                        help="Remove incumbent-based features (source_succ, source_pred, new_edge)")
+
 
     # Traced sampling parallelism
     # CVRP wrapper defaults to parallel_traced=False (single-thread traced sampling) unless passed explicitly.
@@ -1314,6 +1321,11 @@ def build_model_name(args: argparse.Namespace) -> str:
         name += "_noextls"
     if args.no_normalized_heuristic:
         name += "_nonorm"
+    if args.ablation_pheromone_features:
+        name += "_noPherFeat"
+    if args.ablation_incumbent_features:
+        name += "_noIncumbFeat"
+
     if args.alg == 'mmas':
         name += "_mmas"
     
@@ -1580,7 +1592,16 @@ def main():
     # Initialize model
     feats = 2 if args.problem == 'tsp' else 1
     
-    edge_feats = 6
+    full_edge_feats = 6
+    minus_feats = 0
+    if args.ablation_pheromone_features:
+        minus_feats += 2
+    if args.ablation_incumbent_features:
+        minus_feats += 3
+        
+    edge_feats = full_edge_feats - minus_feats
+    print(f"Using {edge_feats} edge features (ablation_pheromone={args.ablation_pheromone_features}, ablation_incumbent={args.ablation_incumbent_features})")
+
 
     net_model = Net(
         feats=feats,

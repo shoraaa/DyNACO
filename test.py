@@ -127,6 +127,12 @@ def main():
     parser.add_argument("--no_logit_net", action="store_true")
     parser.add_argument("--no_dynamic_feats", action="store_true")
 
+    # Ablation studies
+    parser.add_argument("--ablation_pheromone_features", action="store_true",
+                        help="Remove pheromone-based features (tau_cv, log_tau_rel)")
+    parser.add_argument("--ablation_incumbent_features", action="store_true", 
+                        help="Remove incumbent-based features (source_succ, source_pred, new_edge)")
+
     
     parser.add_argument("--baseline", type=str, default='default')
     parser.add_argument("--baseline_time_limit", type=float, default=2.0)
@@ -231,6 +237,15 @@ def main():
                  if current_val != v:
                      print(f"  Override {k}: {current_val} -> {v}")
                      setattr(args, k, v)
+        
+        # Explicitly check for ablation flags in config if not in sys.argv
+        if "ablation_pheromone_features" in config and "--ablation_pheromone_features" not in sys.argv:
+            args.ablation_pheromone_features = config["ablation_pheromone_features"]
+            print(f"  Override ablation_pheromone_features: {args.ablation_pheromone_features}")
+            
+        if "ablation_incumbent_features" in config and "--ablation_incumbent_features" not in sys.argv:
+            args.ablation_incumbent_features = config["ablation_incumbent_features"]
+            print(f"  Override ablation_incumbent_features: {args.ablation_incumbent_features}")
         
     print("\n" + "="*50)
     print(f"{'Config Parameter':<30} | {'Value':<15}")
@@ -767,8 +782,11 @@ def main():
                       use_heuristic_only=False,
                       collect_metrics=args.visualize,
                       metrics_every_step=args.visualize,
-                      seed=args.seed + i
+                      seed=args.seed + i,
+                      ablation_pheromone=args.ablation_pheromone_features,
+                      ablation_incumbent=args.ablation_incumbent_features
                   )
+
                   tm1 = time.time()
                   _, model_best, mod_timings, mod_extra = mod_ret
                   model_m = mod_extra.get("metrics")
