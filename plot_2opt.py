@@ -89,7 +89,7 @@ ax1.fill_between(epochs, unc_m1, unc_b1, color='#d62728', alpha=0.15)
 # Baseline
 ax1.axhline(y=bench_t1, color='green', linestyle='--', linewidth=3, label='Baseline')
 
-ax1.set_title('(a) Construction Quality (1 Iteration)')
+ax1.set_title('(a) Sampling Quality (1 Iteration)')
 ax1.set_xlabel('Epochs')
 ax1.set_ylabel('Objective Cost')
 ax1.grid(True, linestyle='--', alpha=0.6)
@@ -111,7 +111,7 @@ ax2.fill_between(epochs, unc_m5, unc_b5, color='#d62728', alpha=0.15)
 # Baseline
 ax2.axhline(y=bench_t5, color='green', linestyle='--', linewidth=3, label='Baseline')
 
-ax2.set_title('(b) Refined Quality (5 Iterations)')
+ax2.set_title('(b) ACO quality (5 Iterations)')
 ax2.set_xlabel('Epochs')
 ax2.grid(True, linestyle='--', alpha=0.6)
 ax2.set_ylim(10.80, 11.35)

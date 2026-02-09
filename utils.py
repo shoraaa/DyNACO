@@ -1168,6 +1168,71 @@ def row_top1_match_rate(a: torch.Tensor, b: torch.Tensor) -> float:
     return float((a.argmax(dim=1) == b.argmax(dim=1)).float().mean())
 
 
+def calc_interaction_metrics(tau: torch.Tensor, prior: torch.Tensor, k: int = 5) -> Dict[str, float]:
+    """
+    Compute interaction metrics between pheromone (tau) and neural prior (prior).
+    
+    Args:
+        tau: (N, K) Pheromone matrix
+        prior: (N, K) Neural logits/probs matrix
+        k: Number of top/bottom items to consider
+        
+    Returns:
+        Dictionary with 'enhance', 'rebellion', 'suppression' rates.
+    """
+    if tau is None or prior is None:
+        return {"enhance": 0.0, "rebellion": 0.0, "suppression": 0.0}
+        
+    # Ensure on same device/dtype
+    device = tau.device
+    tau = tau.detach().float()
+    prior = prior.detach().to(device).float()
+    
+    N, K = tau.shape
+    k = min(k, K)
+    if k == 0: return {"enhance": 0.0, "rebellion": 0.0, "suppression": 0.0}
+
+    # Identify sets for each row
+    # Top-k indices
+    tau_topk = torch.topk(tau, k, dim=1).indices
+    prior_topk = torch.topk(prior, k, dim=1).indices
+    
+    # Bottom-k indices (smallest values)
+    tau_botk = torch.topk(tau, k, dim=1, largest=False).indices
+    prior_botk = torch.topk(prior, k, dim=1, largest=False).indices
+    
+    # 1. Enhance: Top Prior intersects Top Tau (High agreement)
+    # create masks
+    row_idx = torch.arange(N, device=device).unsqueeze(1).expand(N, k)
+    
+    def make_mask(indices):
+        mask = torch.zeros((N, K), dtype=torch.bool, device=device)
+        mask[row_idx, indices] = True
+        return mask
+
+    mask_tau_top = make_mask(tau_topk)
+    mask_prior_top = make_mask(prior_topk)
+    mask_tau_bot = make_mask(tau_botk)
+    mask_prior_bot = make_mask(prior_botk)
+    
+    # Enhance: intersection of top sets
+    enhance_count = (mask_tau_top & mask_prior_top).sum(dim=1).float().mean()
+    enhance_rate = float(enhance_count / k)
+    
+    # Rebellion: Top Prior intersects Bottom Tau (Model fights low pheromone)
+    rebellion_count = (mask_prior_top & mask_tau_bot).sum(dim=1).float().mean()
+    rebellion_rate = float(rebellion_count / k)
+    
+    # Suppression: Bottom Prior intersects Top Tau (Model fights high pheromone)
+    suppression_count = (mask_prior_bot & mask_tau_top).sum(dim=1).float().mean()
+    suppression_rate = float(suppression_count / k)
+    
+    return {
+        "enhance": enhance_rate,
+        "rebellion": rebellion_rate,
+        "suppression": suppression_rate
+    }
+
 def generate_and_save_dataset(problem, n_node, n_instances, save_path, baseline_solver='lkh', 
                                baseline_runs=1, time_limit=300.0, device='cpu'):
     """
@@ -1430,7 +1495,8 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
     avg_last = None
     t_neural_total = 0.0
     priors, pher_before = [], []
-    metrics_log = {k: [] for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match", "survival"]}
+    metrics_log = {k: [] for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match", "survival", 
+                                   "enhance", "rebellion", "suppression"]}
     metrics_log["snapshots"] = []
 
     collect_iter_stats = bool(getattr(args, "iter_log", False) or getattr(args, "iter_print", False))
@@ -1568,8 +1634,14 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                     metrics_log["corr"].append(safe_corr(tau, pr))
                     metrics_log["ov"].append(top_overlap_frac(tau, pr))
                     metrics_log["row_match"].append(row_top1_match_rate(tau, pr))
+                    
+                    # Interaction metrics
+                    inter = calc_interaction_metrics(tau, pr, k=5)
+                    metrics_log["enhance"].append(inter["enhance"])
+                    metrics_log["rebellion"].append(inter["rebellion"])
+                    metrics_log["suppression"].append(inter["suppression"])
                 else:
-                    for k in ["corr", "ov", "row_match"]: metrics_log[k].append(0.0)
+                    for k in ["corr", "ov", "row_match", "enhance", "rebellion", "suppression"]: metrics_log[k].append(0.0)
             
             # Capture snapshots at H/2
             if collect_metrics and t == (args.H // 2):

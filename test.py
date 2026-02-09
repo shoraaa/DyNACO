@@ -828,7 +828,9 @@ def main():
                       use_heuristic_only=False,
                       collect_metrics=False,
                       metrics_every_step=False,
-                      seed=args.seed + i
+                      seed=args.seed + i,
+                      ablation_pheromone=args.ablation_pheromone_features,
+                      ablation_incumbent=args.ablation_incumbent_features
                   )
                   tm1 = time.time()
                   _, model_best_na, mod_na_timings, mod_na_extra = mod_ret_na
@@ -870,7 +872,9 @@ def main():
                           collect_metrics=args.visualize,
                           metrics_every_step=args.visualize,
                           inject_step=inject_step,
-                          seed=args.seed + i
+                          seed=args.seed + i,
+                          ablation_pheromone=args.ablation_pheromone_features,
+                          ablation_incumbent=args.ablation_incumbent_features
                       )
                       tmi1 = time.time()
                       _, mix_best, mix_timings, mix_extra = mix_ret
@@ -910,7 +914,9 @@ def main():
                           collect_metrics=False,
                           metrics_every_step=False,
                           inject_step=inject_step,
-                          seed=args.seed + i
+                          seed=args.seed + i,
+                          ablation_pheromone=args.ablation_pheromone_features,
+                          ablation_incumbent=args.ablation_incumbent_features
                       )
                       tmi1 = time.time()
                       _, mix_best_na, mix_na_timings, mix_na_extra = mix_ret_na
@@ -1396,28 +1402,51 @@ def main():
 
         N = len(val_list)
         
+        plt.figure(figsize=(12, 8))
+        
         if results["base_metrics"]:
-             base_avg = {k: v/N for k,v in results["base_metrics"].items()}
-             
-             plt.figure()
-             plt.plot(base_avg["cost"], label="Base")
-             if model and results["model_metrics"]:
-                 mod_avg = {k: v/N for k,v in results["model_metrics"].items()}
-                 plt.plot(mod_avg["cost"], label="Model")
-             if model and args.warmup and results["mix_metrics"]:
-                 mix_avg = {k: v/N for k,v in results["mix_metrics"].items()}
-                 plt.plot(mix_avg["cost"], label="Mix")
-             plt.legend()
-             plt.savefig(out / "cost.pdf")
-             plt.close()
-             
-             if model and "l2" in mod_avg:
-                 plt.figure()
-                 for k in ["l2", "turnover", "flip"]:
-                     plt.plot(mod_avg[k], label=k)
-                 plt.legend()
-                 plt.savefig(out / "prior_changes.pdf")
-                 plt.close()
+            base_avg = {k: v/N for k,v in results["base_metrics"].items()}
+            plt.plot(base_avg["cost"], label="Base")
+        
+        if model and results["model_metrics"]:
+            mod_avg = {k: v/N for k,v in results["model_metrics"].items()}
+            plt.plot(mod_avg["cost"], label="Model")
+            
+        if model and args.warmup and results["mix_metrics"]:
+            mix_avg = {k: v/N for k,v in results["mix_metrics"].items()}
+            plt.plot(mix_avg["cost"], label="Mix")
+            
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(out / "cost.pdf")
+        plt.close()
+        
+        if model and "l2" in results.get("model_metrics", {}): # Check against results directly or ensure mod_avg exists
+            # Only if mod_avg was created
+            if 'mod_avg' in locals():
+                if "l2" in mod_avg:
+                    plt.figure(figsize=(12, 8))
+                    for k in ["l2", "turnover", "flip"]:
+                        plt.plot(mod_avg[k], label=k)
+                    plt.grid(True, alpha=0.3)
+                    plt.legend()
+                    plt.tight_layout()
+                    plt.savefig(out / "prior_changes.pdf")
+                    plt.close()
+
+                if "enhance" in mod_avg:
+                    plt.figure(figsize=(12, 8))
+                    for k in ["enhance", "suppression"]:
+                        plt.plot(mod_avg[k], label=k)
+                    plt.title("Model-Pheromone Interaction")
+                    plt.xlabel("Iteration")
+                    plt.ylabel("Rate")
+                    plt.grid(True, alpha=0.3)
+                    plt.legend()
+                    plt.tight_layout()
+                    plt.savefig(out / "interaction.pdf")
+                    plt.close()
 
         if sample_snapshots:
             print("Plotting matrix snapshots...")
@@ -1431,10 +1460,12 @@ def main():
                     ncols = 1
                     if neural_prior is not None: ncols += 1
                     
-                    fig, axes = plt.subplots(1, ncols, figsize=(6 * ncols, 6))
+                    width = 8 * ncols
+                    height = 10
+                    fig, axes = plt.subplots(1, ncols, figsize=(width, height))
                     if ncols == 1: axes = [axes]
                     
-                    MAX_ROWS = 100
+                    MAX_ROWS = 10
                     
                     # Helper for safe plotting
                     def safe_plot_heatmap(ax, tensor, title, cmap):
