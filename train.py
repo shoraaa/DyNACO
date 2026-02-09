@@ -949,12 +949,12 @@ def infer_instance(
         # Use normalized coordinates for the network to match training distribution
         if net is not None:
              if args.problem == 'tsp':
-                 pyg_data_net = build_fn(aco, norm_coords, args.device, dynamic=dynamic)
+                 pyg_data_net = build_fn(aco, norm_coords, args.device, ablation_pheromone=args.ablation_pheromone_features, ablation_incumbent=args.ablation_incumbent_features, dynamic=dynamic)
              else:
                  # norm_coords key 0 is coords, 1 is demand, 2 is capacity (which build_fn doesn't need but setup_aco did)
-                 # Actually build_pyg_data_cvrp takes (aco, coords, demand, device, dynamic)
+                 # Actually build_pyg_data_cvrp takes (aco, coords, demand, device, ablation_pheromone, ablation_incumbent, dynamic)
                  # We need to pass the normalized coords and original demand
-                 pyg_data_net = build_fn(aco, norm_coords[0], norm_coords[1], args.device, dynamic=dynamic)
+                 pyg_data_net = build_fn(aco, norm_coords[0], norm_coords[1], args.device, ablation_pheromone=args.ablation_pheromone_features, ablation_incumbent=args.ablation_incumbent_features, dynamic=dynamic)
         else:
              pyg_data_net = pyg_data
 
