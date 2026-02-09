@@ -65,10 +65,10 @@ lim_m1, lim_b1, lim_m5, lim_b5 = process(opt2_limited_data)
 
 # --- PLOTTING ---
 plt.rcParams.update({
-    'font.family': 'serif', 'font.size': 18, 'axes.titlesize': 22,
-    'axes.labelsize': 20, 'xtick.labelsize': 18, 'ytick.labelsize': 18,
-    'legend.fontsize': 16, 'lines.linewidth': 4, 'lines.markersize': 0,
-    'figure.titlesize': 24
+    'font.family': 'serif', 'font.size': 22, 'axes.titlesize': 26,
+    'axes.labelsize': 24, 'xtick.labelsize': 22, 'ytick.labelsize': 22,
+    'legend.fontsize': 20, 'lines.linewidth': 4, 'lines.markersize': 0,
+    'figure.titlesize': 28
 })
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8))

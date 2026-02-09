@@ -1368,6 +1368,14 @@ def main():
     if args.visualize:
         out = Path(args.visualize_output)
         out.mkdir(parents=True, exist_ok=True)
+        # Increase font sizes for 2-column paper readability
+        plt.rcParams.update({
+            'font.family': 'serif', 'font.size': 22, 'axes.titlesize': 26,
+            'axes.labelsize': 24, 'xtick.labelsize': 22, 'ytick.labelsize': 22,
+            'legend.fontsize': 20, 'lines.linewidth': 4, 'lines.markersize': 0,
+            'figure.titlesize': 28
+        })
+
         N = len(val_list)
         
         if results["base_metrics"]:

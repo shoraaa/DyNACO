@@ -14,6 +14,13 @@ def parse_args():
     return parser.parse_args()
 
 def load_optimal_costs(iters_csv_file):
+    if 'tsp' in iters_csv_file.lower() and ('10000' in iters_csv_file or '10k' in iters_csv_file.lower()):
+        class ConstantOpt:
+            def __getitem__(self, key): return 71.78
+            def __contains__(self, key): return True
+        print("Using hardcoded optimal value 71.78 for TSP 10k")
+        return ConstantOpt()
+
     # Infer instances file path
     # Expected format: X_iters.csv -> X_instances.csv
     base, ext = os.path.splitext(iters_csv_file)
@@ -117,10 +124,10 @@ def aggregate_data(raw_data):
 def plot_performance(data, output_file, is_gap):
     # Style settings from plot_2opt.py
     plt.rcParams.update({
-        'font.family': 'serif', 'font.size': 18, 'axes.titlesize': 22,
-        'axes.labelsize': 20, 'xtick.labelsize': 18, 'ytick.labelsize': 18,
-        'legend.fontsize': 16, 'lines.linewidth': 4, 'lines.markersize': 0,
-        'figure.titlesize': 24
+        'font.family': 'serif', 'font.size': 22, 'axes.titlesize': 26,
+        'axes.labelsize': 24, 'xtick.labelsize': 22, 'ytick.labelsize': 22,
+        'legend.fontsize': 20, 'lines.linewidth': 4, 'lines.markersize': 0,
+        'figure.titlesize': 28
     })
     
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -165,21 +172,21 @@ def plot_performance(data, output_file, is_gap):
         ax.set_ylabel('Objective Cost (Best)')
         
     # Add vertical dotted lines at 0, 100, 200...
-    if data:
-        all_iters = [cat_data['iters'] for cat_data in data.values() if len(cat_data['iters']) > 0]
-        if all_iters:
-            max_iter = int(max([it.max() for it in all_iters]))
-            min_iter_plot = int(min([it.min() for it in all_iters]))
+    # if data:
+    #     all_iters = [cat_data['iters'] for cat_data in data.values() if len(cat_data['iters']) > 0]
+    #     if all_iters:
+    #         max_iter = int(max([it.max() for it in all_iters]))
+    #         min_iter_plot = int(min([it.min() for it in all_iters]))
             
-            # Ensure we start drawing lines from optimal points relative to global 0
-            # Next multiple of 100 >= min_iter_plot
-            start_line = (min_iter_plot // 100) * 100
-            if start_line < min_iter_plot:
-                 start_line += 100
+    #         # Ensure we start drawing lines from optimal points relative to global 0
+    #         # Next multiple of 100 >= min_iter_plot
+    #         start_line = (min_iter_plot // 100) * 100
+    #         if start_line < min_iter_plot:
+    #              start_line += 100
                  
-            for i in range(0, max_iter + 1, 100):
-                if i >= min_iter_plot:
-                     ax.axvline(x=i, linestyle=':', color='gray', alpha=0.5, linewidth=2)
+    #         for i in range(0, max_iter + 1, 100):
+    #             if i >= min_iter_plot:
+    #                  ax.axvline(x=i, linestyle=':', color='gray', alpha=0.5, linewidth=2)
 
     ax.grid(True, linestyle='--', alpha=0.6)
     ax.legend(loc='best') # specific location or best
