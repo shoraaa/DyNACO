@@ -1,6 +1,6 @@
 # DyNACO: Beyond Static Priors — Dynamic Neural Guidance for Large-Scale Ant Colony Optimization
 
-> **KDD '25** | [Paper (coming soon)](#) | [Anonymous Code](https://anonymous.4open.science/r/DyNACO/)
+> **KDD '26** | [Paper (coming soon)](#) | [Anonymous Code](https://anonymous.4open.science/r/DyNACO/)
 
 ## Overview
 
