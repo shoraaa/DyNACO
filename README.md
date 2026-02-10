@@ -38,10 +38,6 @@ To scale to 100K nodes, DyNACO pairs the policy with a perturbation-based ACO ba
 ### Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/DyNACO.git
-cd DyNACO
-
 # Create environment and install dependencies
 uv sync
 
