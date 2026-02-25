@@ -1,6 +1,6 @@
 # DyNACO: Beyond Static Priors — Dynamic Neural Guidance for Large-Scale Ant Colony Optimization
 
-> **KDD '26** | [Paper (coming soon)](#) | [Anonymous Code](https://anonymous.4open.science/r/DyNACO/)
+> **KDD '26** | [Paper (PDF)](https://drive.google.com/file/d/17SaGraJ2-yhYeyLOrAG0AjxJJtXi5upK/view?usp=sharing) | [Anonymous Code](https://anonymous.4open.science/r/DyNACO/)
 
 ## Overview
 
@@ -165,4 +165,4 @@ The 1K-trained model transfers zero-shot to larger scales with minimal degradati
 ├── data/             # Benchmark datasets
 ├── pretrained/       # Trained checkpoints
 ```
-The code was build partly on top of [DeepACO](github.com/henry-yeh/DeepACO) structures.
+The code was build partly on top of [DeepACO](https://github.com/henry-yeh/DeepACO) structures.
