@@ -1,6 +1,3 @@
-Here is a comprehensive `README.md` tailored for your anonymous KDD '26 submission. It professionalizes the installation instructions, clarifies the methodology, and prominently highlights the experimental results as requested.
-
-***
 
 # DyNACO: Beyond Static Priors – Dynamic Neural Guidance for Large-Scale Ant Colony Optimization
 
