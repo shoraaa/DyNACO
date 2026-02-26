@@ -29,16 +29,16 @@ DyNACO achieves state-of-the-art performance among neural methods on TSP and CVR
 
 Comparison of Optimality Gap (%) and Runtime on 100K-node instances. DyNACO outperforms constructive baselines (SIL) and unguided ACO.
 
-| Problem | Method | Gap (%) | Time | Scalability |
-| :--- | :--- | :---: | :---: | :---: |
-| **TSP-100K** | LKH-3 | 0.00% | 25h | Low |
-| | SIL (PRC1000) | 2.45% | 2.6h | Med |
-| | ACO (Unguided) | 3.12% | 3.7m | High |
-| | **DyNACO (Ours)** | **1.90%** | **2.8m** | **High** |
-| **CVRP-100K** | HGS | 0.00% | 24h | Low |
-| | SIL (PRC1000) | -2.55% | 2.2h | Med |
-| | ACO (Unguided) | 7.26% | 11.5m | High |
-| | **DyNACO (Ours)** | **6.75%** | **11.7m** | **High** |
+| Problem | Method | Gap (%) | Time |
+| :--- | :--- | :---: | :---: | 
+| **TSP-100K** | LKH-3 | 0.00% | 25h | 
+| | SIL (PRC1000) | 2.45% | 2.6h | 
+| | ACO (Unguided) | 3.12% | 3.7m | 
+| | **DyNACO (Ours)** | **1.90%** | **2.8m** |
+| **CVRP-100K** | HGS | 0.00% | 24h |
+| | SIL (PRC1000) | -2.55% | 2.2h |
+| | ACO (Unguided) | 7.26% | 11.5m |
+| | **DyNACO (Ours)** | **6.75%** | **11.7m** 
 
 > **Note:** On TSP, DyNACO is **faster** than the unguided baseline because targeted neural perturbations lead to faster local search convergence.
 
