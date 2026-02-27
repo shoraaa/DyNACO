@@ -25,27 +25,81 @@ Neural-guided Ant Colony Optimization (ACO) currently suffers from a fundamental
 Extensive evaluations across synthetic and real-world instances demonstrate that DyNACO achieves state-of-the-art performance among learning-guided solvers. 
 
 ### 1. Superior Scalability and Quality (Up to 100K Nodes)
-DyNACO surpasses all existing neural baselines across all scales. Remarkably, on TSP, DyNACO **reduces total runtime by 20–33%** compared to the unguided solver because better-targeted neural perturbations lead to faster local-search convergence.
+Most end-to-end NCO methods face severe Out-Of-Memory (OOM) limitations beyond 10K nodes due to quadratic attention complexity. Hierarchical/Decomposition methods scale further but incur substantial runtime costs. 
 
-| Problem | Method | Gap to Reference | Total Time | 
-| :--- | :--- | :--- | :--- | 
-| **TSP-10K** | Unguided ACO | 2.02% | 26.81s |
-| | **DyNACO (Ours)** | **0.82%** | **17.89s** |
-| **TSP-100K** | Unguided ACO | 3.12% | 223.32s |
-| | **DyNACO (Ours)** | **1.90%** | **171.69s** |
+**DyNACO** easily scales to **100,000 nodes** while maintaining sub-linear runtime growth. Remarkably, on TSP, DyNACO **reduces total runtime by 20–33%** compared to the unguided solver because better-targeted neural perturbations lead to faster local-search convergence.
 
-*(Results based on $I_{10000}$ iteration budget. Reference: LKH-3)*
+#### 🏆 Comprehensive Benchmark: Traveling Salesman Problem (TSP)
+*Metrics reported as: **Gap to Reference (%) / Total Time**. Reference: LKH-3. OOM = Out of Memory.*
+
+| Category | Method | TSP-1K | TSP-10K | TSP-100K |
+| :--- | :--- | :--- | :--- | :--- |
+| **Classical** | LKH-3 `[1]` | 0.00% / 1.70m | 0.00% / 33.00m | 0.00% / 25.00h |
+| **End-to-End NCO** | POMO `[2]` | 40.61% / 4.10s | OOM | OOM |
+| | BQ `[3]` | 1.34% / 13.00s | OOM | OOM |
+| | SIGD `[4]` | 1.04% / 17.30s | OOM | OOM |
+| **Hierarchical NCO** | LEHD (RRC 1000) `[5]` | 0.74% / 3.30m | 12.71% / 18.60m | OOM |
+| | L2C-Insert (I 1000) `[6]` | 0.48% / 21.75s | 2.08% / 1.04m | 4.92% / 1.63m |
+| | SIL (PRC 1000) `[7]` | 0.38% / 1.50m | 1.81% / 17.00m | 2.45% / 2.60h |
+| **Neural-Guided ACO**| DeepACO `[8]` | 2.87% / 1.10m | — | — |
+| | GFACS `[9]` | 2.63% / 1.10m | — | — |
+| | HeatACO (DIFUSCO) `[10]`| 0.23% / 10.00s | 1.19% / 2.89m | — |
+| **Ours** | **ACO** *(Unguided, I 10000)* | 0.48% / 5.44s | 2.02% / 26.81s | 3.12% / 3.72m |
+| | **DyNACO** *(I 10000)* | **0.20% / 3.68s** | **0.82% / 17.89s** | **1.90% / 2.86m** |
+
+#### 🏆 Comprehensive Benchmark: Capacitated Vehicle Routing Problem (CVRP)
+*Metrics reported as: **Gap to Reference (%) / Total Time**. Reference: HGS. Negative gaps indicate performance better than the baseline reference.*
+
+| Category | Method | CVRP-1K | CVRP-10K | CVRP-100K |
+| :--- | :--- | :--- | :--- | :--- |
+| **Classical** | HGS `[11]` | 0.00% / 2.50m | 0.00% / 5.00h | 0.00% / 24.00h |
+| **End-to-End NCO** | POMO `[2]` | 133.92% / 4.80s | OOM | OOM |
+| | BQ `[3]` | 5.18% / 14.00s | OOM | OOM |
+| | SIGD `[4]` | 7.88% / 17.30s | 22.42% / 3.97m | OOM |
+| **Hierarchical NCO** | LEHD (RRC 1000) `[5]` | 3.14% / 3.40m | 29.17% / 41.00m | OOM |
+| | L2C-Insert (I 1000) `[6]` | 5.63% / 43.59s | 26.42% / 1.27m | 45.54% / 2.38m |
+| | SIL (PRC 1000) `[7]` | 2.73% / 1.50m | -0.66% / 15.20m | -2.55% / 2.17h |
+| **Neural-Guided ACO**| DeepACO `[8]` | 2.40% / 1.30m | — | — |
+| **Ours** | **ACO** *(Unguided, I 10000)* | 1.85% / 20.17s | 6.76% / 1.24m | 7.26% / 11.55m |
+| | **DyNACO** *(I 10000)* | **1.04% / 19.05s** | **6.04% / 1.28m** | **6.75% / 11.70m** |
+
 
 ### 2. Zero-Shot Generalization to Real-World Benchmarks
-Models trained *only* on uniform synthetic 1K instances generalize zero-shot to non-uniform, real-world topologies and much larger scales (up to $86\times$ larger than training), outperforming classical and neural baselines.
+Models trained *only* on uniform synthetic 1K instances generalize zero-shot to non-uniform, real-world topologies and much larger scales (up to $86\times$ larger than training). DyNACO solves *all* instances, massively outperforming all NCO baselines on both TSPLIB and CVRPlib, and even outperforming the classical state-of-the-art solver (HGS) on CVRPlib.
 
-| Benchmark Dataset | Opt/BKS Gap | Win Rate vs. ACO | Highlights |
+*Metrics reported as: **Gap to Reference (%) / Total Time**. All NCO models use their respective zero-shot/transfer evaluation methods.*
+
+| Category | Method | TSPLIB (33 instances, 1K–86K) | CVRPlib (14 instances, 1K–30K) |
 | :--- | :--- | :--- | :--- |
-| **TSPLIB** (33 instances, 1K–86K) | **0.89%** | 29 / 33 | 31% relative improvement over unguided ACO. |
-| **CVRPlib** (14 instances, 1K–30K) | **3.66%** | 14 / 14 | Outperforms the classical state-of-the-art (HGS). |
+| **Classical Solvers** | LKH-3 `[1]` | 0.07% / 35.00m | 13.60% / 2.10h |
+| | HGS `[11]` | — | 5.15% / 5.00h |
+| **NCO Baselines** | LEHD `[5]` | 13.20% / 38.00m | 16.90% / 40.00m |
+| | GLOP `[12]` | 6.99% / 34.00s | 20.60% / 39.00s |
+| | SIL `[7]` | 3.03% / 45.00m | 7.69% / 54.00m |
+| **Ours** | **DyNACO** *(I 10000)* | **0.89% / 11.57s** | **3.66% / 51.07s** |
 
-### 3. Cross-Problem Adaptability (CVRP)
-Dynamic neural guidance transfers directly to the Capacitated Vehicle Routing Problem (CVRP) without any architectural modification. It consistently improves upon the unguided baseline at every iteration budget, adding **<1% computational overhead** at large scales.
+* **TSPLIB Highlights**: DyNACO achieves a 31% relative improvement over unguided ACO, winning on 29 out of 33 instances.
+* **CVRPlib Highlights**: DyNACO improves upon the unguided solver on every single instance (14/14) with a 14% relative gap reduction, solidly outperforming the highly engineered HGS solver.
+
+### 3. Cross-Problem Adaptability
+Dynamic neural guidance transfers directly to CVRP without any architectural modification. It consistently improves upon the unguided baseline at every iteration budget, adding **<1% computational overhead** on GPU/CPU at large scales dataset.
+
+<details>
+<summary><b>📚 References for Evaluated Baselines</b> (Click to expand)</summary>
+
+* `[1]` **LKH-3**: *An effective implementation of the Lin-Kernighan traveling salesman heuristic* (Helsgaun, EJOR 2000)
+* `[2]` **POMO**: *POMO: policy optimization with multiple optima for reinforcement learning* (Kwon et al., NeurIPS 2020)
+* `[3]` **BQ**: *BQ-NCO: bisimulation quotienting for efficient neural combinatorial optimization* (Drakulic et al., NeurIPS 2023)
+* `[4]` **SIGD**: *Self-Improvement for Neural Combinatorial Optimization: Sample Without Replacement, but Improvement* (Pirnay & Grimm, TMLR 2024)
+* `[5]` **LEHD**: *Neural combinatorial optimization with heavy decoder: toward large scale generalization* (Luo et al., NeurIPS 2023)
+* `[6]` **L2C-Insert**: *Learning to Insert for Constructive Neural Vehicle Routing Solver* (Luo et al., NeurIPS 2025)
+* `[7]` **SIL**: *Boosting Neural Combinatorial Optimization for Large-Scale Vehicle Routing Problems* (Luo et al., ICLR 2025)
+* `[8]` **DeepACO**: *DeepACO: neural-enhanced ant systems for combinatorial optimization* (Ye et al., NeurIPS 2023)
+* `[9]` **GFACS**: *Ant Colony Sampling with GFlowNets for Combinatorial Optimization* (Kim et al., AISTATS 2025)
+* `[10]` **HeatACO**: *HEATACO: Heatmap-Guided Ant Colony Decoding for Large-Scale Travelling Salesman Problems* (Lin et al., 2026)
+* `[11]` **HGS**: *Hybrid genetic search for the CVRP: Open-source implementation and SWAP\* neighborhood* (Vidal, COR 2022)
+* `[12]` **GLOP**: *GLOP: learning global partition and local construction for solving large-scale routing problems in real-time* (Ye et al., AAAI 2024)
+</details>
 
 ---
 
