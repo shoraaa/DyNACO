@@ -1,5 +1,5 @@
 """
-MFACO Solver - Unified interface for TSP and CVRP with C++ backend.
+ACO Solver - Unified interface for TSP and CVRP with C++ backend.
 
 Usage:
     from faco import MFACO_TSP, MFACO_CVRP
