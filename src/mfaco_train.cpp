@@ -1,5 +1,5 @@
 /**
- * MFACO Training Module - Unified C++ implementation
+ * ACO Training Module - Unified C++ implementation
  */
 
 #include "mfaco_train.h"
