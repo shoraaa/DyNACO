@@ -24,7 +24,7 @@ import gc
 import wandb
 import functools
 
-# Unified modules
+# Update
 import net
 import faco
 import utils
