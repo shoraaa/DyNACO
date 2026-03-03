@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 # =============================================================================
-# Configuration & Tables
+# Configuration & Tables 
 # =============================================================================
 
 # Default Hyperparameters from Paper
