@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Training script for Neural-Guided Fast ACO (NGFACO).
+Training script.
 
 This module implements PPO and REINFORCE training for learning neural priors
 that guide ant colony optimization for TSP and CVRP problems.
