@@ -19,3 +19,5 @@ data
 tmp_models
 *.pdf
 csv
+test_mem3.py
+test_mem4.py
