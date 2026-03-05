@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Training script.
+Training script for Neural-Guided Fast ACO (NGFACO).
 
 This module implements PPO and REINFORCE training for learning neural priors
 that guide ant colony optimization for TSP and CVRP problems.
@@ -24,7 +24,7 @@ import gc
 import wandb
 import functools
 
-# Update
+# Unified modules
 import net
 import faco
 import utils
@@ -122,14 +122,13 @@ def replay_logp_from_cpp_batch_trace(
         # log weights for the current node's candidates: (batch, k)
         log_w = log_prob_sparse[curr_r]
         
-        # Determine valid mask as float: 0.0 for valid, -inf for invalid
-        bitpos = torch.arange(k, device=device, dtype=torch.int64)
-        # valid: (batch, k), 1 if valid, 0 if invalid
-        valid_bits = ((vm_r.unsqueeze(1) >> bitpos) & 1)
+        # Determine valid mask as boolean
+        magic_mask = (1 << torch.arange(k, device=device))
+        valid_bits = (vm_r.unsqueeze(1) & magic_mask) != 0
         
         # log_mask: 0.0 if valid, -inf otherwise
-        log_mask_val = torch.zeros_like(log_w)
-        log_mask_val.masked_fill_(valid_bits == 0, float('-inf'))
+        log_mask_val = torch.empty_like(log_w).fill_(float('-inf'))
+        log_mask_val.masked_fill_(valid_bits, 0.0)
         
         log_w_valid = log_w + log_mask_val
         
@@ -489,11 +488,17 @@ def train_instance_reinforce(
         optimizer.zero_grad(set_to_none=True)
         
         t0 = time.time()
-        prior_new = model(pyg_data).view(-1).view(aco.n, aco.k)
+        prior_new_base = model(pyg_data).view(-1).view(aco.n, aco.k)
         t_neural_total += time.time() - t0
+        
+        if getattr(args, 'smallvram', False):
+            prior_new = prior_new_base.detach().requires_grad_(True)
+        else:
+            prior_new = prior_new_base
         
         all_losses = []
         all_entropies = []
+        total_loss_val = 0.0
         
         for inner in range(args.mini_H):
             current_prior = prior_new
@@ -519,13 +524,24 @@ def train_instance_reinforce(
             adv = (costs_t - baseline).detach()
             
             loss = (logp_new * adv).mean()
-            all_losses.append(loss)
+            if getattr(args, 'smallvram', False):
+                scaled_loss = loss / args.mini_H
+                scaled_loss.backward()
+            else:
+                all_losses.append(loss)
+            
+            total_loss_val += loss.item()
             
             entropy = -logp_new.mean()
             all_entropies.append(entropy.detach().item())
 
-        total_loss = torch.stack(all_losses).mean()
-        total_loss.backward()
+        if getattr(args, 'smallvram', False):
+            prior_new_base.backward(prior_new.grad)
+            total_loss_item = total_loss_val / args.mini_H
+        else:
+            total_loss = torch.stack(all_losses).mean()
+            total_loss.backward()
+            total_loss_item = total_loss.item()
         
         if not args.simple_train:
             grad_norms = [p.grad.norm().item() for p in model.parameters() if p.grad is not None]
@@ -535,7 +551,7 @@ def train_instance_reinforce(
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         
-        metrics.add("loss", total_loss.item())
+        metrics.add("loss", total_loss_item)
         metrics.add("entropy", np.mean(all_entropies))
         metrics.add("ndec", ndec_f.mean().item())
 
@@ -694,8 +710,13 @@ def train_instance_ppo(
             optimizer.zero_grad(set_to_none=True)
             
             t0 = time.time()
-            prior_new = model(pyg_data).view(-1).view(aco.n, aco.k)
+            prior_new_base = model(pyg_data).view(-1).view(aco.n, aco.k)
             t_neural_total += time.time() - t0
+            
+            if getattr(args, 'smallvram', False):
+                prior_new = prior_new_base.detach().requires_grad_(True)
+            else:
+                prior_new = prior_new_base
             
             all_param_kl = []
             all_clip_frac = []
@@ -749,12 +770,19 @@ def train_instance_ppo(
                 surr2 = torch.clamp(ratio, 1 - args.ppo_clip, 1 + args.ppo_clip) * adv
                 loss = -torch.mean(torch.min(surr1, surr2))
                 
-                all_losses.append(loss)
+                if getattr(args, 'smallvram', False):
+                    scaled_loss = loss / args.mini_H
+                    scaled_loss.backward()
+                else:
+                    all_losses.append(loss)
+                    
                 total_loss_val_epoch += loss.item()
             
-            # Single backward pass
-            total_loss = torch.stack(all_losses).mean()
-            total_loss.backward()
+            if getattr(args, 'smallvram', False):
+                prior_new_base.backward(prior_new.grad)
+            else:
+                total_loss = torch.stack(all_losses).mean()
+                total_loss.backward()
             
             # Compute gradient variance
             if not args.simple_train:
@@ -1223,14 +1251,13 @@ def parse_args() -> argparse.Namespace:
     # Neural Local Search
     parser.add_argument("--nls", action="store_true",
                         help="Enable Neural Local Search")
-    parser.add_argument("--nls_beta", type=float, default=0.5,
-                        help="Weight for post-LS cost in advantage")
-    parser.add_argument("--T_nls", type=int, default=10,
-                        help="Number of NLS iterations")
-
+    parser.add_argument("--nls_beta", type=float, default=0.2, help="Weight for post-LS cost in advantage")
+    parser.add_argument("--T_nls", type=int, default=5, help="Number of NLS iterations")
     parser.add_argument("--no_logit_net", action="store_true")
+    parser.add_argument("--smallvram", action="store_true", help="Fix OOM mathematically perfectly via graph detachment inner loop")
+    parser.add_argument("--grad_checkpointing", action="store_true", help="Enable PyTorch gradient checkpointing to save VRAM at the cost of compute")
     
-    # Logging and output
+    # Wandb settings and output
     parser.add_argument("--no_wandb", action="store_true")
     parser.add_argument("--wandb_project", type=str, default="dynaco")
     parser.add_argument("--wandb_entity", type=str, default=None)
@@ -1605,6 +1632,7 @@ def main():
         feats=feats,
         edge_feats=edge_feats,
         logit_net=not args.no_logit_net,
+        grad_checkpointing=getattr(args, 'grad_checkpointing', False)
     ).to(args.device)
     
     optimizer = torch.optim.AdamW(net_model.parameters(), lr=args.lr)
