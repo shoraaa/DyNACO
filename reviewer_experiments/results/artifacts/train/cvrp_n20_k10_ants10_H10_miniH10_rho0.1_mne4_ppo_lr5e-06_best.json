@@ -1,0 +1,77 @@
+{
+  "status": "existing",
+  "model_path": "reviewer_experiments/models/cvrp/n20/cvrp_n20_k10_ants10_H10_miniH10_rho0.1_mne4_ppo_lr5e-06_best.pt",
+  "log_file": "reviewer_experiments/logs/train_cvrp_n20_k10_ants10_H10_miniH10_rho0.1_mne4_ppo_lr5e-06_best.log",
+  "config": {
+    "H": 10,
+    "mini_H": 10,
+    "n_ants": 10,
+    "k_sparse": 10,
+    "epochs": 5,
+    "steps_per_epoch": 4,
+    "ppo_epochs": 4,
+    "lr": 5e-06,
+    "anneal_prior": false,
+    "gamma": 1.0,
+    "min_gamma": 0.0,
+    "val_size": 2,
+    "warmup": false,
+    "train_warmup": false,
+    "save_dir": "reviewer_experiments/models",
+    "min_new_edges": 4,
+    "problem": "cvrp",
+    "rho": 0.1,
+    "n_node": 20
+  },
+  "epochs": [
+    {
+      "epoch": -1,
+      "train_cost": 0.0,
+      "val_best": 4.451,
+      "gap_pct": 0.0
+    },
+    {
+      "epoch": 0,
+      "train_cost": 5.7059,
+      "val_best": 4.451,
+      "gap_pct": 0.0
+    },
+    {
+      "epoch": 1,
+      "train_cost": 5.6637,
+      "val_best": 4.451,
+      "gap_pct": 0.0
+    },
+    {
+      "epoch": 2,
+      "train_cost": 5.2698,
+      "val_best": 4.451,
+      "gap_pct": 0.0
+    },
+    {
+      "epoch": 3,
+      "train_cost": 5.3544,
+      "val_best": 4.451,
+      "gap_pct": 0.0
+    },
+    {
+      "epoch": 4,
+      "train_cost": 5.4946,
+      "val_best": 4.451,
+      "gap_pct": 0.0
+    }
+  ],
+  "best_epoch": {
+    "epoch": 0,
+    "train_cost": 5.7059,
+    "val_best": 4.451,
+    "gap_pct": 0.0
+  },
+  "total_train_time_s": 32.38,
+  "peak_memory_gb": 0.06,
+  "total_params": 67329,
+  "trainable_params": 67329,
+  "val_cost": 4.451028823852539,
+  "val_gap": 0.0,
+  "epoch": 0
+}

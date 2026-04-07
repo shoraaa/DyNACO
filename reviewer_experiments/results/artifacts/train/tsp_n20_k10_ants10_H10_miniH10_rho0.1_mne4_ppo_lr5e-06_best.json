@@ -1,0 +1,77 @@
+{
+  "status": "existing",
+  "model_path": "reviewer_experiments/models/tsp/n20/tsp_n20_k10_ants10_H10_miniH10_rho0.1_mne4_ppo_lr5e-06_best.pt",
+  "log_file": "reviewer_experiments/logs/train_tsp_n20_k10_ants10_H10_miniH10_rho0.1_mne4_ppo_lr5e-06_best.log",
+  "config": {
+    "H": 10,
+    "mini_H": 10,
+    "n_ants": 10,
+    "k_sparse": 10,
+    "epochs": 5,
+    "steps_per_epoch": 4,
+    "ppo_epochs": 4,
+    "lr": 5e-06,
+    "anneal_prior": false,
+    "gamma": 1.0,
+    "min_gamma": 0.0,
+    "val_size": 2,
+    "warmup": false,
+    "train_warmup": false,
+    "save_dir": "reviewer_experiments/models",
+    "min_new_edges": 4,
+    "problem": "tsp",
+    "rho": 0.1,
+    "n_node": 20
+  },
+  "epochs": [
+    {
+      "epoch": -1,
+      "train_cost": 0.0,
+      "val_best": 3.7057,
+      "gap_pct": 0.0
+    },
+    {
+      "epoch": 0,
+      "train_cost": 3.9972,
+      "val_best": 3.7057,
+      "gap_pct": 0.0
+    },
+    {
+      "epoch": 1,
+      "train_cost": 4.1452,
+      "val_best": 3.7057,
+      "gap_pct": 0.0
+    },
+    {
+      "epoch": 2,
+      "train_cost": 4.2317,
+      "val_best": 3.7057,
+      "gap_pct": 0.0
+    },
+    {
+      "epoch": 3,
+      "train_cost": 3.7546,
+      "val_best": 3.7057,
+      "gap_pct": 0.0
+    },
+    {
+      "epoch": 4,
+      "train_cost": 4.4106,
+      "val_best": 3.7057,
+      "gap_pct": 0.0
+    }
+  ],
+  "best_epoch": {
+    "epoch": 0,
+    "train_cost": 3.9972,
+    "val_best": 3.7057,
+    "gap_pct": 0.0
+  },
+  "total_train_time_s": 31.74,
+  "peak_memory_gb": 0.06,
+  "total_params": 67361,
+  "trainable_params": 67361,
+  "val_cost": 3.7056968212127686,
+  "val_gap": 0.0,
+  "epoch": 0
+}

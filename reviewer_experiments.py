@@ -56,7 +56,7 @@ DEFAULT_CONFIG = {
     "gamma": 1.0,
     "min_gamma": 0.0,
     "val_size": 16,
-    "warmup": True,
+    "warmup": False,
     "train_warmup": False,
     "save_dir": "reviewer_experiments/models",
 }
@@ -80,6 +80,11 @@ PROGRESS_FILE = "reviewer_experiments/experiment_progress.json"
 # Results directory
 RESULTS_DIR = Path("reviewer_experiments/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+ARTIFACTS_DIR = RESULTS_DIR / "artifacts"
+TRAIN_ARTIFACTS_DIR = ARTIFACTS_DIR / "train"
+TEST_ARTIFACTS_DIR = ARTIFACTS_DIR / "test"
+for _dir in [ARTIFACTS_DIR, TRAIN_ARTIFACTS_DIR, TEST_ARTIFACTS_DIR]:
+    _dir.mkdir(parents=True, exist_ok=True)
 
 
 def get_review_scales(problem: str, n_node: int, limit: Optional[int] = None) -> List[int]:
@@ -87,19 +92,46 @@ def get_review_scales(problem: str, n_node: int, limit: Optional[int] = None) ->
     if n_node <= 0:
         return [n_node]
 
-    if n_node < 100:
-        multipliers = [1, 2, 5]
-    elif n_node < 1000:
-        multipliers = [1, 2, 5, 10]
-    else:
-        multipliers = [1, 5, 10]
-        if problem == "tsp":
-            multipliers.extend([50, 100])
-        else:
-            multipliers.append(50)
-
-    scales = sorted({int(n_node * m) for m in multipliers})
+    scales = [int(n_node * m) for m in (1, 5, 10)]
     return scales[:limit] if limit is not None else scales
+
+
+def write_json(path: Path, payload: Dict[str, Any]):
+    def _json_default(value):
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, Path):
+            return str(value)
+        raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, default=_json_default)
+
+
+def write_csv_rows(path: Path, fieldnames: List[str], rows: List[Dict[str, Any]]):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def build_test_artifact_stem(
+    model_path: Path,
+    config: Dict[str, Any],
+    runtime_limit: Optional[float] = None,
+    rl_data: bool = False,
+    stage_metrics: bool = False
+) -> str:
+    suffix = [f"n{config['n_node']}"]
+    if runtime_limit is not None:
+        suffix.append(f"rt{str(runtime_limit).replace('.', 'p')}")
+    suffix.append("rldata" if rl_data else "synthetic")
+    if stage_metrics:
+        suffix.append("stage")
+    return f"{model_path.stem}_{'_'.join(suffix)}"
 
 
 def get_hyperparam_scales(problem: str, n_node: int) -> List[int]:
@@ -403,19 +435,116 @@ def parse_metrics(output: str) -> Dict[str, Any]:
     return metrics
 
 
-def parse_training_metrics(output: str) -> List[Dict[str, Any]]:
-    """Parses training output to extract per-epoch metrics."""
+def parse_training_output(output: str) -> Dict[str, Any]:
+    """Parse train.py stdout into structured per-epoch and summary fields."""
     epochs = []
-    # Look for epoch lines like "Epoch 1: TrainCost=..."
-    # Match "Epoch 1: TrainCost=23.45" or "Epoch -1: Pure MFACO check..."
-    epoch_pattern = re.compile(r"Epoch\s+(-?\d+):\s*TrainCost=([-+]?\d*\.\d+|\d+)")
+    epoch_pattern = re.compile(
+        r"Epoch\s+(-?\d+):\s*TrainCost=([-+]?\d*\.?\d+)\s+ValBest=([-+]?\d*\.?\d+)\s+Gap=([-+]?\d*\.?\d+)%"
+    )
     for match in epoch_pattern.finditer(output):
         epoch = int(match.group(1))
-        cost = float(match.group(2))
-        # Skip pre-training validation (Epoch -1)
-        if epoch >= 0:
-            epochs.append({"epoch": epoch, "avg_cost": cost})
-    return epochs
+        epochs.append({
+            "epoch": epoch,
+            "train_cost": float(match.group(2)),
+            "val_best": float(match.group(3)),
+            "gap_pct": float(match.group(4)),
+        })
+
+    total_train_time = None
+    peak_memory_gb = None
+    total_params = None
+    trainable_params = None
+
+    time_match = re.search(r"Total Train Time:\s*([\d.]+)s", output)
+    if time_match:
+        total_train_time = float(time_match.group(1))
+
+    memory_match = re.search(r"Peak GPU Memory:\s*([\d.]+)\s*GB", output)
+    if memory_match:
+        peak_memory_gb = float(memory_match.group(1))
+
+    params_match = re.search(r"Model Parameters:\s*([\d,]+)\s+total,\s+([\d,]+)\s+trainable", output)
+    if params_match:
+        total_params = int(params_match.group(1).replace(",", ""))
+        trainable_params = int(params_match.group(2).replace(",", ""))
+
+    best_epoch = None
+    if epochs:
+        non_pretrain = [row for row in epochs if row["epoch"] >= 0]
+        if non_pretrain:
+            best_epoch = min(non_pretrain, key=lambda row: row["val_best"])
+
+    return {
+        "epochs": epochs,
+        "total_train_time_s": total_train_time,
+        "peak_memory_gb": peak_memory_gb,
+        "total_params": total_params,
+        "trainable_params": trainable_params,
+        "best_epoch": best_epoch,
+    }
+
+
+def get_train_artifact_paths(model_path: Path) -> Tuple[Path, Path]:
+    stem = model_path.stem
+    return (
+        TRAIN_ARTIFACTS_DIR / f"{stem}.json",
+        TRAIN_ARTIFACTS_DIR / f"{stem}_epochs.csv",
+    )
+
+
+def load_train_artifacts(model_path: Path) -> Optional[Dict[str, Any]]:
+    summary_path, _ = get_train_artifact_paths(model_path)
+    if summary_path.exists():
+        try:
+            with open(summary_path, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def ensure_train_artifacts(model_path: Path, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    summary_path, epochs_csv_path = get_train_artifact_paths(model_path)
+    existing = load_train_artifacts(model_path)
+    if existing is not None:
+        return existing
+
+    log_file = Path("reviewer_experiments/logs") / f"train_{model_path.stem}.log"
+    summary: Dict[str, Any] = {
+        "status": "existing",
+        "model_path": str(model_path),
+        "log_file": str(log_file),
+        "config": config,
+        "epochs": [],
+        "best_epoch": None,
+        "total_train_time_s": None,
+        "peak_memory_gb": None,
+        "total_params": None,
+        "trainable_params": None,
+    }
+
+    if log_file.exists():
+        with open(log_file, "r") as f:
+            parsed = parse_training_output(f.read())
+        summary.update(parsed)
+
+    if model_path.exists():
+        try:
+            import torch
+            ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
+            for key in ["total_params", "trainable_params", "peak_memory_gb", "val_cost", "val_gap", "epoch"]:
+                if key in ckpt and summary.get(key) is None:
+                    summary[key] = ckpt[key]
+        except Exception:
+            pass
+
+    write_json(summary_path, summary)
+    write_csv_rows(
+        epochs_csv_path,
+        ["epoch", "train_cost", "val_best", "gap_pct"],
+        summary.get("epochs", []),
+    )
+    return summary
 
 
 def get_model_path(config: Dict[str, Any], suffix: str = "_best.pt") -> Path:
@@ -460,10 +589,12 @@ def train_model(config: Dict[str, Any], dry_run: bool = False, force: bool = Fal
                wandb_project: str = "reviewer_experiments", only_test: bool = False) -> Optional[Path]:
     """Runs training if checkpoint doesn't exist."""
     model_path = get_model_path(config)
+    summary_path, epochs_csv_path = get_train_artifact_paths(model_path)
 
     if only_test:
         if model_path.exists():
             print(f"[TEST-ONLY] Found model: {model_path}")
+            ensure_train_artifacts(model_path, config)
             return model_path
         else:
             print(f"[TEST-ONLY] Model not found, skipping: {model_path}")
@@ -471,6 +602,7 @@ def train_model(config: Dict[str, Any], dry_run: bool = False, force: bool = Fal
 
     if model_path.exists() and not force:
         print(f"[SKIP] Model exists: {model_path}")
+        ensure_train_artifacts(model_path, config)
         return model_path
 
     cmd = [sys.executable, "train.py"]
@@ -500,7 +632,34 @@ def train_model(config: Dict[str, Any], dry_run: bool = False, force: bool = Fal
 
     log_file = Path("reviewer_experiments/logs") / f"train_{model_path.stem}.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    run_command(cmd, log_file, dry_run)
+    returncode, output, cmd_str = run_command(cmd, log_file, dry_run)
+
+    if returncode != 0:
+        write_json(summary_path, {
+            "status": "failed",
+            "command": cmd_str,
+            "returncode": returncode,
+            "log_file": str(log_file),
+            "model_path": str(model_path),
+            "config": config,
+        })
+        return None
+
+    train_summary = parse_training_output(output)
+    train_summary.update({
+        "status": "ok",
+        "command": cmd_str,
+        "returncode": returncode,
+        "log_file": str(log_file),
+        "model_path": str(model_path),
+        "config": config,
+    })
+    write_json(summary_path, train_summary)
+    write_csv_rows(
+        epochs_csv_path,
+        ["epoch", "train_cost", "val_best", "gap_pct"],
+        train_summary["epochs"],
+    )
     return model_path
 
 
@@ -514,6 +673,11 @@ def test_model(
     stage_metrics: bool = False
 ) -> Dict[str, Any]:
     """Runs evaluation."""
+    artifact_stem = build_test_artifact_stem(model_path, config, runtime_limit, rl_data, stage_metrics)
+    if summary_json is None:
+        summary_json = TEST_ARTIFACTS_DIR / f"{artifact_stem}.json"
+    one_row_csv = TEST_ARTIFACTS_DIR / f"{artifact_stem}.csv"
+
     cmd = [sys.executable, "test.py"]
     cmd.extend(["--problem", config["problem"]])
     cmd.extend(["--n_node", str(config["n_node"])])
@@ -558,11 +722,37 @@ def test_model(
 
     log_file = Path("reviewer_experiments/logs") / f"test_{model_path.stem}.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    code, output, _ = run_command(cmd, log_file, dry_run)
+    code, output, cmd_str = run_command(cmd, log_file, dry_run)
     metrics = parse_metrics(output)
+    metrics.update({
+        "status": "ok" if code == 0 else "failed",
+        "returncode": code,
+        "command": cmd_str,
+        "log_file": str(log_file),
+        "model_path": str(model_path),
+        "summary_json": str(summary_json),
+        "artifact_csv": str(one_row_csv),
+    })
     if summary_json is not None and summary_json.exists():
         with open(summary_json, "r") as f:
             metrics["summary"] = json.load(f)
+    else:
+        write_json(summary_json, metrics)
+
+    write_csv_rows(
+        one_row_csv,
+        ["status", "returncode", "cost", "gap", "time", "model_path", "summary_json", "log_file"],
+        [{
+            "status": metrics.get("status"),
+            "returncode": metrics.get("returncode"),
+            "cost": metrics.get("cost"),
+            "gap": metrics.get("gap"),
+            "time": metrics.get("time"),
+            "model_path": metrics.get("model_path"),
+            "summary_json": metrics.get("summary_json"),
+            "log_file": metrics.get("log_file"),
+        }],
+    )
     return metrics
 
 
@@ -631,31 +821,35 @@ def run_srr_training_stability(problem='tsp', n_node=1000, dry_run=False, only_t
             print(f"[SKIP] Model not found for {ls_type}")
             continue
 
-        # Parse training log to extract per-epoch metrics
-        log_file = Path("reviewer_experiments/logs") / f"train_{model_path.stem}.log"
-        if log_file.exists():
-            with open(log_file, "r") as f:
-                log_content = f.read()
-            epochs = parse_training_metrics(log_content)
-
-            for epoch_data in epochs:
+        train_artifacts = load_train_artifacts(model_path)
+        if train_artifacts and train_artifacts.get("epochs"):
+            for epoch_data in train_artifacts["epochs"]:
+                if epoch_data["epoch"] < 0:
+                    continue
                 row = {
                     "problem": problem,
                     "n_node": n_node,
                     "ls_type": ls_type,
                     "epoch": epoch_data["epoch"],
-                    "avg_cost": epoch_data["avg_cost"],
-                    "best_cost": epoch_data.get("best_cost", ""),
+                    "avg_cost": epoch_data["train_cost"],
+                    "best_cost": epoch_data["val_best"],
                     "timestamp": datetime.now().isoformat(),
                 }
                 append_to_csv(csv_path, row, fieldnames)
 
-            # Save progress
-            if epochs:
-                final_cost = epochs[-1]["avg_cost"]
-                save_progress(key, {"ls_type": ls_type, "final_cost": final_cost, "epochs": len(epochs)})
+            best_epoch = train_artifacts.get("best_epoch")
+            final_epoch = train_artifacts["epochs"][-1]
+            save_progress(key, {
+                "ls_type": ls_type,
+                "final_train_cost": final_epoch["train_cost"],
+                "final_val_best": final_epoch["val_best"],
+                "best_epoch": best_epoch,
+                "epochs": len([row for row in train_artifacts["epochs"] if row["epoch"] >= 0]),
+                "artifact_json": str(get_train_artifact_paths(model_path)[0]),
+                "artifact_csv": str(get_train_artifact_paths(model_path)[1]),
+            })
         else:
-            print(f"[WARNING] Training log not found: {log_file}")
+            print(f"[WARNING] Training artifacts not found for {model_path}")
 
     print(f"\n[RESULTS] Training stability data saved to {csv_path}")
 
@@ -727,6 +921,7 @@ def run_srr_inference_comparison(problem='tsp', n_node=1000, dry_run=False, only
         if model_path is None or not model_path.exists():
             print(f"[SKIP] Model not found for {ls_type}")
             continue
+        ensure_train_artifacts(model_path, cfg)
 
         for time_limit in time_limits:
             key = f"srr_inference_{problem}_n{n_node}_{ls_type}_t{time_limit}"
@@ -1019,6 +1214,7 @@ def run_efficiency_analysis(problem='tsp', n_node=1000, dry_run=False, only_test
         if model_path is None:
             print(f"[SKIP] Model not found")
             continue
+        ensure_train_artifacts(model_path, base_cfg)
 
         # Load model to get parameter count
         try:
@@ -1038,17 +1234,11 @@ def run_efficiency_analysis(problem='tsp', n_node=1000, dry_run=False, only_test
         metrics = test_model(model_path, cfg, dry_run)
         inference_time = time.time() - t0
 
-        # Training time (estimated or from log)
+        # Training time from structured artifact when available
         training_time = 0.0
-        log_file = Path("reviewer_experiments/logs") / f"train_{model_path.stem}.log"
-        if log_file.exists():
-            # Try to extract training time from log
-            with open(log_file, "r") as f:
-                log_content = f.read()
-            # Look for total training time (matches train.py: "Total Train Time: 123.45s")
-            time_match = re.search(r"Total Train Time:\s*([\d.]+)", log_content)
-            if time_match:
-                training_time = float(time_match.group(1))
+        train_artifacts = load_train_artifacts(model_path)
+        if train_artifacts:
+            training_time = float(train_artifacts.get("total_train_time_s") or 0.0)
 
         # Peak memory (placeholder - would need to add profiling to train.py)
         peak_memory_gb = 0.0
@@ -1103,6 +1293,7 @@ def run_cross_scale_generalization(problem='tsp', n_node=1000, dry_run=False, on
     if model_path is None or not model_path.exists():
         print(f"[ERROR] No n={train_n}-trained model found for {problem}")
         return
+    ensure_train_artifacts(model_path, base_cfg)
 
     print(f"[INFO] Using n={train_n}-trained model: {model_path}")
 
@@ -1198,6 +1389,7 @@ def run_cvrp_behavior_analysis(n_node=1000, dry_run=False, only_test=False):
         cfg = DEFAULT_CONFIG.copy()
         cfg.update(CVRP_CONFIG)
         cfg["n_node"] = n_node
+        ensure_train_artifacts(model_path, cfg)
 
         metrics = test_model(model_path, cfg, dry_run)
         diag = collect_guidance_diagnostics(model_path, problem, n_node, cfg, val_size=min(int(cfg.get("val_size", 16)), 4))
@@ -1265,6 +1457,7 @@ def run_guidance_transition_analysis(problem='tsp', n_node=1000, dry_run=False, 
     else:
         cfg.update(TSP_CONFIG)
     cfg["n_node"] = n_node
+    ensure_train_artifacts(model_path, cfg)
 
     diag = collect_guidance_diagnostics(model_path, problem, n_node, cfg, val_size=min(int(cfg.get("val_size", 16)), 4))
     profiles = diag["profiles"]
@@ -1352,6 +1545,7 @@ def run_scope_applicability_analysis(n_node=1000, dry_run=False, only_test=False
         if model_path is None or not model_path.exists():
             print(f"[SKIP] Model not found for {problem} N={n_node}")
             continue
+        ensure_train_artifacts(model_path, base_cfg)
 
         for domain_name, rl_data in [("synthetic", False), ("rl_data", True)]:
             summary_path = RESULTS_DIR / "tmp" / f"scope_{problem}_{domain_name}_n{n_node}.json"

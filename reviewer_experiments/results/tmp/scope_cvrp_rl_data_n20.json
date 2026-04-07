@@ -18,7 +18,7 @@
     },
     "model_no_anneal": {
       "avg_ant_after_ls": 5.00372942686081,
-      "avg_ant_before_ls": 10.678064599037171,
+      "avg_ant_before_ls": 0.061530655622482305,
       "avg_incumbent_after_aco": 4.453478729724884,
       "final_ant_after_ls": 4.8111443519592285,
       "final_ant_before_ls": 3.5032461608120427e-45,
@@ -26,12 +26,12 @@
       "gap_pct": null,
       "mean_cost": 4.451028823852539,
       "mean_neural_time_s": 0.0,
-      "mean_time_s": 0.2326357364654541,
+      "mean_time_s": 0.22064566612243652,
       "std_cost": 0.24280118942260742,
       "std_neural_time_s": 0.0,
-      "std_time_s": 0.16716408729553223,
+      "std_time_s": 0.15385150909423828,
       "total_neural_time_s": 0.0,
-      "total_time_s": 0.4652714729309082
+      "total_time_s": 0.44129133224487305
     }
   },
   "n_node": 20,

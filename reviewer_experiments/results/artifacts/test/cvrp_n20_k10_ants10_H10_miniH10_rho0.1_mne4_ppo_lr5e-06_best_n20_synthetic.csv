@@ -1,0 +1,2 @@
+status,returncode,cost,gap,time,model_path,summary_json,log_file
+ok,0,,,,reviewer_experiments/models/cvrp/n20/cvrp_n20_k10_ants10_H10_miniH10_rho0.1_mne4_ppo_lr5e-06_best.pt,reviewer_experiments/results/tmp/scope_cvrp_synthetic_n20.json,reviewer_experiments/logs/test_cvrp_n20_k10_ants10_H10_miniH10_rho0.1_mne4_ppo_lr5e-06_best.log

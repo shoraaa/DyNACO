@@ -26,12 +26,12 @@
       "gap_pct": null,
       "mean_cost": 3.7056968212127686,
       "mean_neural_time_s": 0.0,
-      "mean_time_s": 0.20678377151489258,
+      "mean_time_s": 0.2868279218673706,
       "std_cost": 0.056298017501831055,
       "std_neural_time_s": 0.0,
-      "std_time_s": 0.1533510684967041,
+      "std_time_s": 0.17100274562835693,
       "total_neural_time_s": 0.0,
-      "total_time_s": 0.41356754302978516
+      "total_time_s": 0.5736558437347412
     }
   },
   "n_node": 20,
