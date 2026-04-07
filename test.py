@@ -166,7 +166,8 @@ def main():
     parser.add_argument("--save_generated", type=str, default=None, help="Path to save generated test dataset")
     parser.add_argument("--val_size", type=int, default=None, help="Limit validation set size")
     parser.add_argument("--log", action="store_true", help="Enable logging to file (auto-named)")
-    parser.add_argument("--no_baseline", action="store_true", help="Skip pure MFACO baseline calculation")
+    parser.add_argument("--no_baseline", "--no-baseline", dest="no_baseline", action="store_true",
+                        help="Skip pure MFACO baseline calculation")
     parser.add_argument("--rl_data", action="store_true", help="Load TSPLIB/CVRPLIB data instead of standard test set")
     
     # Selective method execution
