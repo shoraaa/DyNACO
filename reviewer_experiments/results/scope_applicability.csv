@@ -1,0 +1,5 @@
+problem,instance,distance_metric,cost,gap,time,timestamp
+tsp,synthetic_n20,synthetic_euclidean,3.7056968212127686,,0.0,2026-04-08T06:05:19.220701
+tsp,rl_data_n20,library_realworld,3.7056968212127686,,0.0,2026-04-08T06:05:27.652372
+cvrp,synthetic_n20,synthetic_euclidean,4.451028823852539,,0.020524263381958008,2026-04-08T06:06:21.652320
+cvrp,rl_data_n20,library_realworld,4.451028823852539,,0.0,2026-04-08T06:06:29.945414

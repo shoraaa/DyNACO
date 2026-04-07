@@ -68,5 +68,17 @@
         "gap": null,
         "time": 0.2038,
         "cost": 3.7057
+    },
+    "scope_n20": {
+        "n_node": 20,
+        "supported_domains": [
+            "synthetic",
+            "rl_data"
+        ],
+        "unsupported_problems": [
+            "op",
+            "kp",
+            "bpp"
+        ]
     }
 }

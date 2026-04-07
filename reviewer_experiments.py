@@ -199,7 +199,11 @@ def _load_model_runtime(model_path: Path, problem: str) -> Tuple[Any, Any, Dict[
     if "emb_net.e_lin0.weight" in state_dict:
         edge_feats = state_dict["emb_net.e_lin0.weight"].shape[1]
 
-    model = Net(feats=feats, edge_feats=edge_feats, logit_net=True).to(device)
+    model = Net(
+        feats=feats,
+        edge_feats=edge_feats,
+        logit_net=not bool(config.get("no_logit_net", False)),
+    ).to(device)
     model.load_state_dict(state_dict)
     model.eval()
 
