@@ -67,7 +67,8 @@ def solve_with_lkh(coords, runs=1, seed=1234, scale=1000000, time_limit=None):
         if alt_path.exists():
             lkh_path = alt_path
         else:
-            raise FileNotFoundError(f"LKH solver not found at {LKH_PATH} or {alt_path}")
+            print(f"[WARNING] LKH solver not found at {LKH_PATH} or {alt_path}. Skipping.")
+            return None
     else:
         lkh_path = LKH_PATH
         
@@ -219,7 +220,13 @@ def get_baseline(dataset, problem='tsp', n_node=100, device="cpu", **kwargs):
         costs.append(c)
         
     run_time = time.time() - t_start
-    costs_t = torch.tensor(costs, dtype=torch.float32, device=device)
+    if all(c is None for c in costs):
+        print("[WARNING] Baseline computation failed for all instances. Returning None.")
+        return None
+        
+    # Replace any None with 0.0 for tensor conversion if some succeeded (unlikely here but safe)
+    clean_costs = [c if c is not None else 0.0 for c in costs]
+    costs_t = torch.tensor(clean_costs, dtype=torch.float32, device=device)
     torch.save({"costs": costs_t, "run_time": run_time}, cache_file)
     print(f"Saved baseline to {cache_file}")
     

@@ -220,7 +220,10 @@ def setup_aco(
             'normalized_heuristic': not args.no_normalized_heuristic,
             'fixed_steps': args.L,
             'nls': args.nls,
-            'T_nls': args.T_nls
+            'T_nls': args.T_nls,
+            'ls_scope': args.ls_scope,
+            'ls_budget': args.ls_budget,
+            'ls_max_opt': args.ls_max_opt,
         }
         pyg_args = (coords, args.device, args.ablation_pheromone_features, args.ablation_incumbent_features)
         
@@ -260,7 +263,10 @@ def setup_aco(
             'normalized_heuristic': not args.no_normalized_heuristic,
             'fixed_steps': args.L,
             'nls': args.nls,
-            'T_nls': args.T_nls
+            'T_nls': args.T_nls,
+            'ls_scope': args.ls_scope,
+            'ls_budget': args.ls_budget,
+            'ls_max_opt': args.ls_max_opt,
         }
         pyg_args = (coords, demand, args.device, args.ablation_pheromone_features, args.ablation_incumbent_features)
         
@@ -970,6 +976,8 @@ def infer_instance(
 
     prior_prev_outer = None
     warmup_steps = compute_warmup_steps(args, use_train=False)
+    best_seen_before_ls = float("inf")
+    avg_cost_before_ls = None
 
     for outer in range(args.H):
         pyg_data = build_fn(aco, *pyg_args, dynamic=dynamic)
@@ -1014,9 +1022,13 @@ def infer_instance(
                 )
                 current_prior = guidance * factor
             
-            costs, flats, _, _, _, _, _, new_edges, survival = aco.sample(
+            costs, flats, _, _, _, costs_raw, _, new_edges, survival = aco.sample(
                 prior=current_prior, require_prob=False
             )
+            if costs_raw is not None:
+                costs_before_ls = np.asarray(costs_raw, dtype=np.float32)
+            else:
+                costs_before_ls = np.asarray(costs, dtype=np.float32)
             
             if collect_metrics:
                 if new_edges is not None:
@@ -1027,10 +1039,14 @@ def infer_instance(
             best_idx = np.argmin(costs)
             best_val = costs[best_idx]
             best_seen = min(best_seen, best_val)
+            best_seen_before_ls = min(best_seen_before_ls, float(costs_before_ls.min()))
             
             aco.update_pheromone(flats[best_idx], best_val)
     
     avg_cost = float(np.mean(costs))
+    avg_cost_before_ls = float(np.mean(costs_before_ls))
+    metrics_log['average_before_ls'] = [avg_cost_before_ls]
+    metrics_log['best_before_ls'] = [float(best_seen_before_ls)]
     
     # Get timings
     timings = {}
@@ -1219,6 +1235,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_local_search", action="store_true")
     parser.add_argument("--no_smooth_mmas", action="store_true")
     parser.add_argument("--no_extend_ls", action="store_true")
+    parser.add_argument("--ls_scope", choices=["localized", "global"], default="localized")
+    parser.add_argument("--ls_budget", choices=["truncated", "full"], default="truncated")
+    parser.add_argument("--ls_max_opt", type=int, default=0,
+                        help="Maximum accepted LS improving moves per call; 0 uses floor(N/4)")
     parser.add_argument("--no_normalized_heuristic", action="store_true")
     
     # Ablation studies
@@ -1261,6 +1281,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_wandb", action="store_true")
     parser.add_argument("--wandb_project", type=str, default="dynaco")
     parser.add_argument("--wandb_entity", type=str, default=None)
+    parser.add_argument("--wandb_group", type=str, default=None)
     parser.add_argument("--save_dir", type=str, default="pretrained")
     parser.add_argument("--no_dynamic_feats", action="store_true")
     
@@ -1344,6 +1365,12 @@ def build_model_name(args: argparse.Namespace) -> str:
         name += "_nols"
     if args.no_extend_ls:
         name += "_noextls"
+    if args.ls_scope != "localized":
+        name += f"_ls{args.ls_scope}"
+    if args.ls_budget != "truncated":
+        name += f"_{args.ls_budget}ls"
+    if args.ls_max_opt > 0:
+        name += f"_lsmax{args.ls_max_opt}"
     if args.no_normalized_heuristic:
         name += "_nonorm"
     if args.ablation_pheromone_features:
@@ -1605,13 +1632,17 @@ def main():
     run_id = wandb.util.generate_id()
     if not args.no_wandb:
         run_name = args.run_name if args.run_name else model_name
-        wandb_project = f"dynaco{args.problem}"
+        wandb_project = args.wandb_project
+        wandb_group = args.wandb_group
+        if wandb_group is None:
+            wandb_group = f"{args.problem}_n{args.n_node}_ls{args.ls_scope}_{args.ls_budget}"
         wandb.init(
             project=wandb_project,
             entity=args.wandb_entity,
             name=run_name,
             id=run_id,
-            config=args
+            group=wandb_group,
+            config=vars(args)
         )
 
     # Initialize model
@@ -1634,7 +1665,18 @@ def main():
         logit_net=not args.no_logit_net,
         grad_checkpointing=getattr(args, 'grad_checkpointing', False)
     ).to(args.device)
-    
+
+    # Count model parameters
+    total_params = sum(p.numel() for p in net_model.parameters())
+    trainable_params = sum(p.numel() for p in net_model.parameters() if p.requires_grad)
+    print(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
+
+    # Log memory usage if CUDA is available
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        initial_memory = torch.cuda.memory_allocated(args.device) / 1024**3  # GB
+        print(f"Initial GPU memory: {initial_memory:.2f} GB")
+
     optimizer = torch.optim.AdamW(net_model.parameters(), lr=args.lr)
 
     # Resume from checkpoint if requested
@@ -1728,7 +1770,8 @@ def main():
     best_val_cost = float('inf')
     best_model_state = None
     total_train_time = 0.0
-    
+    peak_memory_gb = 0.0
+
     # Pre-training validation
     if val_dataset is not None:
         # Epoch -1: Pure MFACO check (no model)
@@ -1744,21 +1787,33 @@ def main():
         # )
 
     for epoch in range(start_epoch, args.epochs):
+        # Track peak memory before epoch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            epoch_start_memory = torch.cuda.memory_allocated(args.device) / 1024**3  # GB
+
         # Train one epoch
-        (global_step, avg_train, t_neural, t_aco, 
+        (global_step, avg_train, t_neural, t_aco,
          epoch_train_time) = train_epoch(
             net_model, optimizer, global_step, epoch, args
         )
         total_train_time += epoch_train_time
-        
+
+        # Track peak memory after epoch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            epoch_end_memory = torch.cuda.memory_allocated(args.device) / 1024**3  # GB
+            peak_memory_gb = max(peak_memory_gb, epoch_end_memory)
+            logger.info(f"Epoch {epoch} GPU memory: {epoch_end_memory:.2f} GB (peak: {peak_memory_gb:.2f} GB)")
+
         # Validate
         if val_dataset is not None:
             avg_last, avg_best, avg_gap, val_metrics = validation(
                 net_model, val_dataset, args, baseline_values
             )
-            
+
             logger.log_epoch_summary(epoch, avg_train, avg_best, avg_gap)
-            
+
             # Track and save best model
             if avg_best < best_val_cost:
                 best_val_cost = avg_best
@@ -1768,12 +1823,15 @@ def main():
                     "epoch": epoch,
                     "val_cost": avg_best,
                     "val_gap": avg_gap,
-                    "config": vars(args)
+                    "config": vars(args),
+                    "total_params": total_params,
+                    "trainable_params": trainable_params,
+                    "peak_memory_gb": peak_memory_gb,
                 }
                 best_path = save_dir / f"{model_name}_best.pt"
                 torch.save(best_model_state, best_path)
                 logger.log_model_saved(best_path, epoch, avg_best, avg_gap)
-            
+
             # Log validation metrics
             logger.log_validation(
                 avg_last, avg_best, avg_gap, epoch, val_metrics,
@@ -1792,12 +1850,17 @@ def main():
                 net_model, optimizer, epoch, args,
                 save_dir / f"{model_name}_epoch{epoch}.pt"
             )
-    
+
     # Save final model
     logger.info(f"Total Train Time: {total_train_time:.2f}s")
-    
+    logger.info(f"Peak GPU Memory: {peak_memory_gb:.2f} GB")
+    logger.info(f"Model Parameters: {total_params:,} total, {trainable_params:,} trainable")
+
     if not args.no_wandb:
         wandb.log({"time/total_train_time": total_train_time})
+        wandb.log({"memory/peak_gb": peak_memory_gb})
+        wandb.log({"model/total_params": total_params})
+        wandb.log({"model/trainable_params": trainable_params})
 
     # No separate "final" checkpoint; "last" is updated each epoch.
 

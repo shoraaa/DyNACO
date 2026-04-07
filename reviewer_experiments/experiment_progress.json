@@ -1,0 +1,72 @@
+{
+    "srr_training_tsp_n20_srr_local": {
+        "ls_type": "srr_local",
+        "final_cost": 4.4106,
+        "epochs": 5
+    },
+    "srr_training_tsp_n20_global_ls": {
+        "ls_type": "global_ls",
+        "final_cost": 3.8072,
+        "epochs": 5
+    },
+    "srr_training_tsp_n20_truncated_ls": {
+        "ls_type": "truncated_ls",
+        "final_cost": 4.0031,
+        "epochs": 5
+    },
+    "srr_inference_tsp_n20_srr_local_t0.4": {
+        "gap": null,
+        "time": null,
+        "cost": null
+    },
+    "srr_inference_tsp_n20_global_ls_t0.4": {
+        "gap": null,
+        "time": null,
+        "cost": null
+    },
+    "srr_inference_tsp_n20_truncated_ls_t0.4": {
+        "gap": null,
+        "time": null,
+        "cost": null
+    },
+    "pheromone_tsp_n1000_smoothTrue": {
+        "gap": 2.5507,
+        "time": 0.2471,
+        "cost": 23.7744
+    },
+    "pheromone_tsp_n1000_smoothFalse": {
+        "gap": 2.6013,
+        "time": 0.2649,
+        "cost": 23.7861
+    },
+    "pheromone_tsp_n5000_smoothTrue": {
+        "gap": 8.1872,
+        "time": 0.3401,
+        "cost": 55.1629
+    },
+    "pheromone_tsp_n20_smoothTrue": {
+        "gap": null,
+        "time": 0.2223,
+        "cost": 3.7057
+    },
+    "pheromone_tsp_n20_smoothFalse": {
+        "gap": null,
+        "time": 0.1969,
+        "cost": 3.7057
+    },
+    "hyperparam_tsp_n20_M4": {
+        "gap": null,
+        "time": 0.2443,
+        "cost": 3.7057
+    },
+    "hyperparam_tsp_n20_M8": {
+        "gap": null,
+        "time": 0.2073,
+        "cost": 3.7057
+    },
+    "hyperparam_tsp_n20_M12": {
+        "gap": null,
+        "time": 0.2038,
+        "cost": 3.7057
+    }
+}

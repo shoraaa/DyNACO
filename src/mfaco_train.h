@@ -30,6 +30,16 @@ static constexpr int64_t DEMAND_SCALE = 100000;
 // Distance types supported by this MFACO training backend.
 enum class DistanceType : uint8_t { EXPLICT_EUC_2D };
 
+enum class LSScope : int32_t {
+  LOCALIZED = 0,
+  GLOBAL = 1,
+};
+
+enum class LSBudget : int32_t {
+  TRUNCATED = 0,
+  FULL = 1,
+};
+
 // ============================================================================
 // Random number generator (xoshiro128+)
 // ============================================================================
@@ -218,6 +228,9 @@ public:
                           // prior) only
   bool nls;               // if true, use Neural Local Search (guided by prior)
   int32_t T_nls;          // number of NLS iterations (default 10)
+  LSScope ls_scope;
+  LSBudget ls_budget;
+  int32_t ls_max_opt;
 
   // Distance type (currently fixed to explicit Euclidean 2D without rounding).
   DistanceType distance_type = DistanceType::EXPLICT_EUC_2D;
@@ -257,7 +270,9 @@ public:
             float decay = 0.9f, float alpha = 1.0f, float p_best = 0.05f,
             bool use_local_search = true, bool disable_heuristic = false,
             bool extend_ls = false, bool smooth_mmas = false,
-            int32_t fixed_steps = 0, bool nls = false, int32_t T_nls = 10);
+            int32_t fixed_steps = 0, bool nls = false, int32_t T_nls = 10,
+            int32_t ls_scope = 0, int32_t ls_budget = 0,
+            int32_t ls_max_opt = 0);
 
   // ========================================================================
   // API Methods
@@ -392,6 +407,10 @@ private:
                           std::vector<int32_t> &positions);
 
   void compute_probmat(const float *prior, std::vector<float> &probmat);
+  float apply_local_search(std::vector<int32_t> &route,
+                           std::vector<int32_t> &positions,
+                           const std::vector<int32_t> &checklist,
+                           const float *prior);
 };
 
 // ============================================================================
@@ -495,6 +514,9 @@ public:
   bool extend_ls;
   bool smooth_mmas;
   bool disable_heuristic;
+  LSScope ls_scope;
+  LSBudget ls_budget;
+  int32_t ls_max_opt;
   bool nls;
   int32_t T_nls; // number of NLS iterations (default 10)
 
@@ -548,7 +570,8 @@ public:
              float alpha_, float p_best_, bool use_local_search_,
              bool disable_heuristic_, bool extend_ls_ = false,
              bool smooth_mmas_ = false, int32_t fixed_steps_ = 0,
-             bool nls_ = false, int32_t T_nls_ = 10);
+             bool nls_ = false, int32_t T_nls_ = 10, int32_t ls_scope_ = 0,
+             int32_t ls_budget_ = 0, int32_t ls_max_opt_ = 0);
 
   void seed_rng(uint64_t seed);
 
@@ -714,6 +737,9 @@ private:
 
   // distance
   float dist(int32_t u, int32_t v) const;
+  float apply_local_search(std::vector<int32_t> &route,
+                           const std::vector<int32_t> &checklist,
+                           const std::vector<uint8_t> &in_checklist);
 };
 
 // ============================================================================

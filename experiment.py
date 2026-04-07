@@ -163,7 +163,7 @@ def train_model(config: Dict[str, Any], dry_run: bool = False, force: bool = Fal
         print(f"[SKIP] Model exists: {model_path}")
         return model_path
 
-    cmd = ["python3", "train.py"]
+    cmd = [sys.executable, "train.py"]
     cmd.extend(["--wandb_project", wandb_project])
     
     # Flags mapping
@@ -193,7 +193,7 @@ def train_model(config: Dict[str, Any], dry_run: bool = False, force: bool = Fal
 
 def test_model(model_path: Path, config: Dict[str, Any], dry_run: bool = False):
     """Runs evaluation."""
-    cmd = ["python3", "test.py"]
+    cmd = [sys.executable, "test.py"]
     cmd.extend(["--problem", config["problem"]])
     cmd.extend(["--n_node", str(config["n_node"])])
     cmd.extend(["--checkpoint", str(model_path)])

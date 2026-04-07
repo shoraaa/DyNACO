@@ -5,17 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "d2l>=0.17.0",
-    "ipython>=9.8.0",
-    "ipywidgets>=8.1.8",
-    "jupyter>=1.1.1",
-    "numba>=0.63.1",
-    "papermill>=2.6.0",
-    "pybind11>=3.0.1",
-    "scipy>=1.17.0",
-    "seaborn>=0.13.2",
+    "markupsafe>=3.0.3",
+    "matplotlib>=3.10.8",
+    "pybind11>=3.0.3",
     "torch-geometric>=2.7.0",
-    "tqdm>=4.67.1",
-    "wandb>=0.23.1",
-    "torch"
+    "wandb>=0.25.1",
 ]

@@ -28,13 +28,17 @@ MFACO_TSP::MFACO_TSP(const float *coords_ptr, int32_t n_, int32_t n_ants_,
                      float p_best_, bool use_local_search_,
                      bool disable_heuristic_, bool extend_ls_,
                      bool smooth_mmas_, int32_t fixed_steps_, bool nls_,
-                     int32_t T_nls_)
+                     int32_t T_nls_, int32_t ls_scope_,
+                     int32_t ls_budget_, int32_t ls_max_opt_)
     : n(n_), n_ants(n_ants_), k(std::min(cand_list_size, n_ - 1)),
       bl(std::min(backup_list_size, std::max(0, n_ - 1 - k))),
       min_new_edges(min_new_edges_), rho(decay), alpha(alpha_), p_best(p_best_),
       smooth_mmas(smooth_mmas_), use_local_search(use_local_search_),
       extend_ls(extend_ls_), disable_heuristic(disable_heuristic_),
-      fixed_steps(fixed_steps_), nls(nls_), T_nls(T_nls_) {
+      fixed_steps(fixed_steps_), nls(nls_), T_nls(T_nls_),
+      ls_scope(static_cast<LSScope>(ls_scope_)),
+      ls_budget(static_cast<LSBudget>(ls_budget_)),
+      ls_max_opt(ls_max_opt_ > 0 ? ls_max_opt_ : std::max<int32_t>(1, n_ / 4)) {
   if (coords_ptr == nullptr) {
     throw std::runtime_error("coords_ptr must not be null");
   }
@@ -631,26 +635,7 @@ float MFACO_TSP::sample_ant_fast(const float *probmat, int32_t start_node,
 
   // Apply local search if enabled
   if (use_local_search && !checklist.empty()) {
-    if (nls && prior) {
-      two_opt_nn(route, positions, checklist);
-
-      float best_cost = get_route_cost(route);
-      std::vector<int32_t> best_route = route;
-
-      for (int t = 0; t < T_nls; ++t) {
-        two_opt_nn_prior(route, positions, checklist, prior);
-        two_opt_nn(route, positions, checklist);
-
-        float current_cost = get_route_cost(route);
-        if (current_cost < best_cost) {
-          best_cost = current_cost;
-          best_route = route;
-        }
-      }
-      route = best_route;
-    } else {
-      two_opt_nn(route, positions, checklist);
-    }
+    apply_local_search(route, positions, checklist, prior);
   }
 
   // Copy result
@@ -756,22 +741,9 @@ float MFACO_TSP::sample_ant_traced(const float *probmat, int32_t start_node,
 
   // Apply local search if enabled
   if (use_local_search && !checklist.empty()) {
-    if (nls && prior) {
-      two_opt_nn(route, positions, checklist);
-      for (int t = 0; t < T_nls; ++t) {
-        two_opt_nn_prior(route, positions, checklist, prior);
-        two_opt_nn(route, positions, checklist);
-
-        float current_cost = get_route_cost(route);
-        if (current_cost < best_cost) {
-          best_cost = current_cost;
-          best_route = route;
-        }
-      }
-      route = best_route;
-    } else {
-      two_opt_nn(route, positions, checklist);
-    }
+    apply_local_search(route, positions, checklist, prior);
+    best_cost = get_route_cost(route);
+    best_route = route;
   }
 
   // Compute survival
@@ -964,6 +936,9 @@ float MFACO_TSP::two_opt_nn(std::vector<int32_t> &route,
   size_t checklist_pos = 0;
 
   while (checklist_pos < checklist.size()) {
+    if (ls_budget == LSBudget::TRUNCATED && changes_count >= ls_max_opt) {
+      break;
+    }
     int32_t a = checklist[checklist_pos++];
     if (a < 0 || a >= n)
       continue;
@@ -1061,6 +1036,9 @@ float MFACO_TSP::two_opt_nn_prior(std::vector<int32_t> &route,
   };
 
   while (checklist_pos < checklist.size()) {
+    if (ls_budget == LSBudget::TRUNCATED && changes_count >= ls_max_opt) {
+      break;
+    }
     int32_t a = checklist[checklist_pos++];
     if (a < 0 || a >= n)
       continue;
@@ -1157,6 +1135,79 @@ float MFACO_TSP::two_opt_nn_prior(std::vector<int32_t> &route,
   return total_gain;
 }
 
+float MFACO_TSP::apply_local_search(std::vector<int32_t> &route,
+                                    std::vector<int32_t> &positions,
+                                    const std::vector<int32_t> &checklist,
+                                    const float *prior) {
+  std::vector<int32_t> ls_nodes;
+  if (ls_scope == LSScope::GLOBAL) {
+    ls_nodes.resize(static_cast<size_t>(n));
+    std::iota(ls_nodes.begin(), ls_nodes.end(), 0);
+  } else {
+    ls_nodes = checklist;
+  }
+
+  const int32_t max_passes =
+      (ls_budget == LSBudget::FULL) ? std::max<int32_t>(1, n) : 1;
+
+  if (nls && prior) {
+    float best_cost_local = get_route_cost(route);
+    std::vector<int32_t> best_route_local = route;
+
+    std::vector<int32_t> base_nodes = ls_nodes;
+    for (int32_t pass = 0; pass < max_passes; ++pass) {
+      if (ls_scope == LSScope::GLOBAL && pass > 0) {
+        ls_nodes = base_nodes;
+      }
+      float base_delta = two_opt_nn(route, positions, ls_nodes);
+
+      float current_cost = get_route_cost(route);
+      if (current_cost < best_cost_local) {
+        best_cost_local = current_cost;
+        best_route_local = route;
+      }
+
+      for (int t = 0; t < T_nls; ++t) {
+        std::vector<int32_t> prior_nodes = ls_nodes;
+        if (ls_scope == LSScope::GLOBAL) {
+          prior_nodes = base_nodes;
+        }
+        two_opt_nn_prior(route, positions, prior_nodes, prior);
+
+        std::vector<int32_t> refine_nodes = prior_nodes;
+        two_opt_nn(route, positions, refine_nodes);
+
+        current_cost = get_route_cost(route);
+        if (current_cost < best_cost_local) {
+          best_cost_local = current_cost;
+          best_route_local = route;
+        }
+      }
+
+      if (ls_budget == LSBudget::TRUNCATED || base_delta >= -1e-6f) {
+        break;
+      }
+    }
+
+    route = best_route_local;
+    return best_cost_local;
+  }
+
+  float total_delta = 0.0f;
+  for (int32_t pass = 0; pass < max_passes; ++pass) {
+    if (ls_scope == LSScope::GLOBAL && pass > 0) {
+      ls_nodes.resize(static_cast<size_t>(n));
+      std::iota(ls_nodes.begin(), ls_nodes.end(), 0);
+    }
+    float pass_delta = two_opt_nn(route, positions, ls_nodes);
+    total_delta += pass_delta;
+    if (ls_budget == LSBudget::TRUNCATED || pass_delta >= -1e-6f) {
+      break;
+    }
+  }
+  return total_delta;
+}
+
 float MFACO_TSP::get_route_cost(const std::vector<int32_t> &route) const {
   float cost = 0.0f;
   for (int32_t i = 0; i < n - 1; ++i) {
@@ -1248,7 +1299,8 @@ MFACO_CVRP::MFACO_CVRP(const float *coords_ptr, const float *demand_ptr,
                        float p_best_, bool use_local_search_,
                        bool disable_heuristic_, bool extend_ls_,
                        bool smooth_mmas_, int32_t fixed_steps_, bool nls_,
-                       int32_t T_nls_)
+                       int32_t T_nls_, int32_t ls_scope_,
+                       int32_t ls_budget_, int32_t ls_max_opt_)
     : n(n_), m(n_ - 1), n_ants(n_ants_), k(std::min(cand_list_size, n_ - 1)),
       bl(std::min(backup_list_size, std::max(0, n_ - 1 - k))),
       min_new_edges(min_new_edges_), fixed_steps(fixed_steps_), rho(decay),
@@ -1256,7 +1308,11 @@ MFACO_CVRP::MFACO_CVRP(const float *coords_ptr, const float *demand_ptr,
       disable_heuristic(disable_heuristic_), extend_ls(extend_ls_),
       smooth_mmas(smooth_mmas_), capacity(capacity_),
       capacity_int(static_cast<int64_t>(std::round(capacity_ * DEMAND_SCALE))),
-      nls(nls_), T_nls(T_nls_), use_relocate(true), use_swap(true),
+      nls(nls_), T_nls(T_nls_),
+      ls_scope(static_cast<LSScope>(ls_scope_)),
+      ls_budget(static_cast<LSBudget>(ls_budget_)),
+      ls_max_opt(ls_max_opt_ > 0 ? ls_max_opt_ : std::max<int32_t>(1, m / 4)),
+      use_relocate(true), use_swap(true),
       use_2opt_star(true) {
   if (!coords_ptr || !demand_ptr) {
     throw std::runtime_error("coords_ptr and demand_ptr must not be null");
@@ -2032,6 +2088,7 @@ void MFACO_CVRP::routes_to_perm(const std::vector<std::vector<int32_t>> &routes,
 float MFACO_CVRP::intra_route_ls(std::vector<int32_t> &route,
                                  std::vector<int32_t> &checklist) {
   float total_improvement = 0.0f;
+  int32_t applied_moves = 0;
   // Build route structure: identify which route each node belongs to
   std::vector<int32_t> node_route(n, -1);
   std::vector<std::vector<int32_t>> routes;
@@ -2075,6 +2132,9 @@ float MFACO_CVRP::intra_route_ls(std::vector<int32_t> &route,
   // Process checklist - focused 2-opt
   size_t checklist_pos = 0;
   while (checklist_pos < checklist.size()) {
+    if (ls_budget == LSBudget::TRUNCATED && applied_moves >= ls_max_opt) {
+      break;
+    }
     int32_t a = checklist[checklist_pos++];
     if (a <= 0 || a >= n)
       continue;
@@ -2182,6 +2242,7 @@ float MFACO_CVRP::intra_route_ls(std::vector<int32_t> &route,
     if (max_diff > 1e-6f && best_i >= 0 && best_j > best_i) {
       std::reverse(seq.begin() + best_i, seq.begin() + best_j);
       total_improvement += max_diff;
+      ++applied_moves;
 
       // Update positions
       for (int32_t i = best_i; i < best_j; ++i) {
@@ -2322,8 +2383,12 @@ float MFACO_CVRP::inter_route_ls_optimized(std::vector<int32_t> &perm,
   const float EPS = 1e-5f; // Tighten EPS
 
   // 2. Main Loop
+  int32_t applied_moves = 0;
   int32_t head = 0;
   while (head < (int32_t)checklist.size()) {
+    if (ls_budget == LSBudget::TRUNCATED && applied_moves >= ls_max_opt) {
+      break;
+    }
     int32_t u = checklist[head++];
     in_checklist[u] = 0;
 
@@ -2378,6 +2443,7 @@ float MFACO_CVRP::inter_route_ls_optimized(std::vector<int32_t> &perm,
             touch(next_u);
             touch(old_next_v);
             improved = true;
+            ++applied_moves;
             total_improvement -= delta; // delta is negative
             break;
           }
@@ -2412,6 +2478,7 @@ float MFACO_CVRP::inter_route_ls_optimized(std::vector<int32_t> &perm,
             touch(prev_u);
             touch(next_u);
             improved = true;
+            ++applied_moves;
             total_improvement -= delta2;
             break;
           }
@@ -2450,6 +2517,7 @@ float MFACO_CVRP::inter_route_ls_optimized(std::vector<int32_t> &perm,
             touch(pv);
             touch(nv);
             improved = true;
+            ++applied_moves;
             total_improvement -= delta;
             break;
           }
@@ -2482,6 +2550,7 @@ float MFACO_CVRP::inter_route_ls_optimized(std::vector<int32_t> &perm,
             touch(nu);
             touch(nv);
             improved = true;
+            ++applied_moves;
             total_improvement -= delta;
             break;
           }
@@ -2509,6 +2578,51 @@ float MFACO_CVRP::inter_route_ls_optimized(std::vector<int32_t> &perm,
   }
   if (!perm.empty() && perm.back() != 0)
     perm.push_back(0); // End depot
+
+  return total_improvement;
+}
+
+float MFACO_CVRP::apply_local_search(
+    std::vector<int32_t> &route, const std::vector<int32_t> &checklist,
+    const std::vector<uint8_t> &in_checklist) {
+  std::vector<int32_t> ls_checklist;
+  std::vector<uint8_t> ls_in_checklist(static_cast<size_t>(n), 0);
+
+  auto reset_scope = [&]() {
+    if (ls_scope == LSScope::GLOBAL) {
+      ls_checklist.clear();
+      ls_checklist.reserve(static_cast<size_t>(m));
+      std::fill(ls_in_checklist.begin(), ls_in_checklist.end(), 0);
+      for (int32_t node = 1; node < n; ++node) {
+        ls_checklist.push_back(node);
+        ls_in_checklist[static_cast<size_t>(node)] = 1;
+      }
+    } else {
+      ls_checklist = checklist;
+      ls_in_checklist = in_checklist;
+    }
+  };
+
+  reset_scope();
+  const int32_t max_passes =
+      (ls_budget == LSBudget::FULL) ? std::max<int32_t>(1, m) : 1;
+
+  float total_improvement = 0.0f;
+  for (int32_t pass = 0; pass < max_passes; ++pass) {
+    if (pass > 0) {
+      reset_scope();
+    }
+    float pass_improvement = 0.0f;
+    pass_improvement += intra_route_ls(route, ls_checklist);
+    std::vector<int32_t> pos_ls(n, -1);
+    pass_improvement +=
+        inter_route_ls_optimized(route, pos_ls, ls_checklist, ls_in_checklist);
+    pass_improvement += intra_route_ls(route, ls_checklist);
+    total_improvement += pass_improvement;
+    if (ls_budget == LSBudget::TRUNCATED || pass_improvement <= 1e-6f) {
+      break;
+    }
+  }
 
   return total_improvement;
 }
@@ -3874,13 +3988,7 @@ float MFACO_CVRP::sample_ant_direct(const float *probmat, int32_t start_node,
 
   // 6. Apply Local Search
   if (use_local_search && !checklist.empty()) {
-    // Intra-Route LS (2-opt)
-    // intra_route_ls(route_out, checklist);
-    // Inter-Route LS
-    std::vector<int32_t> pos_ls(n, -1);
-    inter_route_ls_optimized(route_out, pos_ls, checklist, in_checklist);
-    // Intra-Route LS (2-opt)
-    intra_route_ls(route_out, checklist);
+    apply_local_search(route_out, checklist, in_checklist);
   }
 
   // Calculate final cost
@@ -4384,13 +4492,7 @@ float MFACO_CVRP::sample_ant_direct_traced(
 
   // 6. Apply Local Search
   if (use_local_search && !checklist.empty()) {
-    // Intra-Route LS (2-opt)
-    intra_route_ls(route_out, checklist);
-    // Inter-Route LS
-    std::vector<int32_t> pos_ls(n, -1);
-    inter_route_ls_optimized(route_out, pos_ls, checklist, in_checklist);
-    // Intra-Route LS (2-opt)
-    intra_route_ls(route_out, checklist);
+    apply_local_search(route_out, checklist, in_checklist);
   }
 
   // Calculate final cost

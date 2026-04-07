@@ -1,0 +1,4 @@
+problem,n_node,ls_type,time_limit,cost,gap,time,timestamp
+tsp,20,srr_local,0.4,,,,2026-04-08T05:48:40.814611
+tsp,20,global_ls,0.4,,,,2026-04-08T05:48:48.112101
+tsp,20,truncated_ls,0.4,,,,2026-04-08T05:48:55.636047

@@ -54,6 +54,20 @@ def _as_numpy_i32(x):
     x = np.asarray(x, dtype=np.int32)
     return np.ascontiguousarray(x)
 
+
+def _ls_scope_to_int(ls_scope: str) -> int:
+    mapping = {"localized": 0, "global": 1}
+    if ls_scope not in mapping:
+        raise ValueError(f"Unknown ls_scope={ls_scope!r}")
+    return mapping[ls_scope]
+
+
+def _ls_budget_to_int(ls_budget: str) -> int:
+    mapping = {"truncated": 0, "full": 1}
+    if ls_budget not in mapping:
+        raise ValueError(f"Unknown ls_budget={ls_budget!r}")
+    return mapping[ls_budget]
+
 class MFACO_TSP:
     """
     Unified MFACO TSP solver wrapping C++ backend.
@@ -79,6 +93,9 @@ class MFACO_TSP:
         fixed_steps: int = 0,
         nls: bool = False,
         T_nls: int = 10,
+        ls_scope: str = "localized",
+        ls_budget: str = "truncated",
+        ls_max_opt: int = 0,
         **kwargs
     ):
         self.device = device
@@ -87,6 +104,9 @@ class MFACO_TSP:
         self.smooth_mmas = bool(smooth_mmas)
         self.normalized_heuristic = bool(normalized_heuristic)
         self.fixed_steps = int(fixed_steps)
+        self.ls_scope = ls_scope
+        self.ls_budget = ls_budget
+        self.ls_max_opt = int(ls_max_opt)
 
         # Handle PyG Data object
         if not isinstance(coords, torch.Tensor) and hasattr(coords, "x"):
@@ -113,7 +133,10 @@ class MFACO_TSP:
             self.smooth_mmas,
             self.fixed_steps,
             nls,
-            int(T_nls)
+            int(T_nls),
+            _ls_scope_to_int(ls_scope),
+            _ls_budget_to_int(ls_budget),
+            self.ls_max_opt,
         )
         
         if self.normalized_heuristic and not self.disable_heuristic:
@@ -572,6 +595,9 @@ class MFACO_CVRP:
         fixed_steps: int = 0,
         nls: bool = False,
         T_nls: int = 10,
+        ls_scope: str = "localized",
+        ls_budget: str = "truncated",
+        ls_max_opt: int = 0,
         **kwargs
     ):
         coords_np = _as_numpy_f32(coords)
@@ -599,11 +625,17 @@ class MFACO_CVRP:
             int(fixed_steps),
             bool(nls),
             int(T_nls),
+            _ls_scope_to_int(ls_scope),
+            _ls_budget_to_int(ls_budget),
+            int(ls_max_opt),
         )
         self.device = device
         self._enable_torch_sync = enable_torch_sync
         self.alpha = alpha
         self.disable_heuristic = disable_heuristic
+        self.ls_scope = ls_scope
+        self.ls_budget = ls_budget
+        self.ls_max_opt = int(ls_max_opt)
         
         if normalized_heuristic and not disable_heuristic:
             h = np.asarray(self._cpp.heuristic_sparse_np)

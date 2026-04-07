@@ -9,7 +9,11 @@ import os
 import psutil 
 from pathlib import Path
 from tqdm import tqdm
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
 import json
 import math
 from datetime import datetime
@@ -121,6 +125,10 @@ def main():
     parser.add_argument("--no_local_search", action="store_true")
     parser.add_argument("--no_smooth_mmas", action="store_true")
     parser.add_argument("--no_extend_ls", action="store_true")
+    parser.add_argument("--ls_scope", choices=["localized", "global"], default="localized")
+    parser.add_argument("--ls_budget", choices=["truncated", "full"], default="truncated")
+    parser.add_argument("--ls_max_opt", type=int, default=0,
+                        help="Maximum accepted LS improving moves per call; 0 uses floor(N/4)")
     parser.add_argument("--rho", type=float, default=0.1)
     parser.add_argument("--min_new_edges", type=int, default=12)
     parser.add_argument("--no_normalized_heuristic", action="store_true")
@@ -145,6 +153,8 @@ def main():
     parser.add_argument("--visualize", action="store_true")
     parser.add_argument("--visualize_output", type=str, default="visualizations")
     parser.add_argument("--timed", action="store_true")
+    parser.add_argument("--runtime_limit", type=float, default=None,
+                        help="Wall-clock inference budget in seconds; stop when exceeded")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--L", type=int, default=0)
     parser.add_argument("--threads", type=int, default=None)
@@ -169,6 +179,8 @@ def main():
     # Per-iteration logging (H * mini_H rows per run)
     parser.add_argument("--iter_log", action="store_true", help="Log mean/best at every mini-iteration to CSV")
     parser.add_argument("--iter_print", action="store_true", help="Print mean/best at every mini-iteration (very verbose)")
+    parser.add_argument("--stage_metrics", action="store_true", help="Collect pre-LS and post-update stage metrics during evaluation")
+    parser.add_argument("--summary_json", type=str, default=None, help="Optional path to write structured evaluation summary JSON")
 
     args = parser.parse_args()
 
@@ -422,7 +434,7 @@ def main():
          if val_list:
              baseline_values = np.full(len(val_list), 71.778)
 
-    if args.baseline != 'none' and baseline_values is None:
+    if (not args.no_baseline) and args.baseline != 'none' and baseline_values is None:
         try:
             print("Computing baseline...")
             # Use TensorDataset wrapper for CVRP get_baseline compatibility
@@ -563,6 +575,17 @@ def main():
     results["model_neural_time_no_anneal"] = []
     results["mix_neural_time"] = []
     results["mix_neural_time_no_anneal"] = []
+    stage_metric_keys = [
+        "avg_ant_before_ls",
+        "avg_ant_after_ls",
+        "avg_incumbent_after_aco",
+        "final_ant_before_ls",
+        "final_ant_after_ls",
+        "final_incumbent_after_aco",
+    ]
+    for prefix in ["base", "model", "model_no_anneal", "mix", "mix_no_anneal"]:
+        for metric_key in stage_metric_keys:
+            results[f"{prefix}_{metric_key}"] = []
 
     iterable = val_list
     if args.problem == 'cvrp' and hasattr(val_list, 'tensors'):
@@ -609,6 +632,9 @@ def main():
                     "mini_t",
                     "mean",
                     "best",
+                    "mean_before_ls",
+                    "mean_after_ls",
+                    "incumbent_after_aco",
                 ],
             )
             iter_csv_writer.writeheader()
@@ -640,6 +666,11 @@ def main():
                 res_dict[f"{prefix}_time_I{itr}"].append(None)
                 if f"{prefix}_neural_time_I{itr}" in res_dict:
                     res_dict[f"{prefix}_neural_time_I{itr}"].append(None)
+
+    def _append_stage_metrics(prefix, stage_metrics):
+        stage_metrics = stage_metrics or {}
+        for metric_key in stage_metric_keys:
+            results[f"{prefix}_{metric_key}"].append(stage_metrics.get(metric_key))
 
     for i, item in enumerate(tqdm(iterable)):
         opt_cost = None
@@ -702,6 +733,7 @@ def main():
                 base_best = float(cached_base_costs[i])
                 results["base_cost"].append(base_best)
                 results["base_time"].append(0.0)
+                _append_stage_metrics("base", None)
                 # Fill intermediate history with None for cached results
                 _record_history("base", [], results)
             else:
@@ -721,6 +753,7 @@ def main():
                 base_iter_stats = base_extra.get("iter_stats")
                 results["base_cost"].append(base_best)
                 results["base_time"].append(tb1 - tb0)
+                _append_stage_metrics("base", base_extra.get("stage_metrics"))
                 
                 _record_history("base", base_extra.get("history", []), results)
 
@@ -794,6 +827,7 @@ def main():
                   results["model_cost"].append(model_best)
                   results["model_time"].append(tm1 - tm0)
                   results["model_neural_time"].append(mod_timings.get("time_neural", 0.0))
+                  _append_stage_metrics("model", mod_extra.get("stage_metrics"))
 
                   if args.iter_log and iter_csv_writer is not None and model_iter_stats is not None:
                       for st in model_iter_stats:
@@ -838,6 +872,7 @@ def main():
                   results["model_cost_no_anneal"].append(model_best_na)
                   results["model_time_no_anneal"].append(tm1 - tm0)
                   results["model_neural_time_no_anneal"].append(mod_na_timings.get("time_neural", 0.0))
+                  _append_stage_metrics("model_no_anneal", mod_na_extra.get("stage_metrics"))
 
                   if args.iter_log and iter_csv_writer is not None and model_na_iter_stats is not None:
                       for st in model_na_iter_stats:
@@ -887,6 +922,7 @@ def main():
                       results["mix_cost"].append(mix_best)
                       results["mix_time"].append(tmi1 - tmi0)
                       results["mix_neural_time"].append(mix_timings.get("time_neural", 0.0))
+                      _append_stage_metrics("mix", mix_extra.get("stage_metrics"))
 
                       if args.iter_log and iter_csv_writer is not None and mix_iter_stats is not None:
                           for st in mix_iter_stats:
@@ -928,6 +964,7 @@ def main():
                       results["mix_cost_no_anneal"].append(mix_best_na)
                       results["mix_time_no_anneal"].append(tmi1 - tmi0)
                       results["mix_neural_time_no_anneal"].append(mix_na_timings.get("time_neural", 0.0))
+                      _append_stage_metrics("mix_no_anneal", mix_na_extra.get("stage_metrics"))
 
                       if args.iter_log and iter_csv_writer is not None and mix_na_iter_stats is not None:
                           for st in mix_na_iter_stats:
@@ -1089,6 +1126,23 @@ def main():
             return empty
         return f"{x:.{nd}f}"
 
+    def _stage_means(prefix):
+        summary = {}
+        for metric_key in stage_metric_keys:
+            summary[metric_key] = _mean_std(results.get(f"{prefix}_{metric_key}", []))[0]
+        return summary
+
+    def _print_stage_summary(label, prefix):
+        stage_summary = _stage_means(prefix)
+        if all(stage_summary[k] is None for k in ["avg_ant_before_ls", "avg_ant_after_ls", "avg_incumbent_after_aco"]):
+            return
+        print(
+            f"{label} Stage Means: "
+            f"BeforeLS={_fmt(stage_summary['avg_ant_before_ls'])}, "
+            f"AfterLS={_fmt(stage_summary['avg_ant_after_ls'])}, "
+            f"AfterACO={_fmt(stage_summary['avg_incumbent_after_aco'])}"
+        )
+
     def _print_table(rows, headers):
         # rows: list[list[str]]
         col_widths = [len(h) for h in headers]
@@ -1128,6 +1182,7 @@ def main():
         base_time_mean = np.mean(results["base_time"])
         base_time_total = np.sum(results["base_time"])
         print(f"Base Cost: {base_cost_mean:.4f}, Time: {base_time_mean:.4f}s, Total Time: {base_time_total:.4f}s")
+        _print_stage_summary("Base", "base")
         if results["base_gap"]:
             print(f"Base Gap: {np.mean(results['base_gap']) * 100:.4f}%")
         
@@ -1140,8 +1195,10 @@ def main():
         model_time_na_mean = np.mean(results["model_time_no_anneal"]) if results.get("model_time_no_anneal") and len(results["model_time_no_anneal"]) > 0 else float('nan')
         model_time_na_total = np.sum(results["model_time_no_anneal"]) if results.get("model_time_no_anneal") and len(results["model_time_no_anneal"]) > 0 else float('nan')
         print(f"Model Cost (anneal): {model_cost_mean:.4f}, Time: {model_time_mean:.4f}s, Total Time: {model_time_total:.4f}s")
+        _print_stage_summary("Model(anneal)", "model")
         if results.get("model_cost_no_anneal") and len(results["model_cost_no_anneal"]) > 0:
             print(f"Model Cost (no_anneal): {model_cost_na_mean:.4f}, Time: {model_time_na_mean:.4f}s, Total Time: {model_time_na_total:.4f}s")
+            _print_stage_summary("Model(no_anneal)", "model_no_anneal")
         if results.get("model_gap") and len(results["model_gap"]) > 0:
             print(f"Model Gap (anneal): {np.mean(results['model_gap']) * 100:.4f}%")
         if results.get("model_gap_no_anneal") and len(results["model_gap_no_anneal"]) > 0:
@@ -1166,8 +1223,10 @@ def main():
          mix_time_na_mean = np.mean(results["mix_time_no_anneal"]) if results.get("mix_time_no_anneal") and len(results["mix_time_no_anneal"]) > 0 else float('nan')
          mix_time_na_total = np.sum(results["mix_time_no_anneal"]) if results.get("mix_time_no_anneal") and len(results["mix_time_no_anneal"]) > 0 else float('nan')
          print(f"Mix Cost (anneal): {mix_cost_mean:.4f}, Time: {mix_time_mean:.4f}s, Total Time: {mix_time_total:.4f}s")
+         _print_stage_summary("Mix(anneal)", "mix")
          if results.get("mix_cost_no_anneal") and len(results["mix_cost_no_anneal"]) > 0:
              print(f"Mix Cost (no_anneal): {mix_cost_na_mean:.4f}, Time: {mix_time_na_mean:.4f}s, Total Time: {mix_time_na_total:.4f}s")
+             _print_stage_summary("Mix(no_anneal)", "mix_no_anneal")
          if results.get("mix_gap") and len(results["mix_gap"]) > 0:
              print(f"Mix Gap (anneal): {np.mean(results['mix_gap']) * 100:.4f}%")
          if results.get("mix_gap_no_anneal") and len(results["mix_gap_no_anneal"]) > 0:
@@ -1350,6 +1409,70 @@ def main():
                         writer.writerow(r)
             except Exception as e:
                 print(f"Warning: failed to write CSV summary: {e}")
+
+    def _sum_valid(values):
+        return float(np.sum([v for v in values if v is not None])) if values else None
+
+    def _build_method_summary(prefix, cost_key, time_key, gap_key=None, neural_time_key=None):
+        costs = results.get(cost_key, [])
+        mean_cost, std_cost = _mean_std(costs)
+        if mean_cost is None:
+            return None
+
+        times = results.get(time_key, [])
+        mean_time_s, std_time_s = _mean_std(times)
+        payload = {
+            "mean_cost": mean_cost,
+            "std_cost": std_cost,
+            "mean_time_s": mean_time_s,
+            "std_time_s": std_time_s,
+            "total_time_s": _sum_valid(times),
+            "gap_pct": None,
+        }
+
+        gaps = results.get(gap_key, []) if gap_key else []
+        if gaps:
+            gap_mean, gap_std = _mean_std([g * 100.0 for g in gaps])
+            payload["gap_pct"] = gap_mean
+            payload["gap_std_pct"] = gap_std
+
+        if neural_time_key:
+            neural_times = results.get(neural_time_key, [])
+            neural_mean, neural_std = _mean_std(neural_times)
+            payload["mean_neural_time_s"] = neural_mean
+            payload["std_neural_time_s"] = neural_std
+            payload["total_neural_time_s"] = _sum_valid(neural_times)
+
+        payload.update(_stage_means(prefix))
+        return payload
+
+    if args.summary_json:
+        summary_payload = {
+            "problem": args.problem,
+            "n_node": int(args.n_node),
+            "checkpoint": args.checkpoint,
+            "dataset": args.dataset,
+            "seed": int(args.seed),
+            "methods": {},
+        }
+        method_specs = [
+            ("base", "base", "base_cost", "base_time", "base_gap", None),
+            ("model_anneal", "model", "model_cost", "model_time", "model_gap", "model_neural_time"),
+            ("model_no_anneal", "model_no_anneal", "model_cost_no_anneal", "model_time_no_anneal", "model_gap_no_anneal", "model_neural_time_no_anneal"),
+            ("mix_anneal", "mix", "mix_cost", "mix_time", "mix_gap", "mix_neural_time"),
+            ("mix_no_anneal", "mix_no_anneal", "mix_cost_no_anneal", "mix_time_no_anneal", "mix_gap_no_anneal", "mix_neural_time_no_anneal"),
+        ]
+        for method_name, prefix, cost_key, time_key, gap_key, neural_time_key in method_specs:
+            payload = _build_method_summary(prefix, cost_key, time_key, gap_key, neural_time_key)
+            if payload is not None:
+                summary_payload["methods"][method_name] = payload
+        try:
+            summary_path = Path(args.summary_json)
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path.write_text(json.dumps(summary_payload, indent=2, sort_keys=True), encoding="utf-8")
+            print(f"Wrote summary JSON: {summary_path}")
+        except Exception as e:
+            print(f"Warning: failed to write summary JSON {args.summary_json}: {e}")
 
     # CSV instances logging (write once at end)
     if args.log and csv_path_instances is not None and per_instance_rows:

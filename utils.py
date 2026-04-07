@@ -1403,7 +1403,10 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
             'min_new_edges': args.min_new_edges,
             'extend_ls': not args.no_extend_ls,
             'normalized_heuristic': not args.no_normalized_heuristic,
-            'fixed_steps': args.L
+            'fixed_steps': args.L,
+            'ls_scope': getattr(args, 'ls_scope', 'localized'),
+            'ls_budget': getattr(args, 'ls_budget', 'truncated'),
+            'ls_max_opt': getattr(args, 'ls_max_opt', 0),
         }
     else:
         coords, demand, capacity = instance_data
@@ -1428,7 +1431,10 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
             'device': args.device,
             'enable_torch_sync': True,
             'normalized_heuristic': not args.no_normalized_heuristic,
-            'fixed_steps': args.L
+            'fixed_steps': args.L,
+            'ls_scope': getattr(args, 'ls_scope', 'localized'),
+            'ls_budget': getattr(args, 'ls_budget', 'truncated'),
+            'ls_max_opt': getattr(args, 'ls_max_opt', 0),
         }
 
     aco = aco_class(**kwargs)
@@ -1494,15 +1500,32 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
     avg_last = None
     t_neural_total = 0.0
     priors, pher_before = [], []
-    metrics_log = {k: [] for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match", "survival", 
-                                   "enhance", "rebellion", "suppression"]}
+    metrics_log = {k: [] for k in ["cost", "l2", "kl", "turnover", "flip", "corr", "ov", "row_match", "survival",
+                                   "enhance", "rebellion", "suppression", "prior_mean", "prior_std"]}
     metrics_log["snapshots"] = []
 
     collect_iter_stats = bool(getattr(args, "iter_log", False) or getattr(args, "iter_print", False))
     iter_stats = [] if collect_iter_stats else None
+    collect_stage_metrics = bool(getattr(args, "stage_metrics", False))
+    stage_totals = {
+        "avg_ant_before_ls": 0.0,
+        "avg_ant_after_ls": 0.0,
+        "avg_incumbent_after_aco": 0.0,
+    }
+    stage_latest = {
+        "final_ant_before_ls": None,
+        "final_ant_after_ls": None,
+        "final_incumbent_after_aco": None,
+    }
+    stage_steps = 0
     
     history = []
+    best_decoded_route = None
     t_start_total_infer = time.time()
+    runtime_limit = getattr(args, "runtime_limit", None)
+    if runtime_limit is not None and runtime_limit <= 0:
+        runtime_limit = None
+    timed_out = False
 
     
     # Setup tqdm bar if iter_print is requested
@@ -1514,6 +1537,9 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
     
     with torch.no_grad():
         for t in range(args.H):
+            if runtime_limit is not None and (time.time() - t_start_total_infer) >= runtime_limit:
+                timed_out = True
+                break
             do_metrics = collect_metrics and (metrics_every_step or t == args.H - 1)
             
             prior_mat = None
@@ -1544,6 +1570,9 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                         priors.append(prior_mat.detach().cpu().clone())
 
             for mini_t in range(args.mini_H):
+                if runtime_limit is not None and (time.time() - t_start_total_infer) >= runtime_limit:
+                    timed_out = True
+                    break
                 # Annealing
                 current_prior = prior_mat
                 if not args.no_anneal and prior_mat is not None:
@@ -1559,10 +1588,12 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                 
                 prior_arg = current_prior.cpu().numpy() if (current_prior is not None and torch.is_tensor(current_prior)) else current_prior
 
+                sample_require_prob = do_metrics or collect_stage_metrics
+
                 if problem == 'tsp':
-                    costs_t, flats, _, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg, parallel_traced=True)
+                    costs_t, flats, _, _, traces, costs_raw, _, _, survival = aco.sample(require_prob=sample_require_prob, prior=prior_arg, parallel_traced=True)
                 else:
-                    costs_t, routes, decoded, _, traces, _, _, _, survival = aco.sample(require_prob=do_metrics, prior=prior_arg, return_decoded=return_decoded, parallel_traced=True)
+                    costs_t, routes, decoded, _, traces, costs_raw, _, _, survival = aco.sample(require_prob=sample_require_prob, prior=prior_arg, return_decoded=return_decoded, parallel_traced=True)
                     flats = routes
 
                 if do_metrics:
@@ -1572,15 +1603,32 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                      best_idx_t = int(costs_t.argmin().item())
                      try:
                          rt = decoded[best_idx_t] if decoded is not None else flats[best_idx_t]
+                         best_decoded_route = rt
                          verify_solution_cvrp(coords, demand, capacity, float(costs_t[best_idx_t]), rt)
                      except ValueError as e:
                          print(f"Verification failed: {e}")
                          sys.exit(1)
 
+                raw_costs = costs_raw if costs_raw is not None else costs_t
+                avg_raw = float(raw_costs.mean().item())
                 avg_last = float(costs_t.mean().item())
                 best_idx = int(costs_t.argmin().item())
                 best_cost = float(costs_t[best_idx].item())
                 best_seen = min(best_seen, best_cost)
+                
+                if problem == 'tsp':
+                    aco._update_pheromone_from_flat(flats[best_idx], best_cost)
+                else:
+                    aco.update_pheromone(flats[best_idx], best_cost)
+
+                incumbent_after_aco = float(best_seen)
+                stage_totals["avg_ant_before_ls"] += avg_raw
+                stage_totals["avg_ant_after_ls"] += avg_last
+                stage_totals["avg_incumbent_after_aco"] += incumbent_after_aco
+                stage_latest["final_ant_before_ls"] = avg_raw
+                stage_latest["final_ant_after_ls"] = avg_last
+                stage_latest["final_incumbent_after_aco"] = incumbent_after_aco
+                stage_steps += 1
 
                 if collect_iter_stats:
                     iter_idx = t * int(args.mini_H) + int(mini_t)
@@ -1590,12 +1638,10 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                         "mini_t": int(mini_t),
                         "mean": float(avg_last),
                         "best": float(best_seen),
+                        "mean_before_ls": float(avg_raw),
+                        "mean_after_ls": float(avg_last),
+                        "incumbent_after_aco": incumbent_after_aco,
                     })
-                
-                if problem == 'tsp':
-                    aco._update_pheromone_from_flat(flats[best_idx], best_cost)
-                else:
-                    aco.update_pheromone(flats[best_idx], best_cost)
 
                 # Update progress bar
                 if pbar is not None:
@@ -1609,10 +1655,16 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                     })
                     pbar.update(1)
 
+                if runtime_limit is not None and (time.time() - t_start_total_infer) >= runtime_limit:
+                    timed_out = True
+                    break
+
             # Record history at step t (1-based index is t+1)
             # t is 0-based index of H loop
             # Added t_neural_total to history
             history.append((t + 1, time.time() - t_start_total_infer, best_seen, t_neural_total))
+            if timed_out:
+                break
 
             if do_metrics:
                 metrics_log["cost"].append(best_seen)
@@ -1630,6 +1682,8 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                 if is_prior_avail:
                     tau = pher_before[-1] # Match last captured
                     pr = priors[-1]
+                    metrics_log["prior_mean"].append(float(pr.mean().item()))
+                    metrics_log["prior_std"].append(float(pr.std().item()))
                     metrics_log["corr"].append(safe_corr(tau, pr))
                     metrics_log["ov"].append(top_overlap_frac(tau, pr))
                     metrics_log["row_match"].append(row_top1_match_rate(tau, pr))
@@ -1640,7 +1694,8 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
                     metrics_log["rebellion"].append(inter["rebellion"])
                     metrics_log["suppression"].append(inter["suppression"])
                 else:
-                    for k in ["corr", "ov", "row_match", "enhance", "rebellion", "suppression"]: metrics_log[k].append(0.0)
+                    for k in ["corr", "ov", "row_match", "enhance", "rebellion", "suppression", "prior_mean", "prior_std"]:
+                        metrics_log[k].append(0.0)
             
             # Capture snapshots at H/2
             if collect_metrics and t == (args.H // 2):
@@ -1672,8 +1727,21 @@ def infer_instance(problem, aco_class, build_fn, model, instance_data, k_sparse,
         extra["metrics"] = metrics_log
     if collect_iter_stats:
         extra["iter_stats"] = iter_stats
-    
+    if stage_steps > 0:
+        extra["stage_metrics"] = {
+            "avg_ant_before_ls": stage_totals["avg_ant_before_ls"] / stage_steps,
+            "avg_ant_after_ls": stage_totals["avg_ant_after_ls"] / stage_steps,
+            "avg_incumbent_after_aco": stage_totals["avg_incumbent_after_aco"] / stage_steps,
+            "final_ant_before_ls": stage_latest["final_ant_before_ls"],
+            "final_ant_after_ls": stage_latest["final_ant_after_ls"],
+            "final_incumbent_after_aco": stage_latest["final_incumbent_after_aco"],
+            "steps": stage_steps,
+        }
+
     extra["history"] = history
+    extra["timed_out"] = timed_out
+    if best_decoded_route is not None:
+        extra["best_decoded_route"] = best_decoded_route
     return avg_last, best_seen, timings, extra
 
 def get_dataset_signature(dataset, problem):
