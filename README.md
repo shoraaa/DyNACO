@@ -1,10 +1,7 @@
 # DyNACO: Beyond Static Priors: Dynamic Neural Guidance for Large-Scale Ant Colony Optimization
 
-[![Conference](https://img.shields.io/badge/KDD-2026-blue)](https://kdd.org) 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
-
-This is the official anonymous repository for the KDD 2026 submission: **"Beyond Static Priors: Dynamic Neural Guidance for Large-Scale Ant Colony Optimization."**
 
 ## 📖 Overview
 
@@ -248,12 +245,10 @@ Pretrained models are available in the `pretrained/` directory.
 ---
 
 ## 📑 Citation
-*(Placeholder - Currently under anonymous review for KDD 2026)*
 ```bibtex
 @inproceedings{dynaco2026,
   title={Beyond Static Priors: Dynamic Neural Guidance for Large-Scale Ant Colony Optimization},
   author={Anonymous Authors},
-  booktitle={Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining},
   year={2026}
 }
 ```
